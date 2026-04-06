@@ -1,0 +1,139 @@
+package types
+
+import (
+	"fmt"
+)
+
+// AgentConfig represents the root of the shiftlaunch config.yaml
+type AgentConfig struct {
+	ManagedServices ManagedServicesConfig `yaml:"managed_services"`
+	Controller      ControllerConfig      `yaml:"controller"`
+	HMC             HMCConfig             `yaml:"hmc"`
+	Network         NetworkConfig         `yaml:"network"`
+	OpenShift       OpenShiftConfig       `yaml:"openshift"`
+	Nodes           ClusterNodesConfig    `yaml:"nodes"`
+}
+
+type ManagedServicesConfig struct {
+	DNS          bool `yaml:"dns"`
+	DHCP         bool `yaml:"dhcp"`
+	PXE          bool `yaml:"pxe"`
+	LoadBalancer bool `yaml:"load_balancer"`
+}
+
+type ControllerConfig struct {
+	NetworkInterface string `yaml:"network_interface"`
+	IP               string `yaml:"-"` // Auto-discovered at runtime via localexec
+}
+
+type HMCConfig struct {
+	IP       string `yaml:"ip"`
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
+}
+
+type NetworkConfig struct {
+	LoadBalancerIP   string   `yaml:"loadbalancer_ip"`
+	MachineCIDR      string   `yaml:"machine_network_cidr"`
+	Gateway          string   `yaml:"gateway"`
+	Nameserver       string   `yaml:"nameserver,omitempty"`
+	DNSForwarders    []string `yaml:"dns_forwarders"`
+}
+
+type OpenShiftConfig struct {
+	ClusterName        string          `yaml:"cluster_name"`
+	Version            string          `yaml:"version"`
+	BaseDomain         string          `yaml:"base_domain"`
+	ClusterNetworkCIDR string          `yaml:"cluster_network_cidr"`
+	HostPrefix         int             `yaml:"cluster_network_host_prefix"`
+	ServiceNetwork     string          `yaml:"service_network"`
+	PullSecretFile     string          `yaml:"pull_secret_file"`
+	SSHPublicKeyFile   string          `yaml:"ssh_public_key_file"`
+	ForceOCPDownload   bool            `yaml:"force_ocp_download,omitempty"` 
+	RHCOSImages        RHCOSURLs       `yaml:"rhcos_images"`
+	OCPClientConfig    OCPClientConfig `yaml:"ocp_client_config"`
+}
+
+type RHCOSURLs struct {
+	KernelURL     string `yaml:"kernel_url"`
+	KernelCSUM    string `yaml:"kernel_csum,omitempty"`
+	InitramfsURL  string `yaml:"initramfs_url"`
+	InitramfsCSUM string `yaml:"initramfs_csum,omitempty"` 
+	RootfsURL     string `yaml:"rootfs_url"`
+	RootfsCSUM    string `yaml:"rootfs_csum,omitempty"`
+	ChecksumURL   string `yaml:"checksum_url,omitempty"`
+	ISOURL        string `yaml:"iso_url,omitempty"`
+}
+
+type OCPClientConfig struct {
+	Client        string `yaml:"ocp_client"`
+	ClientCSUM    string `yaml:"client_csum,omitempty"`       
+	Installer     string `yaml:"ocp_installer"`
+	InstallerCSUM string `yaml:"installer_csum,omitempty"`    
+	ChecksumURL   string `yaml:"checksum_url,omitempty"`     
+}
+
+type ClusterNodesConfig struct {
+	BootMethod string       `yaml:"boot_method"`
+	SNO        []NodeConfig `yaml:"sno,omitempty"`
+	Bootstrap  []NodeConfig `yaml:"bootstrap,omitempty"`
+	Masters    []NodeConfig `yaml:"masters,omitempty"`
+	Workers    []NodeConfig `yaml:"workers,omitempty"`
+}
+
+type NodeConfig struct {
+	Hostname         string `yaml:"name"`
+	IP               string `yaml:"ip"`
+	ExistingLPARName string `yaml:"existing_lpar_name"`
+	SystemName       string `yaml:"system_name"`
+	MACAddress       string `yaml:"mac_address,omitempty"` // Optional manual override
+	
+	// Runtime populated fields discovered via HMC API
+	LocationCode     string `yaml:"-"`
+	UUID             string `yaml:"-"`
+	ProfileUUID      string `yaml:"-"`
+	Role             string `yaml:"-"` // e.g., "bootstrap", "master", "worker"
+}
+
+// IsSNO dynamically determines if the cluster is Single Node OpenShift based on the YAML structure
+func (c *AgentConfig) IsSNO() bool {
+	return len(c.Nodes.SNO) > 0
+}
+
+// GetAllNodes returns pointers to all node configs so the Orchestrator/HMC can inject MAC addresses
+func (c *AgentConfig) GetAllNodes() []*NodeConfig {
+	var nodes []*NodeConfig
+	
+	for i := range c.Nodes.SNO { 
+		c.Nodes.SNO[i].Role = "sno"
+		nodes = append(nodes, &c.Nodes.SNO[i]) 
+	}
+	for i := range c.Nodes.Bootstrap { 
+		c.Nodes.Bootstrap[i].Role = "bootstrap"
+		nodes = append(nodes, &c.Nodes.Bootstrap[i]) 
+	}
+	for i := range c.Nodes.Masters { 
+		c.Nodes.Masters[i].Role = "master"
+		nodes = append(nodes, &c.Nodes.Masters[i]) 
+	}
+	for i := range c.Nodes.Workers { 
+		c.Nodes.Workers[i].Role = "worker"
+		nodes = append(nodes, &c.Nodes.Workers[i]) 
+	}
+	
+	return nodes
+}
+
+// Validate ensures structural integrity of the configuration
+func (c *AgentConfig) Validate() error {
+	if c.IsSNO() {
+		if len(c.Nodes.Bootstrap) > 0 || len(c.Nodes.Masters) > 0 || len(c.Nodes.Workers) > 0 {
+			return fmt.Errorf("configuration error: 'sno' block is defined, but 'bootstrap', 'masters', or 'workers' are also present")
+		}
+	} else {
+		if len(c.Nodes.Bootstrap) == 0 || len(c.Nodes.Masters) == 0 {
+			return fmt.Errorf("configuration error: multi-node deployments require at least 'bootstrap' and 'masters' blocks")
+		}
+	}
+	return nil
+}

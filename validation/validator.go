@@ -1,0 +1,613 @@
+package validation
+
+import (
+	"fmt"
+	"net"
+	"os"
+	"regexp"
+	"strings"
+
+	hmc "github.com/sudeeshjohn/powerhmc-go"
+	"github.com/sudeeshjohn/shiftlaunch/localexec"
+	"github.com/sudeeshjohn/shiftlaunch/logger"
+	"github.com/sudeeshjohn/shiftlaunch/types"
+)
+
+// ============================================================================
+// VALIDATOR STRUCT AND INITIALIZATION
+// ============================================================================
+
+// Validator validates configuration in three phases:
+// 1. Config Validation (static, fast) - validates YAML structure and values
+// 2. Controller Node Validation (Local) - validates local infrastructure
+// 3. HMC Validation (HMC API) - validates Power systems and BYOI LPARs
+type Validator struct {
+	cfg       *types.AgentConfig
+	exec      *localexec.LocalClient
+	hmcClient *hmc.HmcRestClient
+	debug     bool
+	errors    []string
+	warnings  []string
+	log       *logger.Logger
+}
+
+// NewValidator creates a new validator
+func NewValidator(cfg *types.AgentConfig, exec *localexec.LocalClient, debug bool) *Validator {
+	fallbackLog, _ := logger.New(debug, "/dev/null")
+
+	return &Validator{
+		cfg:      cfg,
+		exec:     exec,
+		debug:    debug,
+		errors:   []string{},
+		warnings: []string{},
+		log:      fallbackLog,
+	}
+}
+
+// SetHMCClient sets the HMC client for active validation
+func (v *Validator) SetHMCClient(client *hmc.HmcRestClient) {
+	v.hmcClient = client
+}
+
+// SetLogger sets the custom logger for deployment context
+func (v *Validator) SetLogger(l *logger.Logger) {
+	if l != nil {
+		v.log = l
+	}
+}
+
+// Validate performs comprehensive validation in phases
+func (v *Validator) Validate() error {
+	// Phase 1: Config Validation (static, fast)
+	v.log.Info("Phase 1: Validating configuration...")
+
+	v.validateController()
+	v.validateHMC()
+	v.validateNetwork()
+	v.validateOpenShift()
+	v.validateNodes()
+
+	v.log.Info("✓ Configuration valid")
+
+	// Phase 2: Local Controller Environment Validation
+	if v.exec != nil {
+		v.log.Info("Phase 2: Validating local controller environment...")
+		v.validateLocalEnvironment()
+		v.log.Info("✓ Local environment validated")
+	}
+
+	// Phase 3: HMC Validation (HMC API-based)
+	if v.hmcClient != nil {
+		v.log.Info("Phase 3: Validating pre-provisioned LPARs (BYOI mode)...")
+		v.validateBYOILPARs()
+		v.log.Info("✓ HMC infrastructure validated")
+	}
+
+	// Phase 4: External Services Validation
+	if v.exec != nil {
+		hasExternalServices := !v.cfg.ManagedServices.DNS || !v.cfg.ManagedServices.DHCP || !v.cfg.ManagedServices.PXE || !v.cfg.ManagedServices.LoadBalancer
+
+		if hasExternalServices {
+			v.log.Info("Phase 4: Validating external services (BYOI mode)...")
+			v.validateExternalServices()
+			v.log.Info("✓ External services validated")
+		}
+	}
+
+	// Print warnings
+	if len(v.warnings) > 0 {
+		v.log.Warn("Validation completed with warnings")
+		for _, w := range v.warnings {
+			v.log.Warn(fmt.Sprintf(" - %s", w))
+		}
+	}
+
+	// Return errors if any
+	if len(v.errors) > 0 {
+		errMsg := "\n❌ Validation Errors:\n"
+		for _, e := range v.errors {
+			errMsg += fmt.Sprintf("   - %s\n", e)
+		}
+		return fmt.Errorf("%s", errMsg)
+	}
+
+	return nil
+}
+
+// ============================================================================
+// PHASE 1: CONFIG VALIDATION (Static, Fast)
+// ============================================================================
+
+// validateController validates the local controller node configuration
+func (v *Validator) validateController() {
+	c := v.cfg.Controller
+
+	if c.NetworkInterface == "" {
+		v.errors = append(v.errors, "controller.network_interface is required")
+	}
+
+	vip := v.cfg.Network.LoadBalancerIP
+	if vip == "" {
+		v.errors = append(v.errors, "network.loadbalancer_ip is missing")
+	} else if !v.isValidIP(vip) {
+		v.errors = append(v.errors, fmt.Sprintf("VIP '%s' is not a valid IP", vip))
+	}
+}
+
+// validateHMC validates HMC configuration
+func (v *Validator) validateHMC() {
+	h := v.cfg.HMC
+
+	if h.IP == "" {
+		v.errors = append(v.errors, "hmc.ip is required")
+	} else if !v.isValidIP(h.IP) && !v.isValidHostname(h.IP) {
+		v.errors = append(v.errors, fmt.Sprintf("hmc.ip '%s' must be a valid IP address or hostname", h.IP))
+	}
+
+	if h.Username == "" {
+		v.errors = append(v.errors, "hmc.username is required")
+	}
+
+	if h.Password == "" {
+		v.errors = append(v.errors, "hmc.password is required")
+	}
+}
+
+// validateNetwork validates network configuration
+func (v *Validator) validateNetwork() {
+	n := v.cfg.Network
+
+	if v.cfg.OpenShift.BaseDomain == "" {
+		v.errors = append(v.errors, "openshift.base_domain is required")
+	}
+
+	if n.MachineCIDR == "" {
+		v.errors = append(v.errors, "network.machine_network_cidr is required")
+	} else if !v.isValidCIDR(n.MachineCIDR) {
+		v.errors = append(v.errors, fmt.Sprintf("network.machine_network_cidr '%s' is not a valid CIDR", n.MachineCIDR))
+	}
+
+	if n.Gateway == "" {
+		v.errors = append(v.errors, "network.gateway is required")
+	} else if !v.isValidIP(n.Gateway) {
+		v.errors = append(v.errors, fmt.Sprintf("network.gateway '%s' is not a valid IP address", n.Gateway))
+	}
+
+	// Validate DNS forwarders are provided to prevent DNS resolution loops
+	if len(n.DNSForwarders) == 0 {
+		v.errors = append(v.errors, "network.dns_forwarders is required to prevent DNS resolution loops and ensure internet connectivity")
+	}
+}
+
+// validateOpenShift validates OpenShift configuration
+func (v *Validator) validateOpenShift() {
+	o := v.cfg.OpenShift
+
+	if o.Version == "" {
+		v.errors = append(v.errors, "openshift.version is required")
+	}
+
+	if o.PullSecretFile == "" {
+		v.errors = append(v.errors, "openshift.pull_secret_file is required")
+	} else {
+		if _, err := os.Stat(o.PullSecretFile); os.IsNotExist(err) {
+			v.errors = append(v.errors, fmt.Sprintf("openshift.pull_secret_file '%s' does not exist locally", o.PullSecretFile))
+		}
+	}
+
+	if o.SSHPublicKeyFile == "" {
+		v.errors = append(v.errors, "openshift.ssh_public_key_file is required")
+	}
+
+	// Validate RHCOS URLs
+	if o.RHCOSImages.KernelURL == "" {
+		v.errors = append(v.errors, "openshift.rhcos_images.kernel_url is required")
+	}
+	if o.RHCOSImages.InitramfsURL == "" {
+		v.errors = append(v.errors, "openshift.rhcos_images.initramfs_url is required")
+	}
+	if o.RHCOSImages.RootfsURL == "" {
+		v.errors = append(v.errors, "openshift.rhcos_images.rootfs_url is required")
+	}
+
+	v.validateChecksum(o.RHCOSImages.KernelCSUM, "openshift.rhcos_images.kernel_csum")
+	v.validateChecksum(o.RHCOSImages.InitramfsCSUM, "openshift.rhcos_images.initramfs_csum")
+	v.validateChecksum(o.RHCOSImages.RootfsCSUM, "openshift.rhcos_images.rootfs_csum")
+
+	// Validate OCP client config
+	if o.OCPClientConfig.Client == "" {
+		v.errors = append(v.errors, "openshift.ocp_client_config.ocp_client is required")
+	}
+	if o.OCPClientConfig.Installer == "" {
+		v.errors = append(v.errors, "openshift.ocp_client_config.ocp_installer is required")
+	}
+}
+
+func (v *Validator) validateChecksum(checksum, fieldName string) {
+	if checksum == "" {
+		return // Empty is valid (optional field)
+	}
+
+	if len(checksum) != 64 {
+		v.errors = append(v.errors, fmt.Sprintf("%s must be exactly 64 characters (got %d)", fieldName, len(checksum)))
+		return
+	}
+
+	for _, c := range checksum {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			v.errors = append(v.errors, fmt.Sprintf("%s must contain only hexadecimal characters (0-9, a-f, A-F)", fieldName))
+			return
+		}
+	}
+}
+
+// validateNodes validates node configuration
+func (v *Validator) validateNodes() {
+	if v.cfg.IsSNO() {
+		v.validateSNONode()
+	} else {
+		v.validateMultiNodeCluster()
+	}
+}
+
+// validateSNONode validates SNO node configuration
+func (v *Validator) validateSNONode() {
+	if len(v.cfg.Nodes.SNO) == 0 {
+		v.errors = append(v.errors, "nodes.sno block is required for SNO deployment")
+		return
+	}
+
+	sno := v.cfg.Nodes.SNO[0]
+
+	if sno.IP == "" {
+		v.errors = append(v.errors, "nodes.sno.ip is required")
+	} else if !v.isValidIP(sno.IP) {
+		v.errors = append(v.errors, fmt.Sprintf("nodes.sno.ip '%s' is not a valid IP address", sno.IP))
+	}
+
+	if sno.SystemName == "" {
+		v.errors = append(v.errors, "nodes.sno.system_name is required")
+	}
+
+	if sno.ExistingLPARName == "" {
+		v.errors = append(v.errors, "nodes.sno.existing_lpar_name is required in BYOI mode")
+	}
+}
+
+// validateMultiNodeCluster validates multi-node cluster configuration
+func (v *Validator) validateMultiNodeCluster() {
+	if len(v.cfg.Nodes.Masters) == 0 {
+		v.errors = append(v.errors, "nodes.masters is required for multi-node deployment")
+		return
+	}
+
+	masterCount := len(v.cfg.Nodes.Masters)
+	if masterCount < 3 {
+		v.errors = append(v.errors, fmt.Sprintf("minimum 3 master nodes required, got %d", masterCount))
+	}
+	if masterCount%2 == 0 {
+		v.errors = append(v.errors, fmt.Sprintf("master count must be odd for quorum, got %d", masterCount))
+	}
+
+	for i, master := range v.cfg.Nodes.Masters {
+		if master.Hostname == "" {
+			v.errors = append(v.errors, fmt.Sprintf("nodes.masters[%d].name is required", i))
+		}
+		if master.SystemName == "" {
+			v.errors = append(v.errors, fmt.Sprintf("nodes.masters[%d].system_name is required", i))
+		}
+		if master.IP == "" {
+			v.errors = append(v.errors, fmt.Sprintf("nodes.masters[%d].ip is required", i))
+		} else if !v.isValidIP(master.IP) {
+			v.errors = append(v.errors, fmt.Sprintf("nodes.masters[%d].ip '%s' is not a valid IP", i, master.IP))
+		}
+		if master.ExistingLPARName == "" {
+			v.errors = append(v.errors, fmt.Sprintf("nodes.masters[%d].existing_lpar_name is required in BYOI mode", i))
+		}
+	}
+
+	if len(v.cfg.Nodes.Bootstrap) > 0 {
+		for i, bootstrap := range v.cfg.Nodes.Bootstrap {
+			if bootstrap.Hostname == "" {
+				v.errors = append(v.errors, fmt.Sprintf("nodes.bootstrap[%d].name is required", i))
+			}
+			if bootstrap.SystemName == "" {
+				v.errors = append(v.errors, fmt.Sprintf("nodes.bootstrap[%d].system_name is required", i))
+			}
+			if bootstrap.IP == "" {
+				v.errors = append(v.errors, fmt.Sprintf("nodes.bootstrap[%d].ip is required", i))
+			}
+			if bootstrap.ExistingLPARName == "" {
+				v.errors = append(v.errors, fmt.Sprintf("nodes.bootstrap[%d].existing_lpar_name is required in BYOI mode", i))
+			}
+		}
+	}
+
+	if len(v.cfg.Nodes.Workers) > 0 {
+		for i, worker := range v.cfg.Nodes.Workers {
+			if worker.Hostname == "" {
+				v.errors = append(v.errors, fmt.Sprintf("nodes.workers[%d].name is required", i))
+			}
+			if worker.SystemName == "" {
+				v.errors = append(v.errors, fmt.Sprintf("nodes.workers[%d].system_name is required", i))
+			}
+			if worker.IP == "" {
+				v.errors = append(v.errors, fmt.Sprintf("nodes.workers[%d].ip is required", i))
+			}
+			if worker.ExistingLPARName == "" {
+				v.errors = append(v.errors, fmt.Sprintf("nodes.workers[%d].existing_lpar_name is required in BYOI mode", i))
+			}
+		}
+	}
+}
+
+// ============================================================================
+// PHASE 2: LOCAL ENVIRONMENT VALIDATION (LocalExec-Based)
+// ============================================================================
+
+func (v *Validator) validateLocalEnvironment() {
+	// 1. Check if SSH public key exists locally
+	if v.cfg.OpenShift.SSHPublicKeyFile != "" {
+		keyPath := os.ExpandEnv(v.cfg.OpenShift.SSHPublicKeyFile)
+		checkCmd := fmt.Sprintf("test -f %s", keyPath)
+		if _, err := v.exec.Execute(checkCmd); err != nil {
+			v.errors = append(v.errors, fmt.Sprintf("SSH KEY MISSING: The public key file '%s' does not exist on the local system.", keyPath))
+		}
+	}
+
+	// 2. Check for sufficient disk space locally (must have at least 10GB free)
+	v.validateLocalDiskSpace()
+
+	// 3. Check for Directory/Config Collisions
+	clusterName := v.cfg.OpenShift.ClusterName
+	httpDir := fmt.Sprintf("/var/www/html/%s", clusterName)
+	dnsmasqPath := fmt.Sprintf("/etc/dnsmasq.d/*-%s-*.conf", clusterName)
+	haproxyPath := fmt.Sprintf("/etc/haproxy/conf.d/99-%s.cfg", clusterName)
+
+	checkCmd := fmt.Sprintf("if [ -d '%s' ] || ls %s 1> /dev/null 2>&1 || ls %s 1> /dev/null 2>&1; then echo 'exists'; else echo 'missing'; fi",
+		httpDir, dnsmasqPath, haproxyPath)
+
+	if out, err := v.exec.Execute(checkCmd); err == nil && strings.TrimSpace(out) == "exists" {
+		v.errors = append(v.errors, fmt.Sprintf("CLUSTER COLLISION: Artifacts for '%s' already exist locally. Run the 'delete' command to clean them up first to prevent accidental overwrites.", clusterName))
+	}
+
+	// 4. Check for VIP Conflicts on the network
+	vip := v.cfg.Network.LoadBalancerIP
+	if vip != "" {
+		iface := v.cfg.Controller.NetworkInterface
+		
+		// Guardrail: Prevent hijacking the controller's primary IP
+		ipCmd := fmt.Sprintf("ip -4 addr show dev %s | grep -oP '(?<=inet\\s)\\d+(\\.\\d+){3}' | head -1", iface)
+		if hostIP, err := v.exec.Execute(ipCmd); err == nil && strings.TrimSpace(hostIP) == vip {
+			v.errors = append(v.errors, fmt.Sprintf(
+				"VIP conflict: VIP '%s' cannot be the same as the controller's primary IP on %s.", vip, iface))
+		}
+
+		checkBoundCmd := fmt.Sprintf("ip addr show dev %s | grep -q '%s/'", iface, vip)
+		if _, err := v.exec.Execute(checkBoundCmd); err != nil {
+			// Not bound to us. Check if it's in use on the network.
+			if v.cfg.ManagedServices.LoadBalancer { // Only ping if we expect to manage it
+				pingCmd := fmt.Sprintf("ping -c 2 -W 2 %s", vip)
+				if _, pingErr := v.exec.Execute(pingCmd); pingErr == nil {
+					v.errors = append(v.errors, fmt.Sprintf("IP CONFLICT: The VIP %s is already actively responding on the network. Please choose an unused IP.", vip))
+				}
+			}
+		}
+	}
+}
+
+func (v *Validator) validateLocalDiskSpace() {
+	dfCmd := "df -BK --output=avail /var/www/html | tail -n 1 | tr -d 'K'"
+	output, err := v.exec.Execute(dfCmd)
+	if err != nil {
+		v.warnings = append(v.warnings, fmt.Sprintf("Unable to check disk space locally: %v", err))
+		return
+	}
+
+	var availableKB int
+	trimmedOutput := strings.TrimSpace(output)
+	if _, err := fmt.Sscanf(trimmedOutput, "%d", &availableKB); err != nil {
+		v.warnings = append(v.warnings, fmt.Sprintf("Unable to parse disk space output '%s': %v", trimmedOutput, err))
+		return
+	}
+
+	availableGB := float64(availableKB) / (1024 * 1024)
+	requiredGB := 10.0
+
+	if availableGB < requiredGB {
+		v.errors = append(v.errors,
+			fmt.Sprintf("INSUFFICIENT DISK SPACE: /var/www/html has only %.2f GB available, but at least %.0f GB is required.",
+				availableGB, requiredGB))
+	} else {
+		v.log.Info(fmt.Sprintf("  ✓ Controller has %.2f GB available in /var/www/html", availableGB))
+	}
+}
+
+// ============================================================================
+// PHASE 3: HMC VALIDATION (HMC API-Based)
+// ============================================================================
+
+// validateBYOILPARs validates that all specified LPARs exist in BYOI mode
+func (v *Validator) validateBYOILPARs() {
+	v.log.Info("    Validating pre-provisioned LPAR existence...")
+
+	allNodes := v.cfg.GetAllNodes()
+	systemLPARCache := make(map[string]map[string]*hmc.LogicalPartitionQuick)
+
+	validatedCount := 0
+	for _, node := range allNodes {
+		if node.ExistingLPARName == "" {
+			continue
+		}
+
+		if _, cached := systemLPARCache[node.SystemName]; !cached {
+			v.log.Info(fmt.Sprintf("      Querying system '%s' for LPARs...", node.SystemName))
+
+			var systemUUID string
+			var err error
+			v.log.Capture(func() {
+				systemUUID, _, err = v.hmcClient.GetManagedSystemByName(node.SystemName, true)
+			})
+			if err != nil {
+				v.errors = append(v.errors, fmt.Sprintf("failed to get system '%s' for LPAR validation: %v", node.SystemName, err))
+				continue
+			}
+
+			var lpars []hmc.LogicalPartitionQuick
+			v.log.Capture(func() {
+				lpars, err = v.hmcClient.GetLogicalPartitionsQuickAll(systemUUID, true)
+			})
+			if err != nil {
+				v.errors = append(v.errors, fmt.Sprintf("failed to get LPARs for system '%s': %v", node.SystemName, err))
+				continue
+			}
+
+			lparMap := make(map[string]*hmc.LogicalPartitionQuick)
+			for i := range lpars {
+				lparMap[lpars[i].PartitionName] = &lpars[i]
+			}
+			systemLPARCache[node.SystemName] = lparMap
+
+			v.log.Debug(fmt.Sprintf("      Found %d LPARs on system '%s'", len(lpars), node.SystemName))
+		}
+
+		if lparMap, ok := systemLPARCache[node.SystemName]; ok {
+			lpar, exists := lparMap[node.ExistingLPARName]
+			if !exists {
+				v.errors = append(v.errors, fmt.Sprintf(
+					"LPAR '%s' not found on system '%s' (required for node '%s')",
+					node.ExistingLPARName, node.SystemName, node.Hostname))
+			} else {
+				if lpar.PartitionState == "running" {
+					v.errors = append(v.errors, fmt.Sprintf(
+						"SAFETY LOCK: BYOI LPAR '%s' is currently RUNNING on system '%s'. Shiftlaunch refuses to overwrite a running LPAR to prevent accidental data loss. Please power it off manually before deploying.",
+						node.ExistingLPARName, node.SystemName))
+				} else {
+					v.log.Info(fmt.Sprintf("      ✓ LPAR '%s' exists on system '%s' (state: %s, role: %s)",
+						node.ExistingLPARName, node.SystemName, lpar.PartitionState, node.Role))
+					validatedCount++
+				}
+			}
+		}
+	}
+
+	if len(v.errors) == 0 {
+		v.log.Info(fmt.Sprintf("    ✓ All %d pre-provisioned LPAR(s) validated successfully", validatedCount))
+	}
+}
+
+// ============================================================================
+// PHASE 4: EXTERNAL SERVICES VALIDATION
+// ============================================================================
+
+func (v *Validator) validateExternalServices() {
+	if !v.cfg.ManagedServices.DNS {
+		v.validateExternalDNS()
+	}
+	if !v.cfg.ManagedServices.DHCP {
+		v.validateExternalDHCP()
+	}
+	if !v.cfg.ManagedServices.PXE {
+		v.validateExternalPXE()
+	}
+	if !v.cfg.ManagedServices.LoadBalancer {
+		v.validateExternalLoadBalancer()
+	}
+}
+
+func (v *Validator) validateExternalDNS() {
+	v.log.Info("    Validating external DNS server...")
+
+	dnsServer := v.cfg.Network.Nameserver
+	if dnsServer == "" {
+		v.warnings = append(v.warnings, "DNS is external, but network.nameserver is empty. External DNS validation skipped.")
+		return
+	}
+
+	testCmd := fmt.Sprintf("dig @%s google.com +short +time=2 +tries=1", dnsServer)
+	if _, err := v.exec.Execute(testCmd); err != nil {
+		v.warnings = append(v.warnings, fmt.Sprintf(
+			"External DNS server %s may not be reachable or responding. Ensure DNS is properly configured before deployment.", dnsServer))
+	} else {
+		v.log.Info(fmt.Sprintf("      ✓ External DNS server %s is reachable", dnsServer))
+	}
+}
+
+func (v *Validator) validateExternalDHCP() {
+	v.log.Info("    Validating external DHCP configuration...")
+	v.warnings = append(v.warnings,
+		"External DHCP detected. Ensure DHCP server is configured with:\n"+
+			"   - IP address pool covering cluster nodes\n"+
+			"   - Correct gateway and DNS settings\n"+
+			"   - Option 66 (TFTP server IP) if using external PXE\n"+
+			"   - Option 67 (bootfile name: 'core.elf') if using external PXE")
+}
+
+func (v *Validator) validateExternalPXE() {
+	v.log.Info("    Validating external PXE configuration...")
+	v.warnings = append(v.warnings,
+		"External PXE detected. Ensure PXE/TFTP server is configured with:\n"+
+			"   - TFTP service running on port 69\n"+
+			"   - RHCOS boot files (kernel, initramfs, rootfs) accessible\n"+
+			"   - Proper file permissions for TFTP access\n"+
+			"   - DHCP Option 66 pointing to PXE server IP\n"+
+			"   - DHCP Option 67 set to 'core.elf'")
+}
+
+func (v *Validator) validateExternalLoadBalancer() {
+	v.log.Info("    Validating external load balancer...")
+
+	vip := v.cfg.Network.LoadBalancerIP
+	if vip == "" {
+		v.errors = append(v.errors, "Cannot validate external load balancer: cluster VIP not provided")
+		return
+	}
+
+	ports := []struct {
+		port int
+		name string
+	}{
+		{6443, "Kubernetes API"},
+		{22623, "Machine Config Server"},
+		{443, "Ingress HTTPS"},
+		{80, "Ingress HTTP"},
+	}
+
+	for _, p := range ports {
+		testCmd := fmt.Sprintf("timeout 2 bash -c 'cat < /dev/null > /dev/tcp/%s/%d' 2>/dev/null", vip, p.port)
+		if _, err := v.exec.Execute(testCmd); err != nil {
+			v.warnings = append(v.warnings, fmt.Sprintf(
+				"External load balancer port %d (%s) at %s is not responding. This is expected before cluster deployment, but ensure load balancer is configured.",
+				p.port, p.name, vip))
+		} else {
+			v.log.Info(fmt.Sprintf("      ✓ Load balancer port %d (%s) is accessible", p.port, p.name))
+		}
+	}
+
+	v.warnings = append(v.warnings,
+		fmt.Sprintf("External load balancer detected at %s. Ensure it is configured with:\n"+
+			"   - Port 6443: Forward to master nodes (Kubernetes API)\n"+
+			"   - Port 22623: Forward to master nodes (Machine Config Server)\n"+
+			"   - Port 443: Forward to worker nodes (Ingress HTTPS)\n"+
+			"   - Port 80: Forward to worker nodes (Ingress HTTP)\n"+
+			"   - Health checks enabled for all backend pools", vip))
+}
+
+// ============================================================================
+// HELPER METHODS
+// ============================================================================
+
+func (v *Validator) isValidIP(ip string) bool {
+	return net.ParseIP(ip) != nil
+}
+
+func (v *Validator) isValidCIDR(cidr string) bool {
+	_, _, err := net.ParseCIDR(cidr)
+	return err == nil
+}
+
+func (v *Validator) isValidHostname(hostname string) bool {
+	hostnameRegex := regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$`)
+	return hostnameRegex.MatchString(hostname)
+}

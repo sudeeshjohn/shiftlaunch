@@ -1,0 +1,77 @@
+# =============================================================================
+# ShiftLaunch Agent Configuration (BYOI / Local Execution Mode)
+# =============================================================================
+
+# --- Controller (The local machine running this agent) ---
+controller:
+  ip: "192.0.2.50"
+  network_interface: "eth0"
+  # No SSH credentials needed! The agent executes everything locally.
+
+# --- HMC Credentials (For discovering MACs, mounting ISOs, and boot commands) ---
+hmc:
+  ip: "192.0.2.10"
+  username: "YOUR_HMC_USERNAME"
+  password: "YOUR_HMC_PASSWORD"
+
+# --- External Service Toggles ---
+# Set to true if you are providing these in your enterprise infrastructure.
+# If false, the Controller automatically generates and hosts them locally.
+external_services:
+  dns: false
+  dhcp: false             # Ignored completely if nodes.boot_method is 'iso'
+  load_balancer: false
+
+# --- Base Networking ---
+network:
+  vip: "10.20.181.240"    # Single VIP for OpenShift API and Ingress traffic
+  network_cidr: "192.0.2.0/20" 
+  gateway: "192.0.2.1"
+  netmask: "255.255.240.0"
+  nameserver: "192.0.2.50"
+  dns_forwarders:
+    - "198.51.100.1"
+    - "198.51.100.2"
+
+# --- OpenShift Identity & Payload ---
+openshift:
+  cluster_name: "ocp-prod"
+  version: "4.18"
+  base_domain: "example.local"
+  cluster_type: "multi-node"    # Options: "sno" or "multi-node"
+  
+  cluster_network_cidr: "10.128.0.0/14"
+  cluster_network_host_prefix: 23
+  service_network: "172.30.0.0/16"
+  
+  pull_secret_file: "./pull-secret.json"
+  ssh_public_key_file: "~/.ssh/id_rsa.pub"
+  
+  hcos_images:
+    kernel_url: "https://mirror.openshift.com/pub/openshift-v4/ppc64le/dependencies/rhcos/4.18/latest/rhcos-live-kernel-ppc64le"
+    initramfs_url: "https://mirror.openshift.com/pub/openshift-v4/ppc64le/dependencies/rhcos/4.18/latest/rhcos-live-initramfs.ppc64le.img"
+    rootfs_url: "https://mirror.openshift.com/pub/openshift-v4/ppc64le/dependencies/rhcos/4.18/latest/rhcos-live-rootfs.ppc64le.img"
+          
+    # Optional: Global checksum manifest (sha256sum.txt format)
+    checksum_url: "https://mirror.openshift.com/pub/openshift-v4/ppc64le/dependencies/rhcos/4.18/latest/sha256sum.txt"
+        
+  ocp_client_config:
+    ocp_client_arch: "ppc64le"
+    ocp_base_url: "https://mirror.openshift.com/pub/openshift-v4/multi/clients"
+    ocp_client_base: "ocp"
+    ocp_client_tag: "latest-4.18"
+    ocp_client: "https://mirror.openshift.com/pub/openshift-v4/ppc64le/clients/ocp/4.18.1/openshift-client-linux.tar.gz"
+    ocp_installer: "https://mirror.openshift.com/pub/openshift-v4/ppc64le/clients/ocp/4.18.1/openshift-install-linux.tar.gz"
+          
+# =============================================================================
+# THE UNIFIED NODE HIERARCHY (BYOI Strict)
+# =============================================================================
+nodes:
+  boot_method: "netboot" # Options: "netboot" or "iso"
+  
+  sno_node:
+    instances:
+      - name: "sno-0"
+        ip: "10.20.189.18"
+        existing_lpar_name: "ocp-sno-lpar"
+        system_name: "YOUR_SYSTEM_NAME"
