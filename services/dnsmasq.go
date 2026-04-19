@@ -8,6 +8,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/sudeeshjohn/shiftlaunch/config"
 	"github.com/sudeeshjohn/shiftlaunch/localexec"
 	"github.com/sudeeshjohn/shiftlaunch/types"
 )
@@ -128,14 +129,16 @@ menuentry '{{.MenuLabel}}' {
 // =============================================================================
 
 type DNSmasqManager struct {
-	cfg      *types.AgentConfig
-	executor *localexec.LocalClient
+	cfg       *types.AgentConfig
+	daemonCfg *config.AgentDaemonConfig
+	executor  *localexec.LocalClient
 }
 
-func NewDNSmasqManager(cfg *types.AgentConfig, exec *localexec.LocalClient) *DNSmasqManager {
+func NewDNSmasqManager(cfg *types.AgentConfig, daemonCfg *config.AgentDaemonConfig, exec *localexec.LocalClient) *DNSmasqManager {
 	return &DNSmasqManager{
-		cfg:      cfg,
-		executor: exec,
+		cfg:       cfg,
+		daemonCfg: daemonCfg,
+		executor:  exec,
 	}
 }
 
@@ -156,7 +159,7 @@ func (m *DNSmasqManager) SetupServices() error {
 // ConfigurePXEBoot handles the physical artifacts: grub2 structure, core.elf, images, and grub configs
 func (m *DNSmasqManager) ConfigurePXEBoot(workspaceDir string) error {
 	clusterName := m.cfg.OpenShift.ClusterName
-	tftpRoot := "/var/lib/tftpboot"
+	tftpRoot := m.daemonCfg.Paths.TFTPRoot
 	clusterTftpDir := filepath.Join(tftpRoot, clusterName)
 
 	// 1. Setup GRUB2 environment
@@ -301,7 +304,7 @@ func (m *DNSmasqManager) prepareGrubData(node *types.NodeConfig) interface{} {
 			"rd.neednet=1",
 			"ip=dhcp",
 			"coreos.inst=yes",
-			"coreos.inst.install_dev=/dev/sda",
+			fmt.Sprintf("coreos.inst.install_dev=%s", m.daemonCfg.Paths.InstallDevice),
 			fmt.Sprintf("coreos.live.rootfs_url=http://%s:8080/%s/rhcos/rootfs.img", ctrlIP, clusterName),
 			fmt.Sprintf("coreos.inst.ignition_url=http://%s:8080/%s/ignition/%s", ctrlIP, clusterName, ign),
 		}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -22,26 +23,34 @@ import (
 // 2. Controller Node Validation (Local) - validates local infrastructure
 // 3. HMC Validation (HMC API) - validates Power systems and BYOI LPARs
 type Validator struct {
-	cfg       *types.AgentConfig
-	exec      *localexec.LocalClient
-	hmcClient *hmc.HmcRestClient
-	debug     bool
-	errors    []string
-	warnings  []string
-	log       *logger.Logger
+	cfg          *types.AgentConfig
+	exec         *localexec.LocalClient
+	hmcClient    *hmc.HmcRestClient
+	debug        bool
+	errors       []string
+	warnings     []string
+	log          *logger.Logger
+	workspaceDir string
 }
 
 // NewValidator creates a new validator
 func NewValidator(cfg *types.AgentConfig, exec *localexec.LocalClient, debug bool) *Validator {
 	fallbackLog, _ := logger.New(debug, "/dev/null")
+	
+	// Get workspace directory from environment or use default
+	workspaceDir := os.Getenv("SHIFTLAUNCH_WORKSPACE")
+	if workspaceDir == "" {
+		workspaceDir = "/opt/shiftlaunch/clusters"
+	}
 
 	return &Validator{
-		cfg:      cfg,
-		exec:     exec,
-		debug:    debug,
-		errors:   []string{},
-		warnings: []string{},
-		log:      fallbackLog,
+		cfg:          cfg,
+		exec:         exec,
+		debug:        debug,
+		errors:       []string{},
+		warnings:     []string{},
+		log:          fallbackLog,
+		workspaceDir: workspaceDir,
 	}
 }
 
@@ -178,6 +187,104 @@ func (v *Validator) validateNetwork() {
 	if len(n.DNSForwarders) == 0 {
 		v.errors = append(v.errors, "network.dns_forwarders is required to prevent DNS resolution loops and ensure internet connectivity")
 	}
+	
+	// Validate VIP is not already configured on the controller (conflict detection)
+	if v.cfg.ManagedServices.LoadBalancer && n.LoadBalancerIP != "" {
+		v.validateVIPNotInUse(n.LoadBalancerIP)
+	}
+}
+
+// validateVIPNotInUse checks if the VIP is already configured on the controller interface
+// or being used by another managed cluster
+func (v *Validator) validateVIPNotInUse(vip string) {
+	iface := v.cfg.Controller.NetworkInterface
+	if iface == "" {
+		return // Can't check without interface name
+	}
+	
+	// Check 1: Is VIP configured on the controller interface?
+	output, err := v.exec.Execute(fmt.Sprintf("ip addr show %s", iface))
+	if err != nil {
+		v.warnings = append(v.warnings, fmt.Sprintf("Could not check if VIP %s is already in use on interface: %v", vip, err))
+	} else if strings.Contains(output, vip+"/") {
+		// VIP is configured - check if it belongs to another cluster
+		conflictingCluster := v.findClusterUsingVIP(vip)
+		if conflictingCluster != "" {
+			v.errors = append(v.errors, fmt.Sprintf(
+				"VIP %s is already in use by cluster '%s'. "+
+				"Please choose a different loadbalancer_ip or delete the conflicting cluster first.",
+				vip, conflictingCluster))
+		} else {
+			v.errors = append(v.errors, fmt.Sprintf(
+				"VIP %s is already configured on interface %s but no managed cluster found using it. "+
+				"Please remove the VIP alias manually or choose a different loadbalancer_ip.",
+				vip, iface))
+		}
+		return
+	}
+	
+	// Check 2: Is VIP defined in any other managed cluster's config?
+	conflictingCluster := v.findClusterUsingVIP(vip)
+	if conflictingCluster != "" {
+		v.errors = append(v.errors, fmt.Sprintf(
+			"VIP %s is already configured for cluster '%s'. "+
+			"Please choose a different loadbalancer_ip.",
+			vip, conflictingCluster))
+	}
+}
+
+// findClusterUsingVIP searches all managed clusters to find if any is using the given VIP
+func (v *Validator) findClusterUsingVIP(vip string) string {
+	// List all directories in workspace
+	entries, err := os.ReadDir(v.workspaceDir)
+	if err != nil {
+		return "" // Can't check, return empty
+	}
+	
+	currentCluster := v.cfg.OpenShift.ClusterName
+	
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		
+		clusterName := entry.Name()
+		
+		// Skip current cluster
+		if clusterName == currentCluster {
+			continue
+		}
+		
+		// Check if cluster is managed (has .managed marker)
+		managedMarker := filepath.Join(v.workspaceDir, clusterName, ".managed")
+		if _, err := os.Stat(managedMarker); os.IsNotExist(err) {
+			continue // Not a managed cluster
+		}
+		
+		// Check if cluster is deleted
+		deletedMarker := filepath.Join(v.workspaceDir, clusterName, ".deleted")
+		if _, err := os.Stat(deletedMarker); err == nil {
+			continue // Cluster is deleted, skip
+		}
+		
+		// Read the cluster's config
+		configPath := filepath.Join(v.workspaceDir, clusterName, "config.yaml")
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			continue // Can't read config
+		}
+		
+		// Simple string search for the VIP (faster than full YAML parse)
+		if strings.Contains(string(data), vip) {
+			// Verify it's actually the loadbalancer_ip field
+			if strings.Contains(string(data), fmt.Sprintf("loadbalancer_ip: \"%s\"", vip)) ||
+			   strings.Contains(string(data), fmt.Sprintf("loadbalancer_ip: %s", vip)) {
+				return clusterName
+			}
+		}
+	}
+	
+	return "" // No conflict found
 }
 
 // validateOpenShift validates OpenShift configuration

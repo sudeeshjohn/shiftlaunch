@@ -9,17 +9,54 @@ import (
 	"time"
 )
 
+// CommandExecution tracks details of each command run
+type CommandExecution struct {
+	Command     string            `json:"command"`      // create, delete, validate, status, etc.
+	StartTime   string            `json:"start_time"`
+	EndTime     string            `json:"end_time,omitempty"`
+	Duration    string            `json:"duration,omitempty"`
+	Status      string            `json:"status"`       // success, failed, in_progress
+	Error       string            `json:"error,omitempty"`
+	User        string            `json:"user"`
+	Hostname    string            `json:"hostname"`
+	PID         int               `json:"pid"`
+	ConfigFile  string            `json:"config_file,omitempty"`
+	Flags       map[string]string `json:"flags,omitempty"`
+	PhasesBefore []string         `json:"phases_before,omitempty"` // Phases completed before this command
+	PhasesAfter  []string         `json:"phases_after,omitempty"`  // Phases completed after this command
+}
+
+// PhaseExecution tracks details of each phase execution
+type PhaseExecution struct {
+	Phase     string `json:"phase"`
+	StartTime string `json:"start_time"`
+	EndTime   string `json:"end_time,omitempty"`
+	Duration  string `json:"duration,omitempty"`
+	Status    string `json:"status"` // success, failed, skipped
+	Error     string `json:"error,omitempty"`
+	Attempts  int    `json:"attempts,omitempty"` // Number of retry attempts
+}
+
 // DeploymentState tracks the progress of the local agent execution
 type DeploymentState struct {
-	ClusterName     string   `json:"cluster_name"`
-	Status          string   `json:"status"` // e.g., "in_progress", "completed", "failed", "deleted"
-	CurrentPhase    string   `json:"current_phase"`
-	CompletedPhases []string `json:"completed_phases"`
-	StartTime       string   `json:"start_time"`
-	EndTime         string   `json:"end_time,omitempty"`
-	Error           string   `json:"error,omitempty"`
-	Locked          bool     `json:"locked"` // Indicates if deployment is currently running
-	LockTime        string   `json:"lock_time,omitempty"`
+	ClusterName      string              `json:"cluster_name"`
+	Status           string              `json:"status"` // e.g., "in_progress", "completed", "failed", "deleted"
+	CurrentPhase     string              `json:"current_phase"`
+	CompletedPhases  []string            `json:"completed_phases"`
+	StartTime        string              `json:"start_time"`
+	EndTime          string              `json:"end_time,omitempty"`
+	Error            string              `json:"error,omitempty"`
+	Locked           bool                `json:"locked"` // Indicates if deployment is currently running
+	LockTime         string              `json:"lock_time,omitempty"`
+	
+	// Enhanced tracking
+	CommandHistory   []CommandExecution  `json:"command_history,omitempty"`
+	PhaseHistory     []PhaseExecution    `json:"phase_history,omitempty"`
+	ConfigBackups    []string            `json:"config_backups,omitempty"`    // List of config backup files
+	LastConfigUpdate string              `json:"last_config_update,omitempty"`
+	TotalDuration    string              `json:"total_duration,omitempty"`
+	ResumeCount      int                 `json:"resume_count,omitempty"`      // Number of times resumed
+	Version          string              `json:"version,omitempty"`           // ShiftLaunch version
 }
 
 // StateManager handles state file operations with locking and backup
@@ -73,29 +110,28 @@ func (sm *StateManager) AcquireLock() error {
 			// Stale lock, remove it
 			os.Remove(lockPath)
 		} else {
+			// Lock is fresh - another process is using it
 			return fmt.Errorf("cluster '%s' is locked by another process (lock acquired at %s). If you're sure no other deployment is running, remove %s manually",
 				sm.clusterName, info.ModTime().Format(time.RFC3339), lockPath)
 		}
 	}
 
-	// Create lock file with exclusive access
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+	// Try to open existing lock file or create new one
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
-		if os.IsExist(err) {
-			return fmt.Errorf("cluster '%s' is locked by another process. If you're sure no other deployment is running, remove %s manually",
-				sm.clusterName, lockPath)
-		}
-		return fmt.Errorf("failed to create lock file: %w", err)
+		return fmt.Errorf("failed to open lock file: %w", err)
 	}
 
-	// Apply file lock (advisory lock)
+	// Apply file lock (advisory lock) - this will fail if another process holds it
 	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		lockFile.Close()
-		os.Remove(lockPath)
-		return fmt.Errorf("failed to acquire file lock: %w", err)
+		return fmt.Errorf("cluster '%s' is locked by another process. If you're sure no other deployment is running, remove %s manually",
+			sm.clusterName, lockPath)
 	}
 
-	// Write lock metadata
+	// Truncate and write lock metadata
+	lockFile.Truncate(0)
+	lockFile.Seek(0, 0)
 	lockData := fmt.Sprintf("Locked at: %s\nPID: %d\n", time.Now().Format(time.RFC3339), os.Getpid())
 	lockFile.WriteString(lockData)
 	lockFile.Sync()
@@ -213,6 +249,31 @@ func (sm *StateManager) MarkManaged() error {
 func (sm *StateManager) IsManaged() bool {
 	_, err := os.Stat(sm.GetManagedMarkerPath())
 	return err == nil
+}
+
+// AddCommandExecution adds a command execution record to the state
+func (sm *StateManager) AddCommandExecution(state *DeploymentState, cmd CommandExecution) {
+	if state.CommandHistory == nil {
+		state.CommandHistory = []CommandExecution{}
+	}
+	state.CommandHistory = append(state.CommandHistory, cmd)
+}
+
+// AddPhaseExecution adds a phase execution record to the state
+func (sm *StateManager) AddPhaseExecution(state *DeploymentState, phase PhaseExecution) {
+	if state.PhaseHistory == nil {
+		state.PhaseHistory = []PhaseExecution{}
+	}
+	state.PhaseHistory = append(state.PhaseHistory, phase)
+}
+
+// AddConfigBackup records a config backup file
+func (sm *StateManager) AddConfigBackup(state *DeploymentState, backupPath string) {
+	if state.ConfigBackups == nil {
+		state.ConfigBackups = []string{}
+	}
+	state.ConfigBackups = append(state.ConfigBackups, backupPath)
+	state.LastConfigUpdate = time.Now().Format(time.RFC3339)
 }
 
 // Legacy functions for backward compatibility

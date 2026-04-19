@@ -101,24 +101,31 @@ func (c *AgentConfig) IsSNO() bool {
 }
 
 // GetAllNodes returns pointers to all node configs so the Orchestrator/HMC can inject MAC addresses
+// If SNO is defined, it ONLY returns SNO nodes and ignores bootstrap/masters/workers
 func (c *AgentConfig) GetAllNodes() []*NodeConfig {
 	var nodes []*NodeConfig
 	
-	for i := range c.Nodes.SNO { 
-		c.Nodes.SNO[i].Role = "sno"
-		nodes = append(nodes, &c.Nodes.SNO[i]) 
+	// If SNO is defined, ONLY return SNO nodes
+	if c.IsSNO() {
+		for i := range c.Nodes.SNO {
+			c.Nodes.SNO[i].Role = "sno"
+			nodes = append(nodes, &c.Nodes.SNO[i])
+		}
+		return nodes
 	}
-	for i := range c.Nodes.Bootstrap { 
+	
+	// Otherwise, return multi-node topology
+	for i := range c.Nodes.Bootstrap {
 		c.Nodes.Bootstrap[i].Role = "bootstrap"
-		nodes = append(nodes, &c.Nodes.Bootstrap[i]) 
+		nodes = append(nodes, &c.Nodes.Bootstrap[i])
 	}
-	for i := range c.Nodes.Masters { 
+	for i := range c.Nodes.Masters {
 		c.Nodes.Masters[i].Role = "master"
-		nodes = append(nodes, &c.Nodes.Masters[i]) 
+		nodes = append(nodes, &c.Nodes.Masters[i])
 	}
-	for i := range c.Nodes.Workers { 
+	for i := range c.Nodes.Workers {
 		c.Nodes.Workers[i].Role = "worker"
-		nodes = append(nodes, &c.Nodes.Workers[i]) 
+		nodes = append(nodes, &c.Nodes.Workers[i])
 	}
 	
 	return nodes

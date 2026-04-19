@@ -31,9 +31,15 @@ func (o *Orchestrator) Teardown() error {
 
 	o.logger.Info("🛑 Initiating Soft Teardown", "cluster", o.cfg.OpenShift.ClusterName)
 
-	// 1. Power off LPARs via HMC (DO NOT DELETE LPARs - BYOI Rule)
-	provider, err := compute.NewProvider(o.cfg, o.logger, o.debug)
-	if err == nil {
+	// Phase 1: Power off LPARs
+	phaseExec := o.startPhase("teardown_poweroff")
+	var phaseErr error
+	func() {
+		provider, err := compute.NewProvider(o.cfg, o.logger, o.debug)
+		if err != nil {
+			phaseErr = fmt.Errorf("failed to initialize compute provider: %w", err)
+			return
+		}
 		defer func() {
 			if hmcProvider, ok := provider.(*compute.HMCProvider); ok {
 				hmcProvider.Cleanup()
@@ -43,47 +49,61 @@ func (o *Orchestrator) Teardown() error {
 		o.logger.Info("Powering off LPARs...")
 		if err := provider.PowerOffNodes(context.Background()); err != nil {
 			o.logger.Warn("Failed to power off some LPARs", "error", err)
+			phaseErr = err
 		}
-	}
+	}()
+	o.endPhase(phaseExec, phaseErr)
 
-	// 2. Clean up local services
-	o.logger.Info("Cleaning up local network configurations...")
+	// Phase 2: Clean up local services
+	phaseExec = o.startPhase("teardown_services")
+	phaseErr = nil
+	func() {
+		o.logger.Info("Cleaning up local network configurations...")
 
-	if o.cfg.ManagedServices.DNS || o.cfg.ManagedServices.DHCP || o.cfg.ManagedServices.PXE {
-		dnsmasq := services.NewDNSmasqManager(o.cfg, o.executor)
-		dnsmasq.Cleanup()
-	}
+		if o.cfg.ManagedServices.DNS || o.cfg.ManagedServices.DHCP || o.cfg.ManagedServices.PXE {
+			dnsmasq := services.NewDNSmasqManager(o.cfg, o.daemonCfg, o.executor)
+			dnsmasq.Cleanup()
+		}
 
-	if o.cfg.ManagedServices.LoadBalancer {
-		o.executor.Execute(fmt.Sprintf("sudo rm -f /etc/haproxy/conf.d/10-%s.cfg", o.cfg.OpenShift.ClusterName))
-		o.executor.SystemctlRestart("haproxy")
+		if o.cfg.ManagedServices.LoadBalancer {
+			o.executor.Execute(fmt.Sprintf("sudo rm -f /etc/haproxy/conf.d/10-%s.cfg", o.cfg.OpenShift.ClusterName))
+			o.executor.SystemctlRestart("haproxy")
 
-		o.logger.Info("Removing VIP alias from controller network interface...")
-		
-		// Use the NetworkManager to cleanly prune the IP from the connection profile
-		netMgr := controller.NewNetworkManager(o.executor, o.debug, o.logger)
-		vip := o.cfg.Network.LoadBalancerIP
-		iface := o.cfg.Controller.NetworkInterface
-		cidr := o.cfg.Network.MachineCIDR
-		ctrlIP := o.cfg.Controller.IP
-
-		if err := netMgr.RemoveVIPAlias(iface, vip, cidr, ctrlIP); err != nil {
-			o.logger.Warn("Failed to cleanly remove VIP alias via nmcli", "error", err)
+			o.logger.Info("Removing VIP alias from controller network interface...")
 			
-			// Fallback: Force remove it from the live interface using exact CIDR prefix
-			prefix := controller.ExtractCIDRPrefix(cidr)
-			o.executor.Execute(fmt.Sprintf("sudo ip addr del %s/%s dev %s", vip, prefix, iface))
-		}
-	}
-	// 3. Clean up HTTP Server
-	httpServer := services.NewHTTPServerManager(o.cfg, o.executor, o.logger)
-	httpServer.Cleanup()
+			// Use the NetworkManager to cleanly prune the IP from the connection profile
+			netMgr := controller.NewNetworkManager(o.executor, o.debug, o.logger)
+			vip := o.cfg.Network.LoadBalancerIP
+			iface := o.cfg.Controller.NetworkInterface
+			cidr := o.cfg.Network.MachineCIDR
+			ctrlIP := o.cfg.Controller.IP
 
-	// 4. Mark the workspace as deleted instead of wiping it
-	o.logger.Info("Archiving local cluster workspace...")
-	if err := o.stateManager.MarkDeleted(); err != nil {
-		o.logger.Warn("Failed to create .deleted marker", "error", err)
-	}
+			if err := netMgr.RemoveVIPAlias(iface, vip, cidr, ctrlIP); err != nil {
+				o.logger.Warn("Failed to cleanly remove VIP alias via nmcli", "error", err)
+				
+				// Fallback: Force remove it from the live interface using exact CIDR prefix
+				prefix := controller.ExtractCIDRPrefix(cidr)
+				o.executor.Execute(fmt.Sprintf("sudo ip addr del %s/%s dev %s", vip, prefix, iface))
+			}
+		}
+		
+		// Clean up HTTP Server
+		httpServer := services.NewHTTPServerManager(o.cfg, o.executor, o.logger)
+		httpServer.Cleanup()
+	}()
+	o.endPhase(phaseExec, phaseErr)
+
+	// Phase 3: Mark workspace as deleted
+	phaseExec = o.startPhase("teardown_finalize")
+	phaseErr = nil
+	func() {
+		o.logger.Info("Archiving local cluster workspace...")
+		if err := o.stateManager.MarkDeleted(); err != nil {
+			o.logger.Warn("Failed to create .deleted marker", "error", err)
+			phaseErr = err
+		}
+	}()
+	o.endPhase(phaseExec, phaseErr)
 
 	// Update State
 	o.state.Status = "deleted"

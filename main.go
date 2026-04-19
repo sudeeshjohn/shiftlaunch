@@ -10,10 +10,12 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/sudeeshjohn/shiftlaunch/cmd"
+	"github.com/sudeeshjohn/shiftlaunch/config"
 	"github.com/sudeeshjohn/shiftlaunch/infra/compute"
 	"github.com/sudeeshjohn/shiftlaunch/infra/controller"
 	"github.com/sudeeshjohn/shiftlaunch/localexec"
@@ -23,7 +25,7 @@ import (
 	"github.com/sudeeshjohn/shiftlaunch/validation"
 )
 
-const version = "0.2.0-local-agent"
+const version = "0.3.0-byoi-agent"
 
 func main() {
 	// Define command-line flags
@@ -31,7 +33,6 @@ func main() {
 	configFile := flag.String("config", "config.yaml", "Path to agent configuration file")
 	clusterName := flag.String("cluster", "", "Cluster name override")
 	debug := flag.Bool("debug", false, "Enable debug output to terminal (all logs always saved to workspace)")
-	resume := flag.Bool("resume", false, "Resume deployment from last failed phase")
 	flag.Parse()
 
 	// --- NEW: Allow positional arguments to act as the command ---
@@ -78,15 +79,21 @@ func main() {
 		os.Exit(130)
 	}()
 
+	// --- NEW: Load the Agent Daemon configuration ---
+	daemonCfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("Failed to initialize daemon configuration: %v", err)
+	}
+
 	// ---------------------------------------------------------
 	// Configuration Loading & Workspace Setup
 	// ---------------------------------------------------------
 	var cfg types.AgentConfig
 	configPath := *configFile
 
-	// If deleting, checking status, or resuming without a provided config, look in the workspace
-	if (*command == "delete" || *command == "status" || (*command == "create" && *resume)) && *clusterName != "" {
-		workspaceConfig := filepath.Join("/opt/shiftlaunch/clusters", *clusterName, "config.yaml")
+	// If deleting or checking status, look for config in the workspace
+	if (*command == "delete" || *command == "status") && *clusterName != "" {
+		workspaceConfig := filepath.Join(daemonCfg.Paths.WorkspaceDir, *clusterName, "config.yaml")
 		if _, err := os.Stat(workspaceConfig); err == nil {
 			configPath = workspaceConfig
 		}
@@ -98,6 +105,13 @@ func main() {
 	}
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		log.Fatalf("Failed to parse YAML configuration: %v", err)
+	}
+	
+	// Debug: Log config source and node counts for delete/status commands
+	if *command == "delete" || *command == "status" {
+		log.Printf("Loaded config from: %s", configPath)
+		log.Printf("Config validation: SNO=%v, Bootstrap=%d, Masters=%d, Workers=%d",
+			cfg.IsSNO(), len(cfg.Nodes.Bootstrap), len(cfg.Nodes.Masters), len(cfg.Nodes.Workers))
 	}
 	// --- NEW: Auto-Discover Controller IP ---
 	if cfg.Controller.NetworkInterface != "" {
@@ -121,7 +135,7 @@ func main() {
 		log.Fatalf("Cluster name must be specified in config or via -cluster flag")
 	}
 
-	workspaceDir := filepath.Join("/opt/shiftlaunch/clusters", *clusterName)
+	workspaceDir := filepath.Join(daemonCfg.Paths.WorkspaceDir, *clusterName)
 	if err := os.MkdirAll(workspaceDir, 0755); err != nil {
 		log.Fatalf("Failed to create workspace directory: %v", err)
 	}
@@ -129,7 +143,58 @@ func main() {
 	// Save a master copy of the config to the workspace for future resume/delete/status commands
 	if *command == "create" {
 		os.MkdirAll(workspaceDir, 0755)
-		os.WriteFile(filepath.Join(workspaceDir, "config.yaml"), data, 0644)
+		
+		// Check if cluster is already managed by ShiftLaunch
+		managedMarker := filepath.Join(workspaceDir, ".managed")
+		deletedMarker := filepath.Join(workspaceDir, ".deleted")
+		existingConfigPath := filepath.Join(workspaceDir, "config.yaml")
+		
+		// Check if cluster was deleted - if so, allow re-creation
+		if _, err := os.Stat(deletedMarker); err == nil {
+			log.Printf("Cluster '%s' was previously deleted. Clearing markers for fresh deployment...", *clusterName)
+			os.Remove(deletedMarker)
+			os.Remove(managedMarker)
+		}
+		
+		// If .managed marker exists and user is providing a different config file, fail
+		if _, err := os.Stat(managedMarker); err == nil {
+			// Cluster is already managed
+			if *configFile != existingConfigPath {
+				// User is trying to create with a different config file
+				log.Fatalf("Error: Cluster '%s' is already managed by ShiftLaunch.\n"+
+					"  Workspace: %s\n"+
+					"  To resume deployment: ./shiftlaunch -command create -cluster %s\n"+
+					"  To delete cluster: ./shiftlaunch -command delete -cluster %s\n"+
+					"  To check status: ./shiftlaunch -command status -cluster %s",
+					*clusterName, workspaceDir, *clusterName, *clusterName, *clusterName)
+			}
+			// User is resuming with same cluster name (no config file specified)
+			// This is allowed - the existing config will be used
+			log.Printf("Resuming managed cluster: %s", *clusterName)
+		} else {
+			// New cluster - save the config
+			var configBackupPath string
+			if _, err := os.Stat(existingConfigPath); err == nil {
+				// Config exists but no .managed marker (shouldn't happen, but handle it)
+				timestamp := time.Now().Format("20060102-150405")
+				configBackupPath = filepath.Join(workspaceDir, fmt.Sprintf("config.yaml.backup.%s", timestamp))
+				if err := os.Rename(existingConfigPath, configBackupPath); err != nil {
+					log.Printf("Warning: Failed to backup existing config: %v", err)
+				} else {
+					log.Printf("Backed up existing config to: %s", configBackupPath)
+					
+					// Record backup in state
+					stateManager := types.NewStateManager(*clusterName)
+					if state, err := stateManager.LoadState(); err == nil && state != nil {
+						stateManager.AddConfigBackup(state, configBackupPath)
+						stateManager.SaveState(state)
+					}
+				}
+			}
+			
+			// Write new config
+			os.WriteFile(existingConfigPath, data, 0644)
+		}
 	}
 
 	// Setup logging
@@ -143,13 +208,80 @@ func main() {
 	}
 
 	orchMutex.Lock()
-	orch := orchestrator.NewOrchestrator(&cfg, appLogger, workspaceDir, *debug)
+	orch := orchestrator.NewOrchestrator(&cfg, daemonCfg, appLogger, workspaceDir, *debug)
 	orchMutex.Unlock()
+
+	// ---------------------------------------------------------
+	// Auto-Resume Detection & Command Tracking
+	// ---------------------------------------------------------
+	autoResume := false
+	stateManager := types.NewStateManager(*clusterName)
+	var phasesBefore []string
+	
+	if *command == "create" {
+		if state, err := stateManager.LoadState(); err == nil && state != nil {
+			phasesBefore = append([]string{}, state.CompletedPhases...)
+			if state.Status == "in_progress" && len(state.CompletedPhases) > 0 {
+				autoResume = true
+				state.ResumeCount++
+				stateManager.SaveState(state)
+				appLogger.Info("Detected existing deployment. Automatically resuming from last phase...",
+					"cluster", *clusterName,
+					"last_phase", state.CurrentPhase,
+					"completed_phases", len(state.CompletedPhases),
+					"resume_count", state.ResumeCount)
+			}
+		}
+	}
+	
+	// Record command execution start
+	hostname, _ := os.Hostname()
+	username := os.Getenv("USER")
+	if username == "" {
+		username = os.Getenv("USERNAME")
+	}
+	
+	cmdExec := types.CommandExecution{
+		Command:      *command,
+		StartTime:    time.Now().Format(time.RFC3339),
+		Status:       "in_progress",
+		User:         username,
+		Hostname:     hostname,
+		PID:          os.Getpid(),
+		ConfigFile:   *configFile,
+		PhasesBefore: phasesBefore,
+		Flags: map[string]string{
+			"debug":   fmt.Sprintf("%v", *debug),
+			"cluster": *clusterName,
+		},
+	}
 
 	// ---------------------------------------------------------
 	// CLI Routing
 	// ---------------------------------------------------------
-	if err := runCLI(ctx, orch, &cfg, *command, *debug, *resume); err != nil {
+	cmdStartTime := time.Now()
+	err = runCLI(ctx, orch, &cfg, *command, *debug, autoResume)
+	cmdDuration := time.Since(cmdStartTime)
+	
+	// Record command execution end
+	cmdExec.EndTime = time.Now().Format(time.RFC3339)
+	cmdExec.Duration = cmdDuration.String()
+	if err != nil {
+		cmdExec.Status = "failed"
+		cmdExec.Error = err.Error()
+	} else {
+		cmdExec.Status = "success"
+	}
+	
+	// Get phases after execution
+	if state, loadErr := stateManager.LoadState(); loadErr == nil && state != nil {
+		cmdExec.PhasesAfter = append([]string{}, state.CompletedPhases...)
+		state.Version = version
+		stateManager.AddCommandExecution(state, cmdExec)
+		stateManager.SaveState(state)
+	}
+	
+	if err != nil {
 		fmt.Printf("\nError: %v\n", err)
 		os.Exit(1)
 	}
@@ -216,7 +348,8 @@ func printUsage() {
 	fmt.Println("        Cluster name override")
 	fmt.Println("  -debug")
 	fmt.Println("        Enable debug output to terminal")
-	fmt.Println("  -resume")
-	fmt.Println("        Resume cluster creation from last failed phase")
+	fmt.Println()
+	fmt.Println("Note: The 'create' command automatically resumes from the last completed phase")
+	fmt.Println("      if an existing deployment is detected for the specified cluster.")
 	fmt.Println()
 }

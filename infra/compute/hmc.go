@@ -37,7 +37,8 @@ func (h *HMCProvider) DiscoverMetadata(ctx context.Context) error {
 		}
 
 		// 2. Get LPAR UUID
-		lpars, err := h.hmcClient.GetLogicalPartitionsQuickAll(sysUUID, true)
+		// Pass false for debug to avoid logging all LPARs on the system
+		lpars, err := h.hmcClient.GetLogicalPartitionsQuickAll(sysUUID, false)
 		if err != nil { return err }
 		
 		for _, l := range lpars {
@@ -50,15 +51,17 @@ func (h *HMCProvider) DiscoverMetadata(ctx context.Context) error {
 			return fmt.Errorf("LPAR '%s' not found on system %s", node.ExistingLPARName, node.SystemName)
 		}
 
-		// 3. NEW: Get LPAR Profile UUID (Required for Netboot)
-		profiles, err := h.hmcClient.GetLogicalPartitionProfiles(node.UUID, true)
+		// 3. Get LPAR Profile UUID (Required for Netboot)
+		// Pass false for debug to avoid excessive logging
+		profiles, err := h.hmcClient.GetLogicalPartitionProfiles(node.UUID, false)
 		if err != nil || len(profiles) == 0 {
 			return fmt.Errorf("no profile found for LPAR %s. A profile is required for network boot", node.ExistingLPARName)
 		}
 		node.ProfileUUID = profiles[0].UUID
 
 		// 4. Get MAC and Location Code for DHCP/PXE
-		adapters, err := h.hmcClient.GetClientNetworkAdapters(sysUUID, node.UUID, true)
+		// Pass false for debug to avoid excessive logging
+		adapters, err := h.hmcClient.GetClientNetworkAdapters(sysUUID, node.UUID, false)
 		if err != nil || len(adapters) == 0 {
 			return fmt.Errorf("no network adapter found on LPAR %s", node.ExistingLPARName)
 		}
@@ -66,7 +69,7 @@ func (h *HMCProvider) DiscoverMetadata(ctx context.Context) error {
 		node.MACAddress = hmc.FormatMACAddress(adapters[0].MACAddress)
 		node.LocationCode = adapters[0].LocationCode
 
-		h.logger.Info("✓ Discovered", "lpar", node.ExistingLPARName, "mac", node.MACAddress)
+		h.logger.Info("✓ Discovered", "lpar", node.ExistingLPARName, "mac", node.MACAddress, "uuid", node.UUID)
 	}
 	return nil
 }
@@ -106,8 +109,8 @@ func (h *HMCProvider) BootNode(ctx context.Context, node *types.NodeConfig) erro
 			}
 			time.Sleep(5 * time.Second)
 		} else {
-			h.logger.Warn(fmt.Sprintf("Failed to get LPAR details (attempt %d/%d). Retrying in 10s...", i+1, maxRetries), "error", err)
-			time.Sleep(10 * time.Second)
+			h.logger.Warn(fmt.Sprintf("Failed to get LPAR details (attempt %d/%d). Retrying in 5s...", i+1, maxRetries), "error", err)
+			time.Sleep(5 * time.Second)
 		}
 	}
 
@@ -155,8 +158,8 @@ func (h *HMCProvider) BootNode(ctx context.Context, node *types.NodeConfig) erro
 		return fmt.Errorf("failed to power on LPAR for adapter registration: %w", err)
 	}
 
-	h.logger.Info("⏳ Waiting 10 seconds for LPAR to reach Open Firmware and register adapters...")
-	time.Sleep(10 * time.Second)
+	h.logger.Info("⏳ Waiting 5 seconds for LPAR to reach Open Firmware and register adapters...")
+	time.Sleep(5 * time.Second)
 
 	h.logger.Info("Powering off LPAR for profile query...")
 	_, err = h.hmcClient.PowerOffPartition(node.UUID, "Immediate", false, true)
@@ -202,8 +205,8 @@ func (h *HMCProvider) BootNode(ctx context.Context, node *types.NodeConfig) erro
 	// =========================================================================
 	// STEP 3: Network boot using authoritative location code
 	// =========================================================================
-	h.logger.Info("⏳ Waiting 10 seconds for LPAR to initialize before initiating netboot...")
-	time.Sleep(10 * time.Second)
+	h.logger.Info("⏳ Waiting 5 seconds for LPAR to initialize before initiating netboot...")
+	time.Sleep(5 * time.Second)
 
 	// --- CRITICAL FIX: Aggressively drop the terminal session before netboot ---
 	h.logger.Info("Ensuring virtual terminal is closed before netboot...")
@@ -245,28 +248,39 @@ func (h *HMCProvider) BootNode(ctx context.Context, node *types.NodeConfig) erro
 func (h *HMCProvider) PowerOffNodes(ctx context.Context) error {
 	// We must discover metadata first to populate the node.UUID fields during a teardown run
 	h.logger.Info("Fetching LPAR UUIDs from HMC for teardown...")
+	
+	nodes := h.cfg.GetAllNodes()
+	h.logger.Info("Found nodes to power off", "count", len(nodes))
+	
 	if err := h.DiscoverMetadata(ctx); err != nil {
 		h.logger.Warn("Failed to discover some metadata during teardown, some LPARs may not power off", "error", err)
 	}
 
 	h.logger.Info("Sending shutdown signals to all managed LPARs...")
-	for _, node := range h.cfg.GetAllNodes() {
+	powerOffCount := 0
+	skippedCount := 0
+	
+	for _, node := range nodes {
 		if node.UUID == "" {
 			h.logger.Warn("Skipping power off for LPAR (UUID not found)", "lpar", node.ExistingLPARName)
+			skippedCount++
 			continue
 		}
 
-		h.logger.Info("Attempting to power off LPAR", "lpar", node.ExistingLPARName)
+		h.logger.Info("Attempting to power off LPAR", "lpar", node.ExistingLPARName, "uuid", node.UUID)
 
 		// Send the immediate power off signal.
 		// If the LPAR is already off, the HMC returns an error which we catch and log as debug.
 		_, err := h.hmcClient.PowerOffPartition(node.UUID, "Immediate", false, true)
 		if err != nil {
-			h.logger.Debug("LPAR power off returned an error (likely already off)", "lpar", node.ExistingLPARName, "error", err)
+			h.logger.Warn("LPAR power off returned an error (may already be off)", "lpar", node.ExistingLPARName, "error", err)
 		} else {
 			h.logger.Info("✓ Power off signal accepted", "lpar", node.ExistingLPARName)
+			powerOffCount++
 		}
 	}
+	
+	h.logger.Info("Power off complete", "powered_off", powerOffCount, "skipped", skippedCount, "total", len(nodes))
 	return nil
 }
 

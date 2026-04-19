@@ -1,0 +1,15 @@
+# ./agent.yaml
+network:
+  http_port: 8080
+
+paths:
+  workspace_dir: "/opt/shiftlaunch/clusters"
+  dnsmasq_conf_dir: "/etc/dnsmasq.d"
+  haproxy_conf_dir: "/etc/haproxy/conf.d"
+  httpd_doc_root: "/var/www/html"
+  tftp_root: "/var/lib/tftpboot"
+  install_device: "/dev/sda"
+
+timeouts:
+  hmc_api_retries: 3
+  download_timeout_sec: 1800

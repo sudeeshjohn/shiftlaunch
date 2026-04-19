@@ -8,7 +8,8 @@ import (
 	"strings"
 	"time"
 
-	compute "github.com/sudeeshjohn/shiftlaunch/infra/compute" // <--- Add the 'compute' alias here
+	"github.com/sudeeshjohn/shiftlaunch/config"
+	compute "github.com/sudeeshjohn/shiftlaunch/infra/compute"
 	"github.com/sudeeshjohn/shiftlaunch/infra/controller"
 	"github.com/sudeeshjohn/shiftlaunch/localexec"
 	"github.com/sudeeshjohn/shiftlaunch/logger"
@@ -19,6 +20,7 @@ import (
 // Orchestrator manages the local execution of the BYOI Boot Agent
 type Orchestrator struct {
 	cfg          *types.AgentConfig
+	daemonCfg    *config.AgentDaemonConfig
 	logger       *logger.Logger
 	executor     *localexec.LocalClient
 	workspaceDir string
@@ -28,7 +30,7 @@ type Orchestrator struct {
 }
 
 // NewOrchestrator initializes the phase engine and loads/creates the state tracker
-func NewOrchestrator(cfg *types.AgentConfig, log *logger.Logger, workspaceDir string, debug bool) *Orchestrator {
+func NewOrchestrator(cfg *types.AgentConfig, daemonCfg *config.AgentDaemonConfig, log *logger.Logger, workspaceDir string, debug bool) *Orchestrator {
 	stateManager := types.NewStateManager(cfg.OpenShift.ClusterName)
 	
 	// Attempt to load existing state for resumes
@@ -45,6 +47,7 @@ func NewOrchestrator(cfg *types.AgentConfig, log *logger.Logger, workspaceDir st
 
 	return &Orchestrator{
 		cfg:          cfg,
+		daemonCfg:    daemonCfg,
 		logger:       log,
 		executor:     localexec.NewLocalClient(log),
 		workspaceDir: workspaceDir,
@@ -65,6 +68,38 @@ func (o *Orchestrator) saveState(phase string) {
 		o.state.CompletedPhases = append(o.state.CompletedPhases, phase)
 	}
 	_ = o.stateManager.SaveState(o.state)
+}
+
+// startPhase records the start of a phase execution
+func (o *Orchestrator) startPhase(phase string) *types.PhaseExecution {
+	phaseExec := &types.PhaseExecution{
+		Phase:     phase,
+		StartTime: time.Now().Format(time.RFC3339),
+		Status:    "in_progress",
+	}
+	return phaseExec
+}
+
+// endPhase records the completion of a phase execution
+func (o *Orchestrator) endPhase(phaseExec *types.PhaseExecution, err error) {
+	phaseExec.EndTime = time.Now().Format(time.RFC3339)
+	
+	// Calculate duration
+	if startTime, parseErr := time.Parse(time.RFC3339, phaseExec.StartTime); parseErr == nil {
+		if endTime, parseErr := time.Parse(time.RFC3339, phaseExec.EndTime); parseErr == nil {
+			phaseExec.Duration = endTime.Sub(startTime).String()
+		}
+	}
+	
+	if err != nil {
+		phaseExec.Status = "failed"
+		phaseExec.Error = err.Error()
+	} else {
+		phaseExec.Status = "success"
+	}
+	
+	o.stateManager.AddPhaseExecution(o.state, *phaseExec)
+	o.stateManager.SaveState(o.state)
 }
 
 // Deploy executes the linear installation pipeline
@@ -102,233 +137,294 @@ func (o *Orchestrator) Deploy(resume bool) error {
 
 	o.logger.Info("🚀 Starting ShiftLaunch Local Agent Orchestration...", "cluster", o.cfg.OpenShift.ClusterName)
 
+	// --- PHASE 0: VALIDATION (Only for fresh deployments) ---
+	if !resume || len(o.state.CompletedPhases) == 0 {
+		o.logger.Info("\n[Phase 0] Pre-Deployment Validation")
+		
+		// Validate VIP is not in use
+		if o.cfg.ManagedServices.LoadBalancer && o.cfg.Network.LoadBalancerIP != "" {
+			o.logger.Info("Validating VIP availability...", "vip", o.cfg.Network.LoadBalancerIP)
+			
+			// Check if VIP is configured on interface
+			iface := o.cfg.Controller.NetworkInterface
+			if iface != "" {
+				output, err := o.executor.Execute(fmt.Sprintf("ip addr show %s", iface))
+				if err == nil && strings.Contains(output, o.cfg.Network.LoadBalancerIP+"/") {
+					// VIP is configured - check which cluster is using it
+					conflictingCluster := o.findClusterUsingVIP(o.cfg.Network.LoadBalancerIP)
+					if conflictingCluster != "" {
+						return fmt.Errorf("VIP %s is already in use by cluster '%s'. Please choose a different loadbalancer_ip or delete the conflicting cluster first",
+							o.cfg.Network.LoadBalancerIP, conflictingCluster)
+					}
+					return fmt.Errorf("VIP %s is already configured on interface %s. Please remove the VIP alias manually or choose a different loadbalancer_ip",
+						o.cfg.Network.LoadBalancerIP, iface)
+				}
+			}
+			
+			// Check if VIP is defined in another cluster's config
+			conflictingCluster := o.findClusterUsingVIP(o.cfg.Network.LoadBalancerIP)
+			if conflictingCluster != "" {
+				return fmt.Errorf("VIP %s is already configured for cluster '%s'. Please choose a different loadbalancer_ip",
+					o.cfg.Network.LoadBalancerIP, conflictingCluster)
+			}
+			
+			o.logger.Info("✓ VIP is available", "vip", o.cfg.Network.LoadBalancerIP)
+		}
+	}
+
 // --- PHASE 1: DISCOVERY ---
 	if !resume || !contains(o.state.CompletedPhases, "discovery") {
+		phaseExec := o.startPhase("discovery")
 		o.logger.Info("\n[Phase 1] Pre-Flight & HMC Discovery")
 		
-		provider, err := compute.NewProvider(o.cfg, o.logger, o.debug)
-		if err != nil {
-			return fmt.Errorf("failed to initialize compute provider: %w", err)
-		}
-		defer func() {
-			if hmcProvider, ok := provider.(*compute.HMCProvider); ok {
-				hmcProvider.Cleanup()
+		var phaseErr error
+		func() {
+			provider, err := compute.NewProvider(o.cfg, o.logger, o.debug)
+			if err != nil {
+				phaseErr = fmt.Errorf("failed to initialize compute provider: %w", err)
+				return
+			}
+			defer func() {
+				if hmcProvider, ok := provider.(*compute.HMCProvider); ok {
+					hmcProvider.Cleanup()
+				}
+			}()
+			
+			if err := provider.DiscoverMetadata(context.Background()); err != nil {
+				phaseErr = fmt.Errorf("failed to discover LPAR metadata from HMC: %w", err)
+				return
 			}
 		}()
 		
-		if err := provider.DiscoverMetadata(context.Background()); err != nil {
-			return fmt.Errorf("failed to discover LPAR metadata from HMC: %w", err)
+		o.endPhase(phaseExec, phaseErr)
+		if phaseErr != nil {
+			return phaseErr
 		}
-		
-// --- NEW: Print Comprehensive Discovered Metadata Summary ---
-		fmt.Println("\n=========================================================================================================================================================")
-		fmt.Println(" DISCOVERED LPAR METADATA SUMMARY")
-		fmt.Println("=========================================================================================================================================================")
-		fmt.Printf("%-10s | %-20s | %-15s | %-18s | %-25s | %-17s | %-20s | %s\n",
-			"ROLE", "HOSTNAME", "IP ADDRESS", "SYSTEM NAME", "LPAR NAME", "MAC ADDRESS", "LOCATION CODE", "UUID")
-		fmt.Println(strings.Repeat("-", 153))
-		
-		for _, node := range o.cfg.GetAllNodes() {
-			mac := node.MACAddress
-			if mac == "" {
-				mac = "<pending>"
-			}
-			loc := node.LocationCode
-			if loc == "" {
-				loc = "<pending>"
-			}
-			uuid := node.UUID
-			if uuid == "" {
-				uuid = "<pending>"
-			}
-
-			fmt.Printf("%-10s | %-20s | %-15s | %-18s | %-25s | %-17s | %-20s | %s\n",
-				strings.ToUpper(node.Role),
-				node.Hostname,
-				node.IP,
-				node.SystemName,
-				node.ExistingLPARName,
-				mac,
-				loc,
-				uuid)
-		}
-		fmt.Println(strings.Repeat("-", 153))
-		fmt.Println()
-
 		o.saveState("discovery")
 	}
 	// --- PHASE 2: DOWNLOADS ---
 	if !resume || !contains(o.state.CompletedPhases, "downloads") {
+		phaseExec := o.startPhase("downloads")
 		o.logger.Info("\n[Phase 2] Downloading OpenShift Artifacts")
 		
 		downloader := services.NewDownloader(o.cfg, o.executor, o.logger)
-		if err := downloader.DownloadAll(o.workspaceDir); err != nil {
-			return err
-		}
+		phaseErr := downloader.DownloadAll(o.workspaceDir)
 		
+		o.endPhase(phaseExec, phaseErr)
+		if phaseErr != nil {
+			return phaseErr
+		}
 		o.saveState("downloads")
 	}
 
 	// --- PHASE 3: MANAGED SERVICES ---
 	if !resume || !contains(o.state.CompletedPhases, "services") {
+		phaseExec := o.startPhase("services")
 		o.logger.Info("\n[Phase 3] Configuring Managed Infrastructure Services")
 
-		setup := services.NewControllerSetup(o.cfg, o.executor, o.logger)
-		if err := setup.InstallPackages(); err != nil {
-			return fmt.Errorf("failed to setup controller dependencies: %w", err)
-		}
-		if err := setup.ConfigureFirewall(); err != nil {
-			return fmt.Errorf("failed to configure local firewall: %w", err)
-		}
-
-		if o.cfg.ManagedServices.LoadBalancer {
-			o.logger.Info(" -> Configuring Local HAProxy...")
-
-			// 1. Allow HAProxy to bind to the VIP immediately (fixes the systemd crash)
-			o.executor.Execute("sudo sysctl -w net.ipv4.ip_nonlocal_bind=1")
-			
-			// 2. Allow HAProxy to route OpenShift's custom ports through SELinux
-			o.executor.Execute("sudo setsebool -P haproxy_connect_any 1")
-
-			// 3. Bind the VIP to the controller's physical network interface
-			netMgr := controller.NewNetworkManager(o.executor, o.debug, o.logger)
-			vip := o.cfg.Network.LoadBalancerIP
-			iface := o.cfg.Controller.NetworkInterface
-			cidr := o.cfg.Network.MachineCIDR
-			
-			if err := netMgr.AddVIPAlias(iface, vip, cidr); err != nil {
-				o.logger.Warn("Failed to configure VIP via nmcli. HAProxy will start, but routing may fail.", "error", err)
+		var phaseErr error
+		func() {
+			setup := services.NewControllerSetup(o.cfg, o.executor, o.logger)
+			if err := setup.InstallPackages(); err != nil {
+				phaseErr = fmt.Errorf("failed to setup controller dependencies: %w", err)
+				return
+			}
+			if err := setup.ConfigureFirewall(); err != nil {
+				phaseErr = fmt.Errorf("failed to configure local firewall: %w", err)
+				return
 			}
 
-			// 4. Generate config and start the service
-			if err := services.SetupHAProxy(o.cfg, o.executor); err != nil {
-				return err
+			if o.cfg.ManagedServices.LoadBalancer {
+				o.logger.Info(" -> Configuring Local HAProxy...")
+
+				// 1. Allow HAProxy to bind to the VIP immediately (fixes the systemd crash)
+				o.executor.Execute("sudo sysctl -w net.ipv4.ip_nonlocal_bind=1")
+				
+				// 2. Allow HAProxy to route OpenShift's custom ports through SELinux
+				o.executor.Execute("sudo setsebool -P haproxy_connect_any 1")
+
+				// 3. Bind the VIP to the controller's physical network interface
+				netMgr := controller.NewNetworkManager(o.executor, o.debug, o.logger)
+				vip := o.cfg.Network.LoadBalancerIP
+				iface := o.cfg.Controller.NetworkInterface
+				cidr := o.cfg.Network.MachineCIDR
+				
+				if err := netMgr.AddVIPAlias(iface, vip, cidr); err != nil {
+					o.logger.Warn("Failed to configure VIP via nmcli. HAProxy will start, but routing may fail.", "error", err)
+				}
+
+				// 4. Generate config and start the service
+				if err := services.SetupHAProxy(o.cfg, o.executor); err != nil {
+					phaseErr = err
+					return
+				}
+			} else {
+				o.logger.Info(" -> Skipping HAProxy (User Managed)")
 			}
-		} else {
-			o.logger.Info(" -> Skipping HAProxy (User Managed)")
+
+			dnsmasq := services.NewDNSmasqManager(o.cfg, o.daemonCfg, o.executor)
+
+			if o.cfg.ManagedServices.DNS {
+				o.logger.Info(" -> Configuring Local DNS...")
+				if err := dnsmasq.SetupDNS(); err != nil {
+					phaseErr = err
+					return
+				}
+			} else {
+				o.logger.Info(" -> Skipping DNS (User Managed)")
+			}
+
+			if o.cfg.ManagedServices.DHCP {
+				o.logger.Info(" -> Configuring Local DHCP...")
+				if err := dnsmasq.SetupDHCP(); err != nil {
+					phaseErr = err
+					return
+				}
+			} else {
+				o.logger.Info(" -> Skipping DHCP (User Managed)")
+			}
+
+			if o.cfg.ManagedServices.PXE {
+				o.logger.Info(" -> Configuring Local PXE Service...")
+				if err := dnsmasq.SetupPXEService(); err != nil {
+					phaseErr = err
+					return
+				}
+				o.logger.Info(" -> Staging PXE Artifacts...")
+				if err := dnsmasq.ConfigurePXEBoot(o.workspaceDir); err != nil {
+					phaseErr = err
+					return
+				}
+			} else {
+				o.logger.Info(" -> Skipping PXE (User Managed)")
+			}
+		}()
+
+		o.endPhase(phaseExec, phaseErr)
+		if phaseErr != nil {
+			return phaseErr
 		}
-
-		dnsmasq := services.NewDNSmasqManager(o.cfg, o.executor)
-
-		if o.cfg.ManagedServices.DNS {
-			o.logger.Info(" -> Configuring Local DNS...")
-			if err := dnsmasq.SetupDNS(); err != nil {
-				return err
-			}
-		} else {
-			o.logger.Info(" -> Skipping DNS (User Managed)")
-		}
-
-		if o.cfg.ManagedServices.DHCP {
-			o.logger.Info(" -> Configuring Local DHCP...")
-			if err := dnsmasq.SetupDHCP(); err != nil {
-				return err
-			}
-		} else {
-			o.logger.Info(" -> Skipping DHCP (User Managed)")
-		}
-
-		if o.cfg.ManagedServices.PXE {
-			o.logger.Info(" -> Configuring Local PXE Service...")
-			if err := dnsmasq.SetupPXEService(); err != nil {
-				return err
-			}
-			o.logger.Info(" -> Staging PXE Artifacts...")
-			if err := dnsmasq.ConfigurePXEBoot(o.workspaceDir); err != nil {
-				return err
-			}
-		} else {
-			o.logger.Info(" -> Skipping PXE (User Managed)")
-		}
-
 		o.saveState("services")
 	}
 
 	// --- PHASE 4: IGNITION GENERATION ---
 	if !resume || !contains(o.state.CompletedPhases, "ignition") {
+		phaseExec := o.startPhase("ignition")
 		o.logger.Info("\n[Phase 4] Generating OpenShift Ignition Payload")
 		
-		if err := services.GenerateIgnition(o.cfg, o.executor, o.workspaceDir); err != nil {
-			return err
-		}
+		var phaseErr error
+		func() {
+			if err := services.GenerateIgnition(o.cfg, o.executor, o.workspaceDir); err != nil {
+				phaseErr = err
+				return
+			}
 
-		o.logger.Info(" -> Setting up Local HTTP Server (Port 8080)...")
-		
-		// --- NEW: Configure and Start Apache HTTPD ---
-		if err := services.ConfigureHTTPD(o.executor); err != nil {
-			return err
-		}
+			o.logger.Info(" -> Setting up Local HTTP Server (Port 8080)...")
+			
+			// --- NEW: Configure and Start Apache HTTPD ---
+			if err := services.ConfigureHTTPD(o.executor); err != nil {
+				phaseErr = err
+				return
+			}
 
-		httpServer := services.NewHTTPServerManager(o.cfg, o.executor, o.logger)
-		if err := httpServer.Setup(o.workspaceDir); err != nil {
-			return err
-		}
-		
-		o.logger.Info(" -> Staging files to HTTP Server...")
-		if err := httpServer.StageFiles(o.workspaceDir); err != nil {
-			return err
-		}
+			httpServer := services.NewHTTPServerManager(o.cfg, o.executor, o.logger)
+			if err := httpServer.Setup(o.workspaceDir); err != nil {
+				phaseErr = err
+				return
+			}
+			
+			o.logger.Info(" -> Staging files to HTTP Server...")
+			if err := httpServer.StageFiles(o.workspaceDir); err != nil {
+				phaseErr = err
+				return
+			}
+		}()
 
+		o.endPhase(phaseExec, phaseErr)
+		if phaseErr != nil {
+			return phaseErr
+		}
 		o.saveState("ignition")
 	}
 
 	// --- PHASE 5: BOOT ---
 	if !resume || !contains(o.state.CompletedPhases, "boot") {
+		phaseExec := o.startPhase("boot")
 		o.logger.Info("\n[Phase 5] Initiating Cluster Boot")
 		
-		provider, err := compute.NewProvider(o.cfg, o.logger, o.debug)
-		if err != nil {
-			return err
-		}
-		// Ensure HMC session is cleaned up after boot phase
-		defer func() {
-			if hmcProvider, ok := provider.(*compute.HMCProvider); ok {
-				hmcProvider.Cleanup()
+		var phaseErr error
+		func() {
+			provider, err := compute.NewProvider(o.cfg, o.logger, o.debug)
+			if err != nil {
+				phaseErr = err
+				return
+			}
+			// Ensure HMC session is cleaned up after boot phase
+			defer func() {
+				if hmcProvider, ok := provider.(*compute.HMCProvider); ok {
+					hmcProvider.Cleanup()
+				}
+			}()
+
+			// Re-discover metadata if resuming (UUIDs may not be populated)
+			if resume {
+				o.logger.Info("Re-discovering LPAR metadata for resume...")
+				if err := provider.DiscoverMetadata(context.Background()); err != nil {
+					phaseErr = fmt.Errorf("failed to re-discover LPAR metadata: %w", err)
+					return
+				}
+			}
+
+			// Iterate through nodes and check individual boot states
+			for _, node := range o.cfg.GetAllNodes() {
+				bootMarker := "booted_" + node.Hostname
+				
+				// Skip this specific node if it was successfully booted in a previous run
+				if resume && contains(o.state.CompletedPhases, bootMarker) {
+					o.logger.Info("Skipping already booted node", "node", node.Hostname)
+					continue
+				}
+
+				if err := provider.BootNode(context.Background(), node); err != nil {
+					phaseErr = fmt.Errorf("HMC boot sequence failed for %s: %w", node.Hostname, err)
+					return
+				}
+				
+				// Mark this specific node as successfully booted in state.json
+				o.saveState(bootMarker)
 			}
 		}()
-
-		// Re-discover metadata if resuming (UUIDs may not be populated)
-		if resume {
-			o.logger.Info("Re-discovering LPAR metadata for resume...")
-			if err := provider.DiscoverMetadata(context.Background()); err != nil {
-				return fmt.Errorf("failed to re-discover LPAR metadata: %w", err)
-			}
-		}
-
-		// Iterate through nodes and check individual boot states
-		for _, node := range o.cfg.GetAllNodes() {
-			bootMarker := "booted_" + node.Hostname
-			
-			// Skip this specific node if it was successfully booted in a previous run
-			if resume && contains(o.state.CompletedPhases, bootMarker) {
-				o.logger.Info("Skipping already booted node", "node", node.Hostname)
-				continue
-			}
-
-			if err := provider.BootNode(context.Background(), node); err != nil {
-				return fmt.Errorf("HMC boot sequence failed for %s: %w", node.Hostname, err)
-			}
-			
-			// Mark this specific node as successfully booted in state.json
-			o.saveState(bootMarker)
-		}
 		
+		o.endPhase(phaseExec, phaseErr)
+		if phaseErr != nil {
+			return phaseErr
+		}
 		// Mark the entire phase as fully complete
 		o.saveState("boot")
 	}
 
 	// --- PHASE 6: WAIT FOR INSTALLATION ---
 	if !resume || !contains(o.state.CompletedPhases, "wait") {
+		phaseExec := o.startPhase("wait")
 		o.logger.Info("\n[Phase 6] Waiting for OpenShift Installation")
 		
-		if err := o.WaitForBootstrap(context.Background()); err != nil {
-			return err
-		}
+		var phaseErr error
+		func() {
+			if err := o.WaitForBootstrap(context.Background()); err != nil {
+				phaseErr = err
+				return
+			}
 
-		if err := o.WaitForInstall(context.Background()); err != nil {
-			return err
-		}
+			if err := o.WaitForInstall(context.Background()); err != nil {
+				phaseErr = err
+				return
+			}
+		}()
 
+		o.endPhase(phaseExec, phaseErr)
+		if phaseErr != nil {
+			return phaseErr
+		}
 		o.saveState("wait")
 	}
 
@@ -416,6 +512,63 @@ func contains(slice []string, item string) bool {
 		}
 	}
 	return false
+}
+
+// findClusterUsingVIP searches all managed clusters to find if any is using the given VIP
+func (o *Orchestrator) findClusterUsingVIP(vip string) string {
+	// Get workspace parent directory
+	workspaceParent := filepath.Dir(o.workspaceDir)
+	
+	// List all directories in workspace
+	entries, err := os.ReadDir(workspaceParent)
+	if err != nil {
+		return "" // Can't check, return empty
+	}
+	
+	currentCluster := o.cfg.OpenShift.ClusterName
+	
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		
+		clusterName := entry.Name()
+		
+		// Skip current cluster
+		if clusterName == currentCluster {
+			continue
+		}
+		
+		// Check if cluster is managed (has .managed marker)
+		managedMarker := filepath.Join(workspaceParent, clusterName, ".managed")
+		if _, err := os.Stat(managedMarker); os.IsNotExist(err) {
+			continue // Not a managed cluster
+		}
+		
+		// Check if cluster is deleted
+		deletedMarker := filepath.Join(workspaceParent, clusterName, ".deleted")
+		if _, err := os.Stat(deletedMarker); err == nil {
+			continue // Cluster is deleted, skip
+		}
+		
+		// Read the cluster's config
+		configPath := filepath.Join(workspaceParent, clusterName, "config.yaml")
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			continue // Can't read config
+		}
+		
+		// Simple string search for the VIP (faster than full YAML parse)
+		if strings.Contains(string(data), vip) {
+			// Verify it's actually the loadbalancer_ip field
+			if strings.Contains(string(data), fmt.Sprintf("loadbalancer_ip: \"%s\"", vip)) ||
+			   strings.Contains(string(data), fmt.Sprintf("loadbalancer_ip: %s", vip)) {
+				return clusterName
+			}
+		}
+	}
+	
+	return "" // No conflict found
 }
 // GetLogger returns the orchestrator's logger instance
 func (o *Orchestrator) GetLogger() *logger.Logger {

@@ -130,6 +130,7 @@ func generateInstallConfigYAML(cfg *types.AgentConfig) (string, error) {
 		ServiceNetwork           string
 		MachineNetwork           string
 		IsSNO                    bool
+		DiskDevice               string
 		PullSecret               string
 		SSHKey                   string
 	}{
@@ -142,6 +143,7 @@ func generateInstallConfigYAML(cfg *types.AgentConfig) (string, error) {
 		ServiceNetwork:           cfg.OpenShift.ServiceNetwork,
 		MachineNetwork:           cfg.Network.MachineCIDR,
 		IsSNO:                    cfg.IsSNO(),
+		DiskDevice:               "/dev/sda", // Default disk device for SNO
 		PullSecret:               strings.TrimSpace(string(pullSecret)),
 		SSHKey:                   strings.TrimSpace(string(sshKey)),
 	}
