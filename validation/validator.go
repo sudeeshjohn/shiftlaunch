@@ -92,6 +92,9 @@ func (v *Validator) Validate(ctx context.Context) error {
 	if v.hmcClient != nil {
 		v.log.Info("Phase 3: Validating pre-provisioned LPARs (BYOI mode)...")
 		v.validateBYOILPARs()
+		if v.cfg.Nodes.BootMethod == "iso" {
+			v.validateMediaRepositorySpace()
+		}
 		v.log.Info("✓ HMC infrastructure validated")
 	}
 
@@ -312,7 +315,20 @@ func (v *Validator) validateOpenShift() {
 		v.errors = append(v.errors, "openshift.ssh_public_key_file is required")
 	}
 
-	// Validate RHCOS URLs
+	// Skip RHCOS validation for ISO boot (Agent installer downloads RHCOS automatically)
+	if v.cfg.Nodes.BootMethod == "iso" {
+		v.log.Info("Skipping RHCOS image validation for ISO boot (Agent installer downloads RHCOS automatically)")
+		// Still validate OCP client config
+		if o.OCPClientConfig.Client == "" {
+			v.errors = append(v.errors, "openshift.ocp_client_config.ocp_client is required")
+		}
+		if o.OCPClientConfig.Installer == "" {
+			v.errors = append(v.errors, "openshift.ocp_client_config.ocp_installer is required")
+		}
+		return // Skip RHCOS URL validation
+	}
+
+	// Validate RHCOS URLs for netboot
 	if o.RHCOSImages.KernelURL == "" {
 		v.errors = append(v.errors, "openshift.rhcos_images.kernel_url is required")
 	}
@@ -626,6 +642,11 @@ func (v *Validator) validateExternalServices(ctx context.Context) {
 	if !v.cfg.ManagedServices.LoadBalancer {
 		v.validateExternalLoadBalancer(ctx)
 	}
+	if v.cfg.Nodes.BootMethod == "iso" && !v.cfg.ManagedServices.NFS {
+		v.log.Info("    Validating external NFS configuration...")
+		v.warnings = append(v.warnings, 
+			"External NFS detected for ISO boot. Ensure your external NFS server is configured to export the ISO directory to the VIOS, or enable 'managed_services.nfs' in your config.")
+	}
 }
 
 func (v *Validator) validateExternalDNS(ctx context.Context) {
@@ -722,4 +743,67 @@ func (v *Validator) isValidCIDR(cidr string) bool {
 func (v *Validator) isValidHostname(hostname string) bool {
 	hostnameRegex := regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$`)
 	return hostnameRegex.MatchString(hostname)
+}
+// validateMediaRepositorySpace ensures the VIOS has enough space for Agent ISO files
+func (v *Validator) validateMediaRepositorySpace() {
+	v.log.Info("    Validating VIOS Media Repository capacity...")
+
+	nodes := v.cfg.GetAllNodes()
+	if len(nodes) == 0 {
+		return
+	}
+
+	// Grab the system name from the first node to locate the active VIOS
+	systemName := nodes[0].SystemName
+	
+	// FIX: Use underscore first to drop the struct, grab the string UUID second
+	_, sysUUID, err := v.hmcClient.GetManagedSystemByNameQuick(systemName, v.debug)
+	if err != nil {
+		v.warnings = append(v.warnings, fmt.Sprintf("Could not resolve system UUID for repository check: %v", err))
+		return
+	}
+
+	// Find the active VIOS
+	viosList, err := v.hmcClient.GetVirtualIOServersQuick(sysUUID, v.debug)
+	if err != nil || len(viosList) == 0 {
+		v.warnings = append(v.warnings, "Could not retrieve VIOS list for repository check")
+		return
+	}
+
+	var activeViosName string
+	for _, vios := range viosList {
+		if vios.PartitionState == "running" && vios.RMCState == "active" {
+			activeViosName = vios.PartitionName
+			break
+		}
+	}
+
+	if activeViosName == "" {
+		v.warnings = append(v.warnings, "Could not find an active VIOS with RMC to check Media Repository capacity")
+		return
+	}
+
+	// Calculate requirements: Agent ISO is roughly 1.5GB (1536 MB)
+	nodeCount := len(nodes)
+	isoSizeMB := 1536 
+	requiredMB := isoSizeMB * nodeCount
+
+	repoInfo, err := v.hmcClient.GetMediaRepositoryInfo(systemName, activeViosName, v.debug)
+	if err != nil {
+		v.warnings = append(v.warnings, fmt.Sprintf("Could not verify Media Repository space on VIOS '%s': %v", activeViosName, err))
+		return
+	}
+
+	v.log.Info(fmt.Sprintf("      Repository Size: %d MB | Free: %d MB | Required: %d MB (%d nodes)", 
+		repoInfo.SizeMB, repoInfo.FreeMB, requiredMB, nodeCount))
+
+	if repoInfo.FreeMB < requiredMB {
+		v.errors = append(v.errors, fmt.Sprintf(
+			"VIOS MEDIA REPOSITORY FULL: VIOS '%s' only has %d MB free, but %d MB is required (%d nodes * ~1.5GB).\n"+
+			"   Solution 1: Clean up old ISOs via HMC (rmvopt).\n"+
+			"   Solution 2: Expand the repository using 'chrep -size'.", 
+			activeViosName, repoInfo.FreeMB, requiredMB, nodeCount))
+	} else {
+		v.log.Info("      ✓ Sufficient space available in VIOS Media Repository")
+	}
 }

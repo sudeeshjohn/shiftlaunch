@@ -32,12 +32,20 @@ func NewDownloader(cfg *types.AgentConfig, daemonCfg *config.AgentDaemonConfig, 
 
 // DownloadAll downloads all required artifacts into the local workspace
 func (d *Downloader) DownloadAll(ctx context.Context,workspaceDir string) error {
-	if err := d.DownloadRHCOSImages(ctx,workspaceDir); err != nil {
-		return fmt.Errorf("failed to download RHCOS images: %w", err)
+	// --- FIX: Removed the duplicate unconditional download call ---
+	if d.cfg.Nodes.BootMethod == "iso" {
+		d.logger.Info("Skipping RHCOS image downloads (Agent ISO handles payload dynamically)")
+	} else {
+		if err := d.DownloadRHCOSImages(ctx, workspaceDir); err != nil {
+			return fmt.Errorf("failed to download RHCOS images: %w", err)
+		}
 	}
+
+	// We ALWAYS need the OpenShift tools (openshift-install, oc, kubectl)
 	if err := d.DownloadOpenShiftTools(ctx,workspaceDir); err != nil {
 		return fmt.Errorf("failed to download OpenShift tools: %w", err)
 	}
+	
 	return nil
 }
 // DownloadRHCOSImages downloads RHCOS images with optional checksum validation

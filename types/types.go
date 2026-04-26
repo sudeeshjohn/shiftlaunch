@@ -19,6 +19,7 @@ type ManagedServicesConfig struct {
 	DHCP         bool `yaml:"dhcp"`
 	PXE          bool `yaml:"pxe"`
 	LoadBalancer bool `yaml:"load_balancer"`
+	NFS          bool `yaml:"nfs"`
 }
 
 type ControllerConfig struct {

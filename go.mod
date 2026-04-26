@@ -8,7 +8,10 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-require github.com/spf13/viper v1.21.0
+require (
+	github.com/spf13/viper v1.21.0
+	go.yaml.in/yaml/v3 v3.0.4
+)
 
 require (
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
@@ -48,6 +51,7 @@ require (
 	github.com/lithammer/fuzzysearch v1.1.8 // indirect
 	github.com/mattn/go-runewidth v0.0.23 // indirect
 	github.com/pterm/pterm v0.12.83
+	github.com/spf13/viper v1.21.0
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/term v0.42.0 // indirect

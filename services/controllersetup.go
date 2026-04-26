@@ -32,17 +32,32 @@ func NewControllerSetup(cfg *types.AgentConfig, daemonCfg *config.AgentDaemonCon
 func (c *ControllerSetup) getRequiredPackages() []string {
 	var pkgs []string
 	
-	// We always need httpd for Ignition/ISO hosting, and firewalld for port management
-	pkgs = append(pkgs, "httpd", "firewalld")
+	// We always need firewalld for port management
+	pkgs = append(pkgs, "firewalld")
 
-	if c.cfg.ManagedServices.DNS || c.cfg.ManagedServices.DHCP || c.cfg.ManagedServices.PXE {
+	// HTTPD is only needed for netboot staging
+	if c.cfg.Nodes.BootMethod != "iso" {
+		pkgs = append(pkgs, "httpd")
+	}
+
+	needsDHCP := c.cfg.ManagedServices.DHCP && c.cfg.Nodes.BootMethod != "iso"
+	needsPXE := c.cfg.ManagedServices.PXE && c.cfg.Nodes.BootMethod != "iso"
+
+	if c.cfg.ManagedServices.DNS || needsDHCP || needsPXE {
 		pkgs = append(pkgs, "dnsmasq")
 	}
-	if c.cfg.ManagedServices.PXE {
+	if needsPXE {
 		pkgs = append(pkgs, "tftp-server", "syslinux-tftpboot")
 	}
 	if c.cfg.ManagedServices.LoadBalancer {
 		pkgs = append(pkgs, "haproxy")
+	}
+	if c.cfg.Nodes.BootMethod == "iso" && c.cfg.ManagedServices.NFS {
+		pkgs = append(pkgs, "nfs-utils")
+	}
+	// nmstate is required for Agent ISO with static networking validation
+	if c.cfg.Nodes.BootMethod == "iso" {
+		pkgs = append(pkgs, "nmstate")
 	}
 
 	return pkgs
@@ -66,41 +81,60 @@ func (c *ControllerSetup) InstallPackages(ctx context.Context) error {
 func (c *ControllerSetup) ConfigureFirewall(ctx context.Context) error {
 	c.logger.Info("Configuring local firewall...")
 
-	// 1. Ensure firewalld is running
-	if _, err := c.executor.Execute(ctx,"sudo systemctl enable --now firewalld"); err != nil {
+	if _, err := c.executor.Execute(ctx, "sudo systemctl enable --now firewalld"); err != nil {
 		return fmt.Errorf("failed to start firewalld: %w", err)
 	}
 
 	var ports []string
+	var services []string
 	
-	// HTTP for Ignition is always required on the dynamic port (to avoid HAProxy collision on 80)
-	ports = append(ports, fmt.Sprintf("%d/tcp", c.daemonCfg.Network.HTTPPort))
+	// HTTP for Ignition is only needed for netboot
+	if c.cfg.Nodes.BootMethod != "iso" {
+		ports = append(ports, fmt.Sprintf("%d/tcp", c.daemonCfg.Network.HTTPPort))
+	}
 
 	if c.cfg.ManagedServices.DNS {
 		ports = append(ports, "53/tcp", "53/udp")
 	}
-	if c.cfg.ManagedServices.DHCP {
+	if c.cfg.ManagedServices.DHCP && c.cfg.Nodes.BootMethod != "iso" {
 		ports = append(ports, "67/udp")
 	}
-	if c.cfg.ManagedServices.PXE {
+	if c.cfg.ManagedServices.PXE && c.cfg.Nodes.BootMethod != "iso" {
 		ports = append(ports, "69/udp")
 	}
 	if c.cfg.ManagedServices.LoadBalancer {
 		ports = append(ports, "6443/tcp", "22623/tcp", "80/tcp", "443/tcp")
 	}
-
-	// Apply Ports
-	portArgs := ""
-	for _, port := range ports {
-		portArgs += fmt.Sprintf(" --add-port=%s", port)
-	}
-	
-	if _, err := c.executor.Execute(ctx,"sudo firewall-cmd --permanent" + portArgs); err != nil {
-		return fmt.Errorf("failed to add firewall ports: %w", err)
+	if c.cfg.Nodes.BootMethod == "iso" && c.cfg.ManagedServices.NFS {
+		services = append(services, "nfs", "rpc-bind", "mountd")
 	}
 
-	// Reload
-	if _, err := c.executor.Execute(ctx,"sudo firewall-cmd --reload"); err != nil {
+	// --- FIX: Apply Ports and Services in separate isolated commands ---
+
+	// 1. Apply Ports
+	if len(ports) > 0 {
+		portArgs := ""
+		for _, port := range ports {
+			portArgs += fmt.Sprintf(" --add-port=%s", port)
+		}
+		if _, err := c.executor.Execute(ctx, "sudo firewall-cmd --permanent"+portArgs); err != nil {
+			return fmt.Errorf("failed to add firewall port rules: %w", err)
+		}
+	}
+
+	// 2. Apply Services
+	if len(services) > 0 {
+		svcArgs := ""
+		for _, svc := range services {
+			svcArgs += fmt.Sprintf(" --add-service=%s", svc)
+		}
+		if _, err := c.executor.Execute(ctx, "sudo firewall-cmd --permanent"+svcArgs); err != nil {
+			return fmt.Errorf("failed to add firewall service rules: %w", err)
+		}
+	}
+
+	// 3. Reload to apply changes
+	if _, err := c.executor.Execute(ctx, "sudo firewall-cmd --reload"); err != nil {
 		return fmt.Errorf("failed to reload firewall: %w", err)
 	}
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,7 +59,56 @@ pullSecret: '{{.PullSecret}}'
 sshKey: '{{.SSHKey}}'
 `
 
-func GenerateIgnition(ctx context.Context,cfg *types.AgentConfig, exec *localexec.LocalClient, workspaceDir string) error {
+// agentConfigTemplate works for both SNO and multi-node clusters
+// Matches the official OpenShift Agent-based Installer format
+const agentConfigTemplate = `apiVersion: v1alpha1
+kind: AgentConfig
+metadata:
+  name: {{.ClusterName}}
+rendezvousIP: {{.RendezvousIP}}
+{{- if .Hosts}}
+hosts:
+{{- range .Hosts}}
+  - hostname: {{.Hostname}}
+    role: {{.Role}}
+    interfaces:
+      - name: env2
+        macAddress: {{.MACAddress}}
+    networkConfig:
+      interfaces:
+        - name: env2
+          type: ethernet
+          state: up
+          ipv4:
+            enabled: true
+            address:
+              - ip: {{.IP}}
+                prefix-length: {{.PrefixLength}}
+      dns-resolver:
+        config:
+          server:
+            - {{.DNS}}
+      routes:
+        config:
+          - destination: 0.0.0.0/0
+            next-hop-address: {{.Gateway}}
+            next-hop-interface: env2
+{{- end}}
+{{- end}}
+`
+
+func GenerateIgnition(ctx context.Context, cfg *types.AgentConfig, exec *localexec.LocalClient, workspaceDir string) error {
+	// Branch based on boot method
+	if cfg.Nodes.BootMethod == "iso" {
+		return generateAgentISO(ctx, cfg, exec, workspaceDir)
+	}
+
+	// Existing netboot ignition generation
+	return generateNetbootIgnition(ctx, cfg, exec, workspaceDir)
+}
+
+// generateNetbootIgnition handles traditional netboot ignition generation
+func generateNetbootIgnition(ctx context.Context, cfg *types.AgentConfig, exec *localexec.LocalClient, workspaceDir string) error {
 	// --- NEW: Define and create the install-dir target directory ---
 	targetDir := filepath.Join(workspaceDir, "install-dir")
 	exec.Execute(ctx,fmt.Sprintf("mkdir -p %s", targetDir))
@@ -147,6 +197,120 @@ func generateInstallConfigYAML(cfg *types.AgentConfig) (string, error) {
 		DiskDevice:               "/dev/sda", // Default disk device for SNO
 		PullSecret:               strings.TrimSpace(string(pullSecret)),
 		SSHKey:                   strings.TrimSpace(string(sshKey)),
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+// generateAgentISO creates an Agent-based Installer ISO for both SNO and multi-node clusters
+func generateAgentISO(ctx context.Context, cfg *types.AgentConfig, exec *localexec.LocalClient, workspaceDir string) error {
+	targetDir := filepath.Join(workspaceDir, "install-dir")
+	exec.Execute(ctx, fmt.Sprintf("mkdir -p %s", targetDir))
+
+	// 1. Generate install-config.yaml
+	installConfig, err := generateInstallConfigYAML(cfg)
+	if err != nil {
+		return err
+	}
+
+	configPath := filepath.Join(targetDir, "install-config.yaml")
+	if err := os.WriteFile(configPath, []byte(installConfig), 0644); err != nil {
+		return fmt.Errorf("failed to write install-config.yaml: %w", err)
+	}
+
+	exec.Execute(ctx, fmt.Sprintf("cp %s %s.bak", configPath, configPath))
+
+	// 2. Generate agent-config.yaml
+	agentConfig, err := generateAgentConfigYAML(cfg)
+	if err != nil {
+		return err
+	}
+
+	agentConfigPath := filepath.Join(targetDir, "agent-config.yaml")
+	if err := os.WriteFile(agentConfigPath, []byte(agentConfig), 0644); err != nil {
+		return fmt.Errorf("failed to write agent-config.yaml: %w", err)
+	}
+
+	// 3. Run openshift-install agent create image
+	installerPath := filepath.Join(workspaceDir, "tools", "openshift-install")
+	cmd := fmt.Sprintf("cd %s && %s agent create image --dir=. --log-level=info", targetDir, installerPath)
+
+	if _, err := exec.Execute(ctx, cmd); err != nil {
+		return fmt.Errorf("failed to create agent ISO: %w", err)
+	}
+
+	return nil
+}
+
+// generateAgentConfigYAML creates the agent-config.yaml for Agent-based Installer
+// Works for both SNO and multi-node clusters
+func generateAgentConfigYAML(cfg *types.AgentConfig) (string, error) {
+	tmpl, err := template.New("agentConfig").Parse(agentConfigTemplate)
+	if err != nil {
+		return "", err
+	}
+
+	// Calculate prefix length from CIDR
+	_, ipNet, err := net.ParseCIDR(cfg.Network.MachineCIDR)
+	if err != nil {
+		return "", fmt.Errorf("invalid machine CIDR: %w", err)
+	}
+	prefixLen, _ := ipNet.Mask.Size()
+
+	// Get DNS server based on managed services configuration
+	// If DNS is managed by shiftlaunch, use controller IP as DNS resolver
+	// Otherwise, use the configured nameserver
+	dnsServer := cfg.Network.Nameserver
+	if cfg.ManagedServices.DNS {
+		dnsServer = cfg.Controller.IP
+	}
+
+	// Build host configurations for all nodes (SNO or multi-node)
+	type HostConfig struct {
+		Hostname     string
+		Role         string
+		MACAddress   string
+		IP           string
+		PrefixLength int
+		Gateway      string
+		DNS          string
+	}
+
+	var hosts []HostConfig
+	for _, node := range cfg.GetAllNodes() {
+		role := "master"
+		if node.Role == "worker" {
+			role = "worker"
+		}
+		
+		hosts = append(hosts, HostConfig{
+			Hostname:     node.Hostname,
+			Role:         role,
+			MACAddress:   node.MACAddress,
+			IP:           node.IP,
+			PrefixLength: prefixLen,
+			Gateway:      cfg.Network.Gateway,
+			DNS:          dnsServer,
+		})
+	}
+
+	// Get rendezvous IP (first master/SNO node)
+	rendezvousIP := ""
+	if len(hosts) > 0 {
+		rendezvousIP = hosts[0].IP
+	}
+
+	data := struct {
+		ClusterName  string
+		RendezvousIP string
+		Hosts        []HostConfig
+	}{
+		ClusterName:  cfg.OpenShift.ClusterName,
+		RendezvousIP: rendezvousIP,
+		Hosts:        hosts,
 	}
 
 	var buf bytes.Buffer

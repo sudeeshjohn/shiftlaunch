@@ -63,11 +63,66 @@ func (o *Orchestrator) GetDebug() bool {
 }
 
 // saveState records phase completion to the local state.json file
+// Reloads state first to preserve any updates made by other components (e.g., ISO mappings)
 func (o *Orchestrator) saveState(phase string) {
+	// Reload state to get any updates from other components
+	if currentState, err := o.stateManager.LoadState(); err == nil && currentState != nil {
+		// Preserve updates from other components
+		o.state.ISOMappings = currentState.ISOMappings
+		o.state.NFSMounts = currentState.NFSMounts
+		o.state.DiscoveredNodes = currentState.DiscoveredNodes
+		o.state.ConfiguredServices = currentState.ConfiguredServices
+		o.state.VIOSAdminUsername = currentState.VIOSAdminUsername
+		o.state.VIOSAdminPassword = currentState.VIOSAdminPassword
+		o.state.VIOSAdminCreated = currentState.VIOSAdminCreated
+		o.state.VIOSAdminCheckedAt = currentState.VIOSAdminCheckedAt
+	}
+	
 	o.state.CurrentPhase = phase
 	if !contains(o.state.CompletedPhases, phase) {
 		o.state.CompletedPhases = append(o.state.CompletedPhases, phase)
 	}
+	_ = o.stateManager.SaveState(o.state)
+}
+
+// trackServiceStart records the start of a service configuration
+func (o *Orchestrator) trackServiceStart(name, serviceType string, managed bool) *types.ConfiguredService {
+	return &types.ConfiguredService{
+		Name:      name,
+		Type:      serviceType,
+		Status:    "configuring",
+		Managed:   managed,
+		StartedAt: time.Now().Format(time.RFC3339),
+	}
+}
+
+// trackServiceEnd records the completion of a service configuration
+func (o *Orchestrator) trackServiceEnd(svc *types.ConfiguredService, err error, details string) {
+	svc.CompletedAt = time.Now().Format(time.RFC3339)
+	
+	// Calculate duration
+	if startTime, parseErr := time.Parse(time.RFC3339, svc.StartedAt); parseErr == nil {
+		if endTime, parseErr := time.Parse(time.RFC3339, svc.CompletedAt); parseErr == nil {
+			duration := endTime.Sub(startTime)
+			svc.Duration = duration.Round(time.Millisecond).String()
+		}
+	}
+	
+	if err != nil {
+		svc.Status = "failed"
+		svc.Error = err.Error()
+	} else {
+		svc.Status = "completed"
+	}
+	
+	if details != "" {
+		svc.Details = details
+	}
+	
+	// Add to state
+	o.state.ConfiguredServices = append(o.state.ConfiguredServices, *svc)
+	
+	// Save state immediately to persist service tracking
 	_ = o.stateManager.SaveState(o.state)
 }
 
@@ -188,7 +243,7 @@ func (o *Orchestrator) Deploy(ctx context.Context,resume bool) (err error) {
 		
 		var phaseErr error
 		func() {
-			provider, err := compute.NewProvider(o.cfg, o.logger, o.debug)
+			provider, err := compute.NewProviderWithState(o.cfg, o.logger, o.debug, o.stateManager)
 			if err != nil {
 				phaseErr = fmt.Errorf("failed to initialize compute provider: %w", err)
 				return
@@ -233,17 +288,31 @@ func (o *Orchestrator) Deploy(ctx context.Context,resume bool) (err error) {
 
 		var phaseErr error
 		func() {
+			// Track package installation
+			pkgSvc := o.trackServiceStart("controller-packages", "packages", true)
 			setup := services.NewControllerSetup(o.cfg, o.daemonCfg, o.executor, o.logger)
 			if err := setup.InstallPackages(ctx); err != nil {
+				o.trackServiceEnd(pkgSvc, err, "")
 				phaseErr = fmt.Errorf("failed to setup controller dependencies: %w", err)
 				return
 			}
+			o.trackServiceEnd(pkgSvc, nil, "Installed required packages")
+			
+			// Track firewall configuration
+			fwSvc := o.trackServiceStart("firewall", "firewall", true)
 			if err := setup.ConfigureFirewall(ctx); err != nil {
+				o.trackServiceEnd(fwSvc, err, "")
 				phaseErr = fmt.Errorf("failed to configure local firewall: %w", err)
 				return
 			}
+			o.trackServiceEnd(fwSvc, nil, "Configured firewall rules")
 
+			// Track HAProxy configuration
 			if o.cfg.ManagedServices.LoadBalancer {
+				haproxySvc := o.trackServiceStart("haproxy", "load-balancer", true)
+				haproxySvc.ServiceName = "haproxy"
+				haproxySvc.ConfigFile = "/etc/haproxy/haproxy.cfg"
+				
 				o.logger.Info(" -> Configuring Local HAProxy...")
 
 				// 1. Allow HAProxy to bind to the VIP immediately (fixes the systemd crash)
@@ -264,56 +333,105 @@ func (o *Orchestrator) Deploy(ctx context.Context,resume bool) (err error) {
 
 				// 4. Generate config and start the service
 				if err := services.SetupHAProxy(ctx,o.cfg, o.executor); err != nil {
+					o.trackServiceEnd(haproxySvc, err, "")
 					phaseErr = err
 					return
 				}
+				o.trackServiceEnd(haproxySvc, nil, fmt.Sprintf("Load balancer configured on %s", vip))
 			} else {
 				o.logger.Info(" -> Skipping HAProxy (User Managed)")
+				skipSvc := o.trackServiceStart("haproxy", "load-balancer", false)
+				o.trackServiceEnd(skipSvc, nil, "User managed")
 			}
 
 			dnsmasq := services.NewDNSmasqManager(o.cfg, o.daemonCfg, o.executor)
 
+			// Track DNS configuration
 			if o.cfg.ManagedServices.DNS {
+				dnsSvc := o.trackServiceStart("dns", "dns", true)
+				dnsSvc.ServiceName = "dnsmasq"
+				dnsSvc.ConfigFile = "/etc/dnsmasq.d/dns.conf"
+				
 				o.logger.Info(" -> Configuring Local DNS...")
 				if err := dnsmasq.SetupDNS(ctx); err != nil {
+					o.trackServiceEnd(dnsSvc, err, "")
 					phaseErr = err
 					return
 				}
+				o.trackServiceEnd(dnsSvc, nil, fmt.Sprintf("DNS configured for %s.%s", o.cfg.OpenShift.ClusterName, o.cfg.OpenShift.BaseDomain))
 			} else {
 				o.logger.Info(" -> Skipping DNS (User Managed)")
+				skipSvc := o.trackServiceStart("dns", "dns", false)
+				o.trackServiceEnd(skipSvc, nil, "User managed")
 			}
 
-			if o.cfg.ManagedServices.DHCP {
+			// Track DHCP configuration
+			if o.cfg.ManagedServices.DHCP && o.cfg.Nodes.BootMethod != "iso" {
+				dhcpSvc := o.trackServiceStart("dhcp", "dhcp", true)
+				dhcpSvc.ServiceName = "dnsmasq"
+				dhcpSvc.ConfigFile = "/etc/dnsmasq.d/dhcp.conf"
+				
 				o.logger.Info(" -> Configuring Local DHCP...")
 				if err := dnsmasq.SetupDHCP(ctx); err != nil {
+					o.trackServiceEnd(dhcpSvc, err, "")
 					phaseErr = err
 					return
 				}
+				o.trackServiceEnd(dhcpSvc, nil, "DHCP configured for cluster nodes")
 			} else {
-				o.logger.Info(" -> Skipping DHCP (User Managed)")
+				o.logger.Info(" -> Skipping DHCP (Not required for Agent ISO or User Managed)")
+				skipSvc := o.trackServiceStart("dhcp", "dhcp", false)
+				skipReason := "Not required for Agent ISO"
+				if !o.cfg.ManagedServices.DHCP {
+					skipReason = "User managed"
+				}
+				o.trackServiceEnd(skipSvc, nil, skipReason)
 			}
 
-			if o.cfg.ManagedServices.PXE {
+			// Track PXE configuration
+			if o.cfg.ManagedServices.PXE && o.cfg.Nodes.BootMethod != "iso" {
+				pxeSvc := o.trackServiceStart("pxe", "pxe", true)
+				pxeSvc.ServiceName = "dnsmasq"
+				pxeSvc.ConfigFile = "/etc/dnsmasq.d/tftp.conf"
+				
 				o.logger.Info(" -> Configuring Local PXE Service...")
 				if err := dnsmasq.SetupPXEService(ctx); err != nil {
+					o.trackServiceEnd(pxeSvc, err, "")
 					phaseErr = err
 					return
 				}
 				o.logger.Info(" -> Staging PXE Artifacts...")
-				if err := dnsmasq.ConfigurePXEBoot(ctx,o.workspaceDir); err != nil {
+				if err := dnsmasq.ConfigurePXEBoot(ctx, o.workspaceDir); err != nil {
+					o.trackServiceEnd(pxeSvc, err, "")
 					phaseErr = err
 					return
 				}
+				o.trackServiceEnd(pxeSvc, nil, "PXE boot configured with TFTP")
 			} else {
-				o.logger.Info(" -> Skipping PXE (User Managed)")
+				o.logger.Info(" -> Skipping PXE (Not required for Agent ISO or User Managed)")
+				skipSvc := o.trackServiceStart("pxe", "pxe", false)
+				skipReason := "Not required for Agent ISO"
+				if !o.cfg.ManagedServices.PXE {
+					skipReason = "User managed"
+				}
+				o.trackServiceEnd(skipSvc, nil, skipReason)
 			}
-			// --- FIX: Restart dnsmasq ONCE after all configs are written ---
-			if o.cfg.ManagedServices.DNS || o.cfg.ManagedServices.DHCP || o.cfg.ManagedServices.PXE {
+
+			needsDHCP := o.cfg.ManagedServices.DHCP && o.cfg.Nodes.BootMethod != "iso"
+			needsPXE := o.cfg.ManagedServices.PXE && o.cfg.Nodes.BootMethod != "iso"
+
+			// Track dnsmasq restart
+			if o.cfg.ManagedServices.DNS || needsDHCP || needsPXE {
+				restartSvc := o.trackServiceStart("dnsmasq-restart", "service-restart", true)
+				restartSvc.ServiceName = "dnsmasq"
+				
 				o.logger.Info(" -> Restarting DNSmasq service...")
 				if err := dnsmasq.Restart(ctx); err != nil {
+					o.trackServiceEnd(restartSvc, err, "")
 					phaseErr = fmt.Errorf("failed to start dnsmasq: %w", err)
 					return
 				}
+				o.trackServiceEnd(restartSvc, nil, "DNSmasq service restarted successfully")
 			}
 		}()
 
@@ -331,29 +449,68 @@ func (o *Orchestrator) Deploy(ctx context.Context,resume bool) (err error) {
 		
 		var phaseErr error
 		func() {
-			if err := services.GenerateIgnition(ctx,o.cfg, o.executor, o.workspaceDir); err != nil {
+			// Track ignition generation
+			ignSvc := o.trackServiceStart("ignition-generation", "ignition", true)
+			if err := services.GenerateIgnition(ctx, o.cfg, o.executor, o.workspaceDir); err != nil {
+				o.trackServiceEnd(ignSvc, err, "")
 				phaseErr = err
 				return
 			}
+			o.trackServiceEnd(ignSvc, nil, "Generated ignition configs for all nodes")
 
-			o.logger.Info(" -> Setting up Local HTTP Server (Port 8080)...")
-			
-			// --- NEW: Configure and Start Apache HTTPD ---
-			if err := services.ConfigureHTTPD(ctx,o.executor, o.daemonCfg.Network.HTTPPort); err != nil {
-				phaseErr = err
-				return
-			}
+			if o.cfg.Nodes.BootMethod != "iso" {
+				// Track HTTP server setup
+				httpSvc := o.trackServiceStart("http-server", "http", true)
+				httpSvc.ServiceName = "httpd"
+				httpSvc.ConfigFile = "/etc/httpd/conf.d/shiftlaunch.conf"
+				
+				o.logger.Info(" -> Setting up Local HTTP Server (Port 8080)...")
+				
+				if err := services.ConfigureHTTPD(ctx, o.executor, o.daemonCfg.Network.HTTPPort); err != nil {
+					o.trackServiceEnd(httpSvc, err, "")
+					phaseErr = err
+					return
+				}
 
-			httpServer := services.NewHTTPServerManager(o.cfg, o.daemonCfg, o.executor, o.logger)
-			if err := httpServer.Setup(ctx,o.workspaceDir); err != nil {
-				phaseErr = err
-				return
-			}
-			
-			o.logger.Info(" -> Staging files to HTTP Server...")
-			if err := httpServer.StageFiles(ctx,o.workspaceDir); err != nil {
-				phaseErr = err
-				return
+				httpServer := services.NewHTTPServerManager(o.cfg, o.daemonCfg, o.executor, o.logger)
+				if err := httpServer.Setup(ctx, o.workspaceDir); err != nil {
+					o.trackServiceEnd(httpSvc, err, "")
+					phaseErr = err
+					return
+				}
+				
+				o.logger.Info(" -> Staging files to HTTP Server...")
+				if err := httpServer.StageFiles(ctx, o.workspaceDir); err != nil {
+					o.trackServiceEnd(httpSvc, err, "")
+					phaseErr = err
+					return
+				}
+				o.trackServiceEnd(httpSvc, nil, fmt.Sprintf("HTTP server configured on port %d", o.daemonCfg.Network.HTTPPort))
+			} else {
+				o.logger.Info(" -> Skipping HTTP Server setup (Not required for Agent ISO)")
+				skipSvc := o.trackServiceStart("http-server", "http", false)
+				o.trackServiceEnd(skipSvc, nil, "Not required for Agent ISO")
+				
+				// Setup NFS server for ISO boot
+				if o.cfg.ManagedServices.NFS {
+					nfsSvc := o.trackServiceStart("nfs-server", "nfs", true)
+					nfsSvc.ServiceName = "nfs-server"
+					nfsSvc.ConfigFile = "/etc/exports"
+					
+					o.logger.Info(" -> Setting up NFS Server for Agent ISO...")
+					nfsMgr := services.NewNFSManager(o.cfg, o.executor, o.logger, o.workspaceDir)
+					if err := nfsMgr.Setup(ctx); err != nil {
+						o.trackServiceEnd(nfsSvc, err, "")
+						phaseErr = fmt.Errorf("failed to setup NFS server: %w", err)
+						return
+					}
+					exportPath := filepath.Join(o.workspaceDir, fmt.Sprintf("%s-iso", o.cfg.OpenShift.ClusterName))
+					o.trackServiceEnd(nfsSvc, nil, fmt.Sprintf("NFS export configured: %s", exportPath))
+				} else {
+					o.logger.Info(" -> Skipping NFS Server setup (User Managed)")
+					skipSvc := o.trackServiceStart("nfs-server", "nfs", false)
+					o.trackServiceEnd(skipSvc, nil, "User managed")
+				}
 			}
 		}()
 
@@ -371,7 +528,7 @@ func (o *Orchestrator) Deploy(ctx context.Context,resume bool) (err error) {
 		
 		var phaseErr error
 		func() {
-			provider, err := compute.NewProvider(o.cfg, o.logger, o.debug)
+			provider, err := compute.NewProviderWithState(o.cfg, o.logger, o.debug, o.stateManager)
 			if err != nil {
 				phaseErr = err
 				return
@@ -444,7 +601,45 @@ func (o *Orchestrator) Deploy(ctx context.Context,resume bool) (err error) {
 		}
 		o.saveState("wait")
 	}
+	// --- PHASE 7: POST-INSTALL CLEANUP ---
+	if o.cfg.Nodes.BootMethod == "iso" && (!resume || !contains(o.state.CompletedPhases, "iso_cleanup")) {
+		phaseExec := o.startPhase("iso_cleanup")
+		o.logger.Info("\n[Phase 7] Cleaning up VIOS ISO Mappings")
+		
+		var phaseErr error
+		func() {
+			provider, err := compute.NewProviderWithState(o.cfg, o.logger, o.debug, o.stateManager)
+			if err != nil {
+				phaseErr = err
+				return
+			}
+			defer func() {
+				if hmcProvider, ok := provider.(*compute.HMCProvider); ok {
+					hmcProvider.Cleanup()
+				}
+			}()
 
+			if hmcProvider, ok := provider.(*compute.HMCProvider); ok {
+				if err := hmcProvider.CleanupISOMappings(ctx); err != nil {
+					o.logger.Warn("Failed to clean up ISO mappings, manual VIOS cleanup may be required", "error", err)
+					// We don't fail the deployment here, as OpenShift is already running
+				}
+			}
+
+			// --- NEW: Clean up the local NFS export on the Controller ---
+			if o.cfg.ManagedServices.NFS {
+				o.logger.Info("Cleaning up local NFS configuration on controller...")
+				nfsMgr := services.NewNFSManager(o.cfg, o.executor, o.logger, o.workspaceDir)
+				if err := nfsMgr.Cleanup(ctx); err != nil {
+					o.logger.Warn("Failed to clean up local NFS exports", "error", err)
+				}
+			}
+		}()
+
+		o.endPhase(phaseExec, phaseErr)
+		// We save state even on error so we don't block subsequent resumes
+		o.saveState("iso_cleanup") 
+	}
 	// Deployment Complete! Update State.
 /* 	o.state.Status = "completed"
 	o.state.CurrentPhase = "done"

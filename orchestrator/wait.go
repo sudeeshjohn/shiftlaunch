@@ -13,6 +13,12 @@ import (
 
 // WaitForBootstrap waits for the OpenShift bootstrap process to complete
 func (o *Orchestrator) WaitForBootstrap(cancelCtx context.Context) error {
+	// Skip bootstrap wait for Agent ISO - it doesn't have a separate bootstrap phase
+	if o.cfg.Nodes.BootMethod == "iso" {
+		o.logger.Info("Skipping bootstrap wait (Agent ISO uses unified installation)")
+		return nil
+	}
+
 	timeoutSecs := 1800 // Default 30 minutes
 
 	spinnerText := fmt.Sprintf("Waiting for bootstrap to complete (%d min timeout, may take 20-30 minutes)...", timeoutSecs/60)
@@ -50,6 +56,11 @@ func (o *Orchestrator) WaitForBootstrap(cancelCtx context.Context) error {
 
 // WaitForInstall waits for installation to complete and auto-approves worker CSRs
 func (o *Orchestrator) WaitForInstall(cancelCtx context.Context) error {
+	// Use agent-specific wait for ISO boot
+	if o.cfg.Nodes.BootMethod == "iso" {
+		return o.waitForAgentInstall(cancelCtx)
+	}
+
 	timeoutSecs := 3600 // Default 60 minutes
 
 	var timeEstimate string
@@ -88,6 +99,45 @@ func (o *Orchestrator) WaitForInstall(cancelCtx context.Context) error {
 	}
 
 	spinner.Success("Installation Complete!")
+	return nil
+}
+
+// waitForAgentInstall waits for Agent-based installation to complete
+func (o *Orchestrator) waitForAgentInstall(cancelCtx context.Context) error {
+	timeoutSecs := 3600 // Default 60 minutes
+
+	var timeEstimate string
+	if o.cfg.IsSNO() {
+		timeEstimate = "30-45 minutes"
+	} else {
+		timeEstimate = "30-60 minutes"
+	}
+
+	spinnerText := fmt.Sprintf("Waiting for Agent-based installation to complete (%d min timeout, may take %s)...", timeoutSecs/60, timeEstimate)
+	spinner, _ := pterm.DefaultSpinner.WithWriter(o.logger.TerminalOnly()).Start(spinnerText)
+	defer spinner.Stop()
+
+	o.logger.Info(fmt.Sprintf("Timeout: %d seconds (%d minutes)", timeoutSecs, timeoutSecs/60))
+	o.logger.Info("Executing: openshift-install agent wait-for install-complete")
+
+	timeoutCtx, cancel := context.WithTimeout(cancelCtx, time.Duration(timeoutSecs)*time.Second)
+	defer cancel()
+
+	installerPath := filepath.Join(o.workspaceDir, "tools", "openshift-install")
+	targetDir := filepath.Join(o.workspaceDir, "install-dir")
+
+	cmd := exec.CommandContext(timeoutCtx, installerPath, "agent", "wait-for", "install-complete", "--dir", targetDir, "--log-level=info")
+
+	output, cmdErr := cmd.CombinedOutput()
+
+	if cmdErr != nil {
+		spinner.Fail("Agent installation failed!")
+		o.logger.Error(fmt.Sprintf("Agent installation failed:\n%s", string(output)))
+		return fmt.Errorf("agent installation completion failed: %w", cmdErr)
+	}
+
+	spinner.Success("Agent Installation Complete!")
+	o.logger.Info(fmt.Sprintf("\n✓ Agent Installation Complete!\n%s\n", string(output)))
 	return nil
 }
 

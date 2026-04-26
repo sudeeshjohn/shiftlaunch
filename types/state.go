@@ -37,6 +37,73 @@ type PhaseExecution struct {
 	Attempts  int    `json:"attempts,omitempty"` // Number of retry attempts
 }
 
+// DownloadedArtifact tracks downloaded files during downloads phase
+type DownloadedArtifact struct {
+	Name         string `json:"name"`          // e.g., "openshift-install", "oc", "kernel", "initramfs"
+	Type         string `json:"type"`          // e.g., "tool", "rhcos", "iso"
+	URL          string `json:"url"`
+	Destination  string `json:"destination"`
+	Size         int64  `json:"size,omitempty"`         // File size in bytes
+	Checksum     string `json:"checksum,omitempty"`     // Expected checksum
+	Status       string `json:"status"`                 // "downloading", "completed", "failed", "skipped"
+	StartedAt    string `json:"started_at,omitempty"`
+	CompletedAt  string `json:"completed_at,omitempty"`
+	Duration     string `json:"duration,omitempty"`
+	Error        string `json:"error,omitempty"`
+}
+
+// ConfiguredService tracks service configuration during services phase
+type ConfiguredService struct {
+	Name         string `json:"name"`          // e.g., "DNS", "DHCP", "PXE", "HAProxy", "NFS"
+	Type         string `json:"type"`          // e.g., "network", "storage", "loadbalancer"
+	Status       string `json:"status"`        // "configuring", "completed", "failed", "skipped"
+	Managed      bool   `json:"managed"`       // true if managed by shiftlaunch
+	ConfigFile   string `json:"config_file,omitempty"`   // Path to config file
+	ServiceName  string `json:"service_name,omitempty"`  // Systemd service name
+	StartedAt    string `json:"started_at,omitempty"`
+	CompletedAt  string `json:"completed_at,omitempty"`
+	Duration     string `json:"duration,omitempty"`
+	Error        string `json:"error,omitempty"`
+	Details      string `json:"details,omitempty"`       // Additional info
+}
+
+// DiscoveredNode tracks node metadata discovered from HMC
+type DiscoveredNode struct {
+	Hostname     string `json:"hostname"`
+	Role         string `json:"role"`          // master, worker, bootstrap
+	IP           string `json:"ip"`
+	MACAddress   string `json:"mac_address"`
+	UUID         string `json:"uuid"`
+	ProfileUUID  string `json:"profile_uuid"`
+	LocationCode string `json:"location_code"`
+	SystemName   string `json:"system_name"`
+	LPARName     string `json:"lpar_name"`
+	DiscoveredAt string `json:"discovered_at"` // Timestamp
+}
+
+// NFSMount tracks NFS mount points on VIOS for cleanup
+type NFSMount struct {
+	VIOSUUID    string `json:"vios_uuid"`
+	VIOSName    string `json:"vios_name"`
+	SystemName  string `json:"system_name"`
+	MountPoint  string `json:"mount_point"`
+	NFSServer   string `json:"nfs_server"`
+	ExportPath  string `json:"export_path"`
+	MountedAt   string `json:"mounted_at"`  // Timestamp
+}
+
+// ISOMapping tracks ISO media mappings for cleanup
+type ISOMapping struct {
+	NodeName    string `json:"node_name"`
+	MediaName   string `json:"media_name"`
+	VIOSUUID    string `json:"vios_uuid"`
+	VIOSName    string `json:"vios_name"`
+	LparUUID    string `json:"lpar_uuid"`
+	SystemName  string `json:"system_name"`
+	MountPoint  string `json:"mount_point"`  // Reference to NFSMount
+	MappedAt    string `json:"mapped_at"`    // Timestamp
+}
+
 // DeploymentState tracks the progress of the local agent execution
 type DeploymentState struct {
 	ClusterName      string              `json:"cluster_name"`
@@ -55,8 +122,19 @@ type DeploymentState struct {
 	ConfigBackups    []string            `json:"config_backups,omitempty"`    // List of config backup files
 	LastConfigUpdate string              `json:"last_config_update,omitempty"`
 	TotalDuration    string              `json:"total_duration,omitempty"`
-	ResumeCount      int                 `json:"resume_count,omitempty"`      // Number of times resumed
-	Version          string              `json:"version,omitempty"`           // ShiftLaunch version
+	ResumeCount         int                   `json:"resume_count,omitempty"`           // Number of times resumed
+	Version             string                `json:"version,omitempty"`                // ShiftLaunch version
+	DownloadedArtifacts []DownloadedArtifact  `json:"downloaded_artifacts,omitempty"`   // Downloaded files tracking
+	ConfiguredServices  []ConfiguredService   `json:"configured_services,omitempty"`    // Services configuration tracking
+	DiscoveredNodes     []DiscoveredNode      `json:"discovered_nodes,omitempty"`       // Nodes discovered from HMC
+	NFSMounts           []NFSMount            `json:"nfs_mounts,omitempty"`             // NFS mounts on VIOS for cleanup
+	ISOMappings         []ISOMapping          `json:"iso_mappings,omitempty"`           // ISO media mappings for cleanup
+	
+	// VIOS admin user management
+	VIOSAdminUsername string              `json:"vios_admin_username,omitempty"` // viosadmin username
+	VIOSAdminPassword string              `json:"vios_admin_password,omitempty"` // viosadmin password
+	VIOSAdminCreated  bool                `json:"vios_admin_created,omitempty"`  // true if we created the user, false if it already existed
+	VIOSAdminCheckedAt string            `json:"vios_admin_checked_at,omitempty"` // timestamp when user was checked/created
 }
 
 // StateManager handles state file operations with locking and backup

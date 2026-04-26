@@ -33,7 +33,7 @@ func (o *Orchestrator) Teardown(ctx context.Context) error {
 
 	o.logger.Info("🛑 Initiating Soft Teardown", "cluster", o.cfg.OpenShift.ClusterName)
 
-	// Phase 1: Power off LPARs
+	// Phase 1: Power off LPARs (MUST happen before unmapping ISO)
 	phaseExec := o.startPhase("teardown_poweroff")
 	var phaseErr error
 	func() {
@@ -56,7 +56,34 @@ func (o *Orchestrator) Teardown(ctx context.Context) error {
 	}()
 	o.endPhase(phaseExec, phaseErr)
 
-	// Phase 2: Clean up local services
+	// Phase 2: Clean up ISO mappings (AFTER LPARs are powered off)
+	if o.cfg.Nodes.BootMethod == "iso" {
+		phaseExec := o.startPhase("teardown_iso_cleanup")
+		phaseErr = nil
+		func() {
+			provider, err := compute.NewProviderWithState(o.cfg, o.logger, o.debug, o.stateManager)
+			if err != nil {
+				phaseErr = fmt.Errorf("failed to initialize compute provider: %w", err)
+				return
+			}
+			defer func() {
+				if hmcProvider, ok := provider.(*compute.HMCProvider); ok {
+					hmcProvider.Cleanup()
+				}
+			}()
+			
+			o.logger.Info("Cleaning up ISO mappings from HMC (after power off)...")
+			if hmcProvider, ok := provider.(*compute.HMCProvider); ok {
+				if err := hmcProvider.CleanupISOMappings(ctx); err != nil {
+					o.logger.Warn("Failed to clean up some ISO mappings", "error", err)
+					phaseErr = err
+				}
+			}
+		}()
+		o.endPhase(phaseExec, phaseErr)
+	}
+
+	// Phase 3: Clean up local services
 	phaseExec = o.startPhase("teardown_services")
 	phaseErr = nil
 	func() {
@@ -90,12 +117,19 @@ func (o *Orchestrator) Teardown(ctx context.Context) error {
 		}
 		
 		// Clean up HTTP Server
-		httpServer := services.NewHTTPServerManager(o.cfg, o.daemonCfg, o.executor, o.logger)
-		httpServer.Cleanup(ctx)
+		if o.cfg.Nodes.BootMethod != "iso" {
+			httpServer := services.NewHTTPServerManager(o.cfg, o.daemonCfg, o.executor, o.logger)
+			httpServer.Cleanup(ctx)
+		}
+		if o.cfg.Nodes.BootMethod == "iso" && o.cfg.ManagedServices.NFS {
+			o.logger.Info("Cleaning up NFS configuration...")
+			nfsMgr := services.NewNFSManager(o.cfg, o.executor, o.logger, o.workspaceDir)
+			nfsMgr.Cleanup(ctx)
+		}
 	}()
 	o.endPhase(phaseExec, phaseErr)
 
-	// Phase 3: Mark workspace as deleted
+	// Phase 4: Mark workspace as deleted
 	phaseExec = o.startPhase("teardown_finalize")
 	phaseErr = nil
 	func() {

@@ -171,16 +171,20 @@ func main() {
 		// 3. Check for markers to determine resume vs new
 		if _, err := os.Stat(failedMarker); err == nil {
 			if *configFile != existingConfigPath && *configFile != "config.yaml" {
-				log.Printf("⚠️  Warning: Cluster '%s' has a failed deployment. Ignoring '%s' and resuming with configuration at '%s'.", 
+				log.Printf("⚠️  Warning: Cluster '%s' has a failed deployment. Ignoring '%s' and resuming with configuration at '%s'.",
 					*clusterName, *configFile, existingConfigPath)
 			}
 			log.Printf("Resuming failed cluster deployment: %s", *clusterName)
 		} else if _, err := os.Stat(managedMarker); err == nil {
-			if *configFile != existingConfigPath && *configFile != "config.yaml" {
-				log.Printf("⚠️  Warning: Cluster '%s' is already fully deployed. Ignoring '%s' and using the preserved configuration at '%s'.", 
-					*clusterName, *configFile, existingConfigPath)
-			}
-			log.Printf("Cluster is already successfully deployed: %s", *clusterName)
+			// Cluster is already managed - refuse to proceed
+			log.Fatalf("❌ Error: Cluster '%s' is already managed and fully deployed.\n"+
+				"The cluster directory at '%s' contains a successful deployment.\n"+
+				"If you want to:\n"+
+				"  - View cluster status: shiftlaunch -command status -cluster %s\n"+
+				"  - Delete the cluster: shiftlaunch -command delete -cluster %s\n"+
+				"  - Deploy a new cluster: First delete the existing one, then create again\n"+
+				"\nRefusing to overwrite managed cluster to prevent data loss.",
+				*clusterName, workspaceDir, *clusterName, *clusterName)
 		} else {
 			// 4. New cluster - save the config
 			var configBackupPath string

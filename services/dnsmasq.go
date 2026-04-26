@@ -31,6 +31,9 @@ const dnsConfigTemplate = `# ============================================
 # (Critical when helper node points to itself as DNS server)
 no-resolv
 
+# Network Interface Binding
+interface={{.Interface}}
+
 # Explicit upstream DNS forwarders
 {{- range .DNSForwarders}}
 server={{.}}

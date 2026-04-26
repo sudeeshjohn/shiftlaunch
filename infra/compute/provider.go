@@ -23,6 +23,10 @@ type ComputeProvider interface {
 }
 
 func NewProvider(cfg *types.AgentConfig, log *logger.Logger, debug bool) (ComputeProvider, error) {
+	return NewProviderWithState(cfg, log, debug, nil)
+}
+
+func NewProviderWithState(cfg *types.AgentConfig, log *logger.Logger, debug bool, stateManager *types.StateManager) (ComputeProvider, error) {
 	log.Info("Connecting to HMC...", "ip", cfg.HMC.IP, "user", cfg.HMC.Username)
 	
 	client := hmc.NewHmcRestClient(cfg.HMC.IP)
@@ -40,9 +44,10 @@ func NewProvider(cfg *types.AgentConfig, log *logger.Logger, debug bool) (Comput
 	log.Info("✓ Successfully authenticated with HMC", "ip", cfg.HMC.IP, "user", cfg.HMC.Username, "session", client.Session()[:8]+"...")
 	
 	return &HMCProvider{
-		cfg:       cfg,
-		hmcClient: client,
-		logger:    log,
-		debug:     debug,
+		cfg:          cfg,
+		hmcClient:    client,
+		logger:       log,
+		debug:        debug,
+		stateManager: stateManager,
 	}, nil
 }

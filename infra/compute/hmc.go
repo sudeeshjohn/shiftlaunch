@@ -12,10 +12,18 @@ import (
 )
 
 type HMCProvider struct {
-	cfg       *types.AgentConfig
-	hmcClient *hmc.HmcRestClient
-	logger    *logger.Logger
-	debug     bool
+	cfg          *types.AgentConfig
+	hmcClient    *hmc.HmcRestClient
+	logger       *logger.Logger
+	debug        bool
+	isoMappings  []types.ISOMapping
+	stateManager *types.StateManager
+	// Track mount points per VIOS to enable sharing across nodes
+	viosMountPoints map[string]string // key: viosUUID, value: mountPoint
+	viosMounted     map[string]bool   // key: viosUUID, value: true if already mounted
+	// Store selected VIOS to ensure all nodes use the same one
+	selectedVIOSUUID string
+	selectedVIOSName string
 }
 
 // GetHMCClient returns the underlying HMC REST client for external use (e.g., validation)
@@ -70,12 +78,76 @@ func (h *HMCProvider) DiscoverMetadata(ctx context.Context) error {
 		node.LocationCode = adapters[0].LocationCode
 
 		h.logger.Info("✓ Discovered", "lpar", node.ExistingLPARName, "mac", node.MACAddress, "uuid", node.UUID)
+		
+		// Save discovered node to state file
+		if h.stateManager != nil {
+			state, err := h.stateManager.LoadState()
+			if err != nil || state == nil {
+				state = &types.DeploymentState{
+					ClusterName: h.cfg.OpenShift.ClusterName,
+					Status:      "in_progress",
+					StartTime:   time.Now().Format(time.RFC3339),
+				}
+			}
+			
+			// Create discovered node record
+			discoveredNode := types.DiscoveredNode{
+				Hostname:     node.Hostname,
+				Role:         node.Role,
+				IP:           node.IP,
+				MACAddress:   node.MACAddress,
+				UUID:         node.UUID,
+				ProfileUUID:  node.ProfileUUID,
+				LocationCode: node.LocationCode,
+				SystemName:   node.SystemName,
+				LPARName:     node.ExistingLPARName,
+				DiscoveredAt: time.Now().Format(time.RFC3339),
+			}
+			
+			// Check if node already exists in state
+			nodeExists := false
+			for i, existing := range state.DiscoveredNodes {
+				if existing.UUID == discoveredNode.UUID {
+					// Update existing node
+					state.DiscoveredNodes[i] = discoveredNode
+					nodeExists = true
+					break
+				}
+			}
+			
+			if !nodeExists {
+				state.DiscoveredNodes = append(state.DiscoveredNodes, discoveredNode)
+			}
+			
+			if err := h.stateManager.SaveState(state); err != nil {
+				h.logger.Warn("Failed to save discovered node to state", "error", err)
+			}
+		}
 	}
+	
+	// Log summary of discovered nodes
+	if h.stateManager != nil {
+		if state, err := h.stateManager.LoadState(); err == nil && state != nil {
+			h.logger.Info("Saved discovered nodes to state file", "count", len(state.DiscoveredNodes))
+		}
+	}
+	
 	return nil
 }
 
-// BootNode executes the lpar_netboot command via REST API for a single node
+// BootNode routes to the appropriate boot method (netboot or ISO)
 func (h *HMCProvider) BootNode(ctx context.Context, node *types.NodeConfig) error {
+	// Route based on boot method
+	if h.cfg.Nodes.BootMethod == "iso" {
+		return h.bootNodeWithISO(ctx, node)
+	}
+	
+	// Default to netboot
+	return h.networkBootLpar(ctx, node)
+}
+
+// networkBootLpar executes the lpar_netboot command via REST API for a single node
+func (h *HMCProvider) networkBootLpar(ctx context.Context, node *types.NodeConfig) error {
 	h.logger.Info("Processing LPAR for netboot", "lpar", node.ExistingLPARName)
 
 	var lparDetailed *hmc.LogicalPartitionDetailed
@@ -292,5 +364,571 @@ func (h *HMCProvider) Cleanup() error {
 		return err
 	}
 	h.logger.Debug("Successfully logged out from HMC")
+	return nil
+}
+// bootNodeWithISO boots an LPAR using Agent ISO via NFS mount
+// Creates unique optical media for each node from a shared NFS mount
+func (h *HMCProvider) bootNodeWithISO(ctx context.Context, node *types.NodeConfig) error {
+	h.logger.Info("Booting node with Agent ISO via NFS", "node", node.ExistingLPARName)
+	
+	// Step 1: Validate LPAR UUID (populated by DiscoverMetadata)
+	if node.UUID == "" {
+		return fmt.Errorf("LPAR UUID not found for %s", node.ExistingLPARName)
+	}
+	
+	// Step 2: Ensure viosadmin user exists (required for VIOS operations)
+	h.logger.Info("Checking viosadmin user on HMC")
+	viosUsername, viosPassword, viosUserCreated, err := h.hmcClient.EnsureVIOSAdminUser(h.cfg.HMC.Username, h.cfg.HMC.Password, h.debug)
+	if err != nil {
+		return fmt.Errorf("failed to ensure viosadmin user: %w", err)
+	}
+	if viosUserCreated {
+		h.logger.Info("✓ viosadmin user created", "username", viosUsername)
+	} else {
+		h.logger.Info("✓ viosadmin user already exists", "username", viosUsername)
+	}
+	
+	// Step 3: Get or select active VIOS (reuse same VIOS for all nodes)
+	var viosUUID, viosName string
+	if h.selectedVIOSUUID != "" {
+		// Reuse previously selected VIOS
+		viosUUID = h.selectedVIOSUUID
+		viosName = h.selectedVIOSName
+		h.logger.Info("Reusing selected VIOS for all nodes", "name", viosName, "uuid", viosUUID)
+	} else {
+		// First node: discover and store VIOS selection
+		var err error
+		viosUUID, viosName, err = h.getActiveVIOS(ctx, node.SystemName)
+		if err != nil {
+			return fmt.Errorf("failed to get active VIOS: %w", err)
+		}
+		h.selectedVIOSUUID = viosUUID
+		h.selectedVIOSName = viosName
+		h.logger.Info("Selected VIOS for cluster", "name", viosName, "uuid", viosUUID)
+	}
+	
+	// Step 4: Get system UUID
+	sysUUID, _, err := h.hmcClient.GetManagedSystemByName(node.SystemName, true)
+	if err != nil {
+		return fmt.Errorf("failed to get system UUID: %w", err)
+	}
+	
+	// ========================================================================
+	// STEP 5: DETERMINE MOUNT POINT (SHARED PER VIOS) AND MEDIA NAME (PER-NODE)
+	// ========================================================================
+	// Initialize maps if needed
+	if h.viosMountPoints == nil {
+		h.viosMountPoints = make(map[string]string)
+	}
+	if h.viosMounted == nil {
+		h.viosMounted = make(map[string]bool)
+	}
+	
+	// Check if we already have a mount point for this VIOS
+	mountPoint, exists := h.viosMountPoints[viosUUID]
+	if !exists {
+		// Generate new mount point for this VIOS (first node using this VIOS)
+		randomStr := fmt.Sprintf("%d", time.Now().Unix())
+		mountPoint = fmt.Sprintf("/mnt/%s-%s", h.cfg.OpenShift.ClusterName, randomStr)
+		h.viosMountPoints[viosUUID] = mountPoint
+		h.logger.Info("Generated new mount point for VIOS", "vios", viosName, "mount", mountPoint)
+	} else {
+		h.logger.Info("Reusing existing mount point for VIOS", "vios", viosName, "mount", mountPoint)
+	}
+	
+	// Each node gets its own unique optical media name (max 15 chars)
+	// Format: <short-random>-iso (e.g., "a1b2c3d-iso")
+	randomStr := fmt.Sprintf("%x", time.Now().UnixNano()%0xFFFFFFF) // 7 hex chars
+	mediaName := fmt.Sprintf("%s-iso", randomStr)
+	
+	h.logger.Info("Mount point and media configuration", "mount", mountPoint, "media", mediaName, "node", node.Hostname)
+	
+	// ========================================================================
+	// STEP 6: MOUNT NFS IF NOT ALREADY MOUNTED (SHARED MOUNT PER VIOS)
+	// ========================================================================
+	nfsServer := h.cfg.Controller.IP
+	exportPath := fmt.Sprintf("/opt/shiftlaunch/clusters/%s/install-dir", h.cfg.OpenShift.ClusterName)
+	
+	// Check if we've already mounted NFS for this VIOS
+	if !h.viosMounted[viosUUID] {
+		h.logger.Info("Creating mount directory on VIOS", "path", mountPoint)
+		
+		// Create mount directory
+		mkdirCmd := fmt.Sprintf(`viosvrcmd -m %s -p %s -c "mkdir -p %s" --admin`, node.SystemName, viosName, mountPoint)
+		if _, err := hmc.CliRunnerViaSsh(h.cfg.HMC.IP, viosUsername, viosPassword, mkdirCmd, h.debug); err != nil {
+			return fmt.Errorf("failed to create mount directory: %w", err)
+		}
+		
+		h.logger.Info("Mounting NFS on VIOS", "server", nfsServer, "export", exportPath, "mount", mountPoint)
+		
+		// Mount NFS with retry logic
+		var mountErr error
+		maxRetries := 3
+		for i := 0; i < maxRetries; i++ {
+			_, mountErr = hmc.MountNFS(h.hmcClient, node.SystemName, viosName, nfsServer, exportPath, mountPoint, "3", h.debug)
+			if mountErr == nil || strings.Contains(mountErr.Error(), "already mounted") {
+				mountErr = nil
+				break
+			}
+			if (strings.Contains(mountErr.Error(), "500") || strings.Contains(mountErr.Error(), "session is null")) && i < maxRetries-1 {
+				h.logger.Warn(fmt.Sprintf("HMC session corrupted during NFS mount (attempt %d/%d). Re-authenticating...", i+1, maxRetries))
+				_ = h.hmcClient.Logoff()
+				time.Sleep(2 * time.Second)
+				_ = h.hmcClient.Login(h.cfg.HMC.Username, h.cfg.HMC.Password, h.debug)
+				time.Sleep(3 * time.Second)
+				continue
+			}
+			break
+		}
+		if mountErr != nil {
+			return fmt.Errorf("failed to mount NFS: %w", mountErr)
+		}
+		
+		// Mark this VIOS as mounted
+		h.viosMounted[viosUUID] = true
+		h.logger.Info("✓ NFS mounted successfully")
+		
+		// Save NFS mount to state file
+		if h.stateManager != nil {
+			state, err := h.stateManager.LoadState()
+			if err != nil || state == nil {
+				state = &types.DeploymentState{
+					ClusterName: h.cfg.OpenShift.ClusterName,
+					Status:      "in_progress",
+					StartTime:   time.Now().Format(time.RFC3339),
+				}
+			}
+			
+			// Add NFS mount record
+			nfsMount := types.NFSMount{
+				VIOSUUID:   viosUUID,
+				VIOSName:   viosName,
+				SystemName: node.SystemName,
+				MountPoint: mountPoint,
+				NFSServer:  nfsServer,
+				ExportPath: exportPath,
+				MountedAt:  time.Now().Format(time.RFC3339),
+			}
+			
+			// Check if mount already exists
+			mountExists := false
+			for _, existing := range state.NFSMounts {
+				if existing.VIOSUUID == nfsMount.VIOSUUID && existing.MountPoint == nfsMount.MountPoint {
+					mountExists = true
+					break
+				}
+			}
+			
+			if !mountExists {
+				state.NFSMounts = append(state.NFSMounts, nfsMount)
+				if err := h.stateManager.SaveState(state); err != nil {
+					h.logger.Warn("Failed to save NFS mount to state", "error", err)
+				} else {
+					h.logger.Info("Saved NFS mount to state file", "mount", mountPoint)
+				}
+			}
+		}
+	} else {
+		h.logger.Info("✓ NFS already mounted on this VIOS, skipping mount")
+	}
+	
+	// ========================================================================
+	// STEP 7: CREATE UNIQUE OPTICAL MEDIA FOR THIS NODE
+	// ========================================================================
+	isoPath := fmt.Sprintf("%s/agent.ppc64le.iso", mountPoint)
+	h.logger.Info("Creating optical media for node", "media", mediaName, "iso", isoPath)
+	h.logger.Info("Uploading ISO to VIOS repository (this copies ~1GB and may take a few minutes)...", "iso", isoPath)
+	
+	// Refresh HMC session before long-running operation to prevent timeout
+	h.logger.Info("Refreshing HMC session before ISO upload...")
+	_ = h.hmcClient.Logoff()
+	time.Sleep(2 * time.Second)
+	if err := h.hmcClient.Login(h.cfg.HMC.Username, h.cfg.HMC.Password, h.debug); err != nil {
+		return fmt.Errorf("failed to refresh HMC session: %w", err)
+	}
+	time.Sleep(3 * time.Second)
+	
+	// Use CreateVirtualOpticalMedia with read-only flag
+	// This creates the media with -ro flag to prevent accidental overwrites
+	// Note: We don't use -nfslink because it doesn't respect the -ro flag
+	// The ISO will be copied into the VIOS media repository
+	err = h.hmcClient.CreateVirtualOpticalMedia(
+		node.SystemName,  // sysName
+		viosUUID,         // viosUUID
+		viosName,         // viosName
+		mediaName,        // mediaName
+		isoPath,          // sourceFile (path to ISO on NFS mount)
+		0,                // sizeMB (not used when sourceFile is provided)
+		true,             // readOnly (create with -ro flag)
+		true,            // nfsLink (false to copy and respect -ro flag)
+		h.debug,          // debug
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create optical media: %w", err)
+	}
+	h.logger.Info("✓ Optical media created successfully", "media", mediaName)
+	
+	// ========================================================================
+	// STEP 8: MAP OPTICAL MEDIA TO LPAR (With LBYL Check)
+	// ========================================================================
+	h.logger.Info("Checking if optical media is already mapped to LPAR...", "lpar", node.ExistingLPARName, "media", mediaName)
+
+	alreadyMapped := false
+	mappings, mapCheckErr := h.hmcClient.GetViosSCSIMappings(viosUUID, h.debug)
+	if mapCheckErr != nil {
+		h.logger.Warn("Failed to fetch VIOS mappings for verification, proceeding with map attempt", "error", mapCheckErr)
+	} else {
+		targetLparLower := strings.ToLower(node.UUID)
+		for _, mapping := range mappings {
+			// Check if mapping belongs to our LPAR
+			if strings.HasSuffix(strings.ToLower(mapping.AssociatedLogicalPartition.Href), targetLparLower) {
+				// Check if the specific ISO is already mapped
+				if mapping.Storage.VirtualOpticalMedia.MediaName == mediaName {
+					alreadyMapped = true
+					break
+				}
+			}
+		}
+	}
+
+	if alreadyMapped {
+		h.logger.Info("✓ Optical media is already mapped to LPAR. Skipping mapping step.")
+	} else {
+		h.logger.Info("Mapping optical media to LPAR", "lpar", node.ExistingLPARName, "media", mediaName)
+		
+		_, err = h.hmcClient.CreateVirtualOpticalMaps(sysUUID, viosUUID, node.UUID, []string{mediaName}, h.debug)
+		if err != nil {
+			return fmt.Errorf("failed to map optical media: %w", err)
+		}
+		
+		h.logger.Info("✓ Optical media mapped successfully")
+	}
+	
+	// ========================================================================
+	// STEP 9: SAVE PARTITION PROFILE
+	// ========================================================================
+	profileName := "default_profile"
+	h.logger.Info("Saving partition profile", "profile", profileName)
+	
+	err = h.hmcClient.SaveCurrentLparConfig(node.UUID, profileName, true, h.debug)
+	if err != nil {
+		return fmt.Errorf("failed to save partition profile: %w", err)
+	}
+	// ========================================================================
+	// STEP 9.5: SET BOOT STRING TO PRIORITIZE ISO. 
+	// Works only for P10(1050.50, 1060.50), P11(1110.00), on HMC 1061, 1110 , VIOS 4.1.1.0, 4.1.1.00
+	// ========================================================================
+	h.logger.Info("Setting Pending Boot String to 'cd/dvd-all'...")
+	
+	err = h.hmcClient.SetPartitionBootString(node.UUID, "cd/dvd-all", h.debug)
+	if err != nil {
+		h.logger.Warn("Failed to set boot string (may require manual SMS boot)", "error", err)
+	} else {
+		h.logger.Info("✓ Boot string set to 'cd/dvd-all'")
+	}
+
+	// ========================================================================
+	// STEP 10: GET PROFILE UUID AND POWER ON
+	// ========================================================================
+	lparDetails, err := h.hmcClient.GetLogicalPartitionDetailed(node.UUID, h.debug)
+	if err != nil {
+		return fmt.Errorf("failed to get LPAR details: %w", err)
+	}
+	
+	profileHref := lparDetails.AssociatedPartitionProfile.Href
+	if profileHref == "" {
+		return fmt.Errorf("no associated partition profile found")
+	}
+	
+	// Extract UUID from href (last 36 characters)
+	profileUUID := profileHref[len(profileHref)-36:]
+	
+	h.logger.Info("Powering on LPAR with ISO boot", "lpar", node.ExistingLPARName)
+	
+	powerOnOpts := &hmc.PowerOnOptions{
+		ProfileUUID: profileUUID,
+		BootMode:    "norm", // sms or norm
+		Keylock:     "normal",
+	}
+	
+	_, err = h.hmcClient.PowerOnPartition(ctx, node.UUID, powerOnOpts, h.debug)
+	if err != nil {
+		if strings.Contains(err.Error(), "already running") {
+			h.logger.Info("LPAR already running")
+		} else {
+			return fmt.Errorf("failed to power on LPAR: %w", err)
+		}
+	}
+	
+	h.logger.Info("LPAR powered on successfully with Agent ISO")
+	
+	// Note: NFS remains mounted and ISO remains mapped during installation.
+	// Cleanup will be handled during teardown phase after LPAR is powered off.
+	
+	// Track ISO mapping for cleanup and save to state
+	if h.isoMappings == nil {
+		h.isoMappings = []types.ISOMapping{}
+	}
+	// Track ISO mapping for cleanup
+	mapping := types.ISOMapping{
+		NodeName:   node.Hostname,
+		MediaName:  mediaName,
+		VIOSUUID:   viosUUID,
+		VIOSName:   viosName,
+		LparUUID:   node.UUID,
+		SystemName: node.SystemName,
+		MountPoint: mountPoint,
+		MappedAt:   time.Now().Format(time.RFC3339),
+	}
+	
+	// Save to state file for teardown (including viosadmin user info)
+	if h.stateManager != nil {
+		state, err := h.stateManager.LoadState()
+		if err != nil || state == nil {
+			h.logger.Warn("State file not found, creating new state for ISO mappings")
+			state = &types.DeploymentState{
+				ClusterName: h.cfg.OpenShift.ClusterName,
+				Status:      "in_progress",
+				StartTime:   time.Now().Format(time.RFC3339),
+			}
+		}
+		
+		// --- FIX: Safely append to existing state mappings instead of overwriting ---
+		mappingExists := false
+		for _, existing := range state.ISOMappings {
+			if existing.NodeName == mapping.NodeName {
+				mappingExists = true
+				break
+			}
+		}
+		
+		if !mappingExists {
+			state.ISOMappings = append(state.ISOMappings, mapping)
+		}
+		
+		state.VIOSAdminUsername = viosUsername
+		state.VIOSAdminPassword = viosPassword
+		state.VIOSAdminCreated = viosUserCreated
+		state.VIOSAdminCheckedAt = time.Now().Format(time.RFC3339)
+		
+		if err := h.stateManager.SaveState(state); err != nil {
+			h.logger.Warn("Failed to save ISO mappings to state", "error", err)
+		} else {
+			h.logger.Info("Saved ISO mappings to state file", "count", len(state.ISOMappings))
+		}
+	}
+	
+	return nil
+}
+
+// getActiveVIOS discovers and returns the first active VIOS on the system
+func (h *HMCProvider) getActiveVIOS(ctx context.Context, systemName string) (uuid, name string, err error) {
+	sysUUID, _, err := h.hmcClient.GetManagedSystemByName(systemName, h.debug)
+	if err != nil {
+		return "", "", err
+	}
+	
+	viosList, err := h.hmcClient.GetVirtualIOServersQuick(sysUUID, h.debug)
+	if err != nil {
+		return "", "", err
+	}
+	
+	if len(viosList) == 0 {
+		return "", "", fmt.Errorf("no VIOS servers found on system %s", systemName)
+	}
+	
+	viosUUIDs := make([]string, len(viosList))
+	for i, v := range viosList {
+		viosUUIDs[i] = v.UUID
+	}
+	
+	activeVIOSMap, err := h.hmcClient.GetActiveVIOSServers(sysUUID, viosUUIDs, h.debug)
+	if err != nil {
+		return "", "", err
+	}
+	
+	for uuid, details := range activeVIOSMap {
+		return uuid, details.PartitionName, nil
+	}
+	
+	return "", "", fmt.Errorf("no active VIOS found on system %s", systemName)
+}
+
+// CleanupISOMappings unmaps and deletes ISO media (called during teardown)
+// Loads ISO mappings from state file if not already in memory
+func (h *HMCProvider) CleanupISOMappings(ctx context.Context) error {
+	// Load ISO mappings from state file if not in memory
+	if len(h.isoMappings) == 0 && h.stateManager != nil {
+		if state, err := h.stateManager.LoadState(); err == nil && state != nil {
+			h.isoMappings = state.ISOMappings
+			h.logger.Info("Loaded ISO mappings from state file", "count", len(h.isoMappings))
+		}
+	}
+	
+	if len(h.isoMappings) == 0 {
+		h.logger.Info("No ISO mappings found to clean up")
+		return nil
+	}
+	
+	// Get viosadmin credentials from state file or ensure they exist
+	var viosUsername, viosPassword string
+	if state, err := h.stateManager.LoadState(); err == nil && state != nil && state.VIOSAdminUsername != "" {
+		// Use credentials from state file
+		viosUsername = state.VIOSAdminUsername
+		viosPassword = state.VIOSAdminPassword
+		h.logger.Info("Using viosadmin credentials from state file", "username", viosUsername)
+	} else {
+		// Ensure viosadmin user exists
+		var created bool
+		viosUsername, viosPassword, created, err = h.hmcClient.EnsureVIOSAdminUser(h.cfg.HMC.Username, h.cfg.HMC.Password, h.debug)
+		if err != nil {
+			h.logger.Warn("Failed to get viosadmin credentials, cleanup may fail", "error", err)
+			// Continue with cleanup attempt using default credentials
+			viosUsername, viosPassword = h.hmcClient.GetVIOSAdminCredentials()
+		} else if created {
+			h.logger.Info("Created viosadmin user for cleanup", "username", viosUsername)
+		}
+	}
+	
+	h.logger.Info("Cleaning up ISO mappings", "count", len(h.isoMappings))
+	
+	for _, mapping := range h.isoMappings {
+		// Get system UUID
+		sysUUID, _, err := h.hmcClient.GetManagedSystemByName(mapping.SystemName, h.debug)
+		if err != nil {
+			h.logger.Warn("Failed to get system UUID for cleanup", "system", mapping.SystemName, "error", err)
+			continue
+		}
+		
+		// Unmap optical media
+		h.logger.Info("Unmapping optical media", 
+			"node", mapping.NodeName, 
+			"media", mapping.MediaName)
+		
+		_, err = h.hmcClient.DeleteVirtualOpticalMaps(
+			sysUUID,
+			mapping.VIOSUUID,
+			mapping.LparUUID,
+			[]string{mapping.MediaName},
+			h.debug)
+		if err != nil {
+			h.logger.Error("Failed to unmap optical media",
+				"media", mapping.MediaName,
+				"error", err)
+			// Continue with cleanup even if unmap fails
+		} else {
+			h.logger.Info("Successfully unmapped optical media", "media", mapping.MediaName)
+			
+			// Save the LPAR profile to persist the changes
+			// Use the default profile name and force overwrite
+			h.logger.Info("Saving LPAR profile after unmapping", "node", mapping.NodeName)
+			profileName := "default_profile"
+			err = h.hmcClient.SaveCurrentLparConfig(mapping.LparUUID, profileName, true, h.debug)
+			if err != nil {
+				h.logger.Warn("Failed to save LPAR profile after unmapping",
+					"node", mapping.NodeName,
+					"profile", profileName,
+					"error", err)
+				// Continue with cleanup even if profile save fails
+			} else {
+				h.logger.Info("Successfully saved LPAR profile",
+					"node", mapping.NodeName,
+					"profile", profileName)
+			}
+		}
+	}
+	
+	// ========================================================================
+	// 1. DELETE VIRTUAL OPTICAL MEDIA (Per-Node Media)
+	// ========================================================================
+	for _, mapping := range h.isoMappings {
+		h.logger.Info("Checking VIOS repository for optical media...",
+			"media", mapping.MediaName,
+			"vios", mapping.VIOSName)
+
+		// Look Before You Leap: Check if media actually exists using the SDK
+		_, err := h.hmcClient.GetVirtualOpticalMedia(mapping.SystemName, mapping.VIOSName, mapping.MediaName, h.debug)
+
+		if err == nil {
+			// Media exists, safe to delete
+			h.logger.Info("Media found in repository. Deleting...", "media", mapping.MediaName)
+			delErr := h.hmcClient.DeleteVirtualOpticalMedia(
+				mapping.SystemName,
+				mapping.VIOSName,
+				mapping.MediaName,
+				h.debug)
+			
+			if delErr != nil {
+				h.logger.Warn("Failed to delete optical media", "media", mapping.MediaName, "error", delErr)
+			} else {
+				h.logger.Info("Successfully deleted optical media", "media", mapping.MediaName)
+			}
+		} else {
+			// Media doesn't exist or errored out during check
+			if strings.Contains(err.Error(), "not found") {
+				h.logger.Info("Media not found in repository. Skipping deletion.", "media", mapping.MediaName)
+			} else {
+				h.logger.Warn("Failed to verify media existence. Skipping deletion.", "error", err)
+			}
+		}
+	}
+
+	// ========================================================================
+	// 2. UNMOUNT NFS & REMOVE DIRECTORY (Shared Mount - Do Once)
+	// ========================================================================
+	// Since all nodes share the same mount point, we only need to unmount once
+	mountPointsProcessed := make(map[string]bool)
+	
+	for _, mapping := range h.isoMappings {
+		if mapping.MountPoint == "" {
+			continue
+		}
+		
+		// Skip if we've already processed this mount point
+		if mountPointsProcessed[mapping.MountPoint] {
+			continue
+		}
+		mountPointsProcessed[mapping.MountPoint] = true
+
+		h.logger.Info("Unmounting shared NFS from VIOS...", "mount_point", mapping.MountPoint, "vios", mapping.VIOSName)
+
+		// Attempt to unmount
+		_, err := hmc.UnmountNFS(h.hmcClient, mapping.SystemName, mapping.VIOSName, mapping.MountPoint, h.debug)
+
+		// Check if it was already unmounted
+		if err != nil && (strings.Contains(err.Error(), "Could not find anything to unmount") || strings.Contains(err.Error(), "not mounted")) {
+			h.logger.Info("Directory is already unmounted from VIOS", "mount_point", mapping.MountPoint)
+		} else if err != nil {
+			h.logger.Error("Failed to unmount NFS", "mount_point", mapping.MountPoint, "error", err)
+		} else {
+			h.logger.Info("Successfully unmounted NFS from VIOS", "mount_point", mapping.MountPoint)
+		}
+
+		// Safely attempt to remove the directory
+		h.logger.Info("Removing mount directory from VIOS", "mount_point", mapping.MountPoint)
+		rmdirCmd := fmt.Sprintf(`viosvrcmd -m %s -p %s -c "rmdir %s" --admin`, mapping.SystemName, mapping.VIOSName, mapping.MountPoint)
+		_, err = hmc.CliRunnerViaSsh(h.cfg.HMC.IP, viosUsername, viosPassword, rmdirCmd, h.debug)
+
+		if err != nil && (strings.Contains(err.Error(), "No such file or directory") || strings.Contains(err.Error(), "not found")) {
+			h.logger.Info("Mount directory already removed", "mount_point", mapping.MountPoint)
+		} else if err != nil {
+			h.logger.Warn("Failed to remove mount directory", "mount_point", mapping.MountPoint, "error", err)
+		} else {
+			h.logger.Info("Successfully removed mount directory", "mount_point", mapping.MountPoint)
+		}
+	}
+
+	// Clear ISO mappings from state file [cite: 80]
+	if h.stateManager != nil {
+		if state, err := h.stateManager.LoadState(); err == nil && state != nil {
+			state.ISOMappings = nil
+			if err := h.stateManager.SaveState(state); err != nil {
+				h.logger.Warn("Failed to clear ISO mappings from state", "error", err)
+			}
+		}
+	}
+
+	// Clear memory mapping so Orchestrator doesn't accidentally save it back 
+	h.isoMappings = nil
 	return nil
 }
