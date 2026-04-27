@@ -2,6 +2,8 @@
 
 A comprehensive Go-based tool for deploying OpenShift clusters (SNO or Multi-Node) on IBM Power Systems using the User-Provisioned Infrastructure (UPI) method with **full automation**—from starter configuration generation to cluster ready state.
 
+🎉 **Batteries Included:** ShiftLaunch now ships as a completely standalone binary that dynamically generates its own starter configurations, eliminating the need to bundle sample YAML files. Moving from a "binary plus a folder of sample configs" to a single, self-contained, zero-dependency executable is the hallmark of a mature, enterprise-grade CLI tool.
+
 ## Overview
 
 ShiftLaunch provides **end-to-end automation** for OpenShift deployment on IBM Power Systems with support for two distinct boot methods:
@@ -168,8 +170,25 @@ managed_services:
 
 ## Prerequisites
 
+ShiftLaunch requires specific environments and firmware levels to orchestrate OpenShift flawlessly across IBM Power Systems.
+
+### Pull Secret
+You need a valid Red Hat pull secret (`pull-secret.json`) to proceed. Please ensure this file is placed in the same directory as the `shiftlaunch` executable. 
+
+You can obtain your pull secret from the [Red Hat Customer Portal](https://access.redhat.com/solutions/4844461).
+
+### Supported(Tested) Component Versions
+
+| Component | Supported Versions / Firmware |
+| :--- | :--- |
+| **Controller Node (OS)** | RHEL 9, CentOS 9 |
+| **Hardware Management Console (HMC)** | **V11R2** (Build Level: 2604091530, Service Pack: 1120)<br>**V11R1** (Build Level: 2502191030, Service Pack: 1110)<br>**V10R3 M1063** |
+| **IBM Power Systems (PowerFW)** | `RB1120_fw1120.00`<br>`ML1060_fw1060.51 (148)` |
+| **Virtual I/O Server (VIOS)** | `4.1.2.0`<br>`4.1.1.10` |
+
+### Infrastructure Requirements
+
 1. **Controller Node (Bastion)**:
-   - RHEL 8/9 or compatible Linux.
    - Root SSH access.
    - Network routing to the Power Systems HMC and the target OpenShift subnets.
    - Sufficient disk space for RHCOS images and ISO generation (~10GB per cluster).
@@ -183,8 +202,8 @@ managed_services:
    - Sufficient Compute and Memory resources.
    - Virtual switches (`vswitch`) pre-configured.
 
-4. **Storage**:
-   - VIOS with an active Volume Group (excluding `rootvg`) with sufficient free space.
+4. **Storage (VIOS)**:
+   - The VIOS must have an active Virtual Media Library with sufficient free space to host the Agent ISOs.
 
 ---
 
@@ -196,15 +215,7 @@ managed_services:
    - **Cause**: You are running `generate-config` but the target file already exists.
    - **Solution**: Delete the existing file or specify a different output path using `-config new-name.yaml`.
 
-2. **Network Boot "No Network Adapters Found" Error**
-   - **Cause**: The LPAR exists but has no network adapter attached (usually due to a partial failure in a previous run).
-   - **Solution**: Run the `delete` command to clean up the orphaned LPAR, then retry the `create` command.
-
-3. **Network Boot Location Code Errors (`can not find physical location...`)**
-   - **Cause**: HMC API returns location codes without port suffixes (`-T0` or `-T1`), but netboot strictly requires them.
-   - **Solution**: ShiftLaunch automatically attempts `-T0` and falls back to `-T1`. If this fails, use the LPAR SMS menu (`Boot Options` → `Network`) to manually verify the adapter's location code suffix.
-
-4. **"Cluster is already managed and fully deployed"**
+2. **"Cluster is already managed and fully deployed"**
    - **Cause**: You attempted to run `create` on a cluster directory that contains a `.managed` marker (indicating a healthy, finished cluster).
    - **Solution**: To redeploy, you must explicitly `delete` the cluster first to prevent accidental data loss.
 
