@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os/exec"
@@ -12,7 +13,7 @@ import (
 )
 
 // WaitForBootstrap waits for the OpenShift bootstrap process to complete
-func (o *Orchestrator) WaitForBootstrap(cancelCtx context.Context) error {
+func (o *Orchestrator) waitForBootstrapComplete(cancelCtx context.Context) error {
 	// Skip bootstrap wait for Agent ISO - it doesn't have a separate bootstrap phase
 	if o.cfg.Nodes.BootMethod == "iso" {
 		o.logger.Info("Skipping bootstrap wait (Agent ISO uses unified installation)")
@@ -36,7 +37,12 @@ func (o *Orchestrator) WaitForBootstrap(cancelCtx context.Context) error {
 
 	cmd := exec.CommandContext(timeoutCtx, installerPath, "wait-for", "bootstrap-complete", "--dir", targetDir, "--log-level=info")
 
-	output, cmdErr := cmd.CombinedOutput()
+	var outBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &outBuf
+
+	cmdErr := cmd.Run()
+	output := outBuf.Bytes()
 
 	if cmdErr != nil {
 		spinner.Fail("Bootstrap failed!")
@@ -55,7 +61,7 @@ func (o *Orchestrator) WaitForBootstrap(cancelCtx context.Context) error {
 }
 
 // WaitForInstall waits for installation to complete and auto-approves worker CSRs
-func (o *Orchestrator) WaitForInstall(cancelCtx context.Context) error {
+func (o *Orchestrator) waitForInstallComplete(cancelCtx context.Context) error {
 	// Use agent-specific wait for ISO boot
 	if o.cfg.Nodes.BootMethod == "iso" {
 		return o.waitForAgentInstall(cancelCtx)
@@ -90,7 +96,12 @@ func (o *Orchestrator) WaitForInstall(cancelCtx context.Context) error {
 
 	cmd := exec.CommandContext(timeoutCtx, installerPath, "wait-for", "install-complete", "--dir", targetDir, "--log-level=info")
 
-	output, cmdErr := cmd.CombinedOutput()
+	var outBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &outBuf
+
+	cmdErr := cmd.Run()
+	output := outBuf.Bytes()
 
 	if cmdErr != nil {
 		spinner.Fail("Installation failed!")
@@ -128,7 +139,12 @@ func (o *Orchestrator) waitForAgentInstall(cancelCtx context.Context) error {
 
 	cmd := exec.CommandContext(timeoutCtx, installerPath, "agent", "wait-for", "install-complete", "--dir", targetDir, "--log-level=info")
 
-	output, cmdErr := cmd.CombinedOutput()
+	var outBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &outBuf
+
+	cmdErr := cmd.Run()
+	output := outBuf.Bytes()
 
 	if cmdErr != nil {
 		spinner.Fail("Agent installation failed!")

@@ -584,12 +584,12 @@ func (o *Orchestrator) Deploy(ctx context.Context,resume bool) (err error) {
 		
 		var phaseErr error
 		func() {
-			if err := o.WaitForBootstrap(ctx); err != nil {
+			if err := o.waitForBootstrapComplete(ctx); err != nil {
 				phaseErr = err
 				return
 			}
 
-			if err := o.WaitForInstall(ctx); err != nil {
+			if err := o.waitForInstallComplete(ctx); err != nil {
 				phaseErr = err
 				return
 			}
