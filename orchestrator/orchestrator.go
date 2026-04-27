@@ -652,7 +652,7 @@ func (o *Orchestrator) Deploy(ctx context.Context,resume bool) (err error) {
 
 
 // GetClusterStatus returns a formatted string of the current deployment state
-func (o *Orchestrator) GetClusterStatus() string {
+func (o *Orchestrator) GetClusterStatus(ctx context.Context) string {
 	state := o.state
 	
 	status := fmt.Sprintf(`Cluster: %s
@@ -666,6 +666,14 @@ Started: %s
 		status += fmt.Sprintf("Ended: %s\n", state.EndTime)
 	}
 
+	// Add cluster nodes information
+	if len(state.DiscoveredNodes) > 0 {
+		status += "\n=== Cluster Nodes ===\n"
+		for _, node := range state.DiscoveredNodes {
+			status += fmt.Sprintf("%-15s %-10s %s\n", node.Hostname, node.Role, node.IP)
+		}
+	}
+
 	if state.Status == "completed" {
 		status += "\n=== Service Endpoints ===\n"
 		baseDomain := o.cfg.OpenShift.BaseDomain
@@ -673,6 +681,14 @@ Started: %s
 		
 		status += fmt.Sprintf("API Server:       https://api.%s:6443\n", clusterDomain)
 		status += fmt.Sprintf("Web Console:      https://console-openshift-console.apps.%s\n", clusterDomain)
+		status += fmt.Sprintf("OAuth Server:     https://oauth-openshift.apps.%s\n", clusterDomain)
+		status += fmt.Sprintf("Prometheus:       https://prometheus-k8s-openshift-monitoring.apps.%s\n", clusterDomain)
+		status += fmt.Sprintf("Grafana:          https://grafana-openshift-monitoring.apps.%s\n", clusterDomain)
+
+		// Add /etc/hosts entry (single line format)
+		status += "\n=== /etc/hosts Entry ===\n"
+		status += fmt.Sprintf("%s api.%s console-openshift-console.apps.%s integrated-oauth-server-openshift-authentication.apps.%s oauth-openshift.apps.%s prometheus-k8s-openshift-monitoring.apps.%s grafana-openshift-monitoring.apps.%s\n",
+			o.cfg.Network.LoadBalancerIP, clusterDomain, clusterDomain, clusterDomain, clusterDomain, clusterDomain, clusterDomain)
 		
 		// Add kubeadmin credentials if available locally
 		kubeconfigPath := filepath.Join(o.workspaceDir, "install-dir", "auth", "kubeconfig")
@@ -690,7 +706,7 @@ Started: %s
 }
 
 // DumpConfigs outputs required configuration records for Enterprise Admins
-func (o *Orchestrator) DumpConfigs() error {
+func (o *Orchestrator) DumpConfigs(ctx context.Context) error {
 	o.logger.Info("Dumping configuration requirements for unmanaged services...")
 
 	if !o.cfg.ManagedServices.DNS {

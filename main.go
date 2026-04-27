@@ -319,10 +319,10 @@ func runCLI(ctx context.Context, orch *orchestrator.Orchestrator, cfg *types.Age
 	case "delete":
 		return orch.Teardown(ctx)
 	case "status":
-		fmt.Println(orch.GetClusterStatus())
+		fmt.Println(orch.GetClusterStatus(ctx))
 		return nil
 	case "dump-config":
-		return orch.DumpConfigs()
+		return orch.DumpConfigs(ctx)
 	default:
 		fmt.Printf("Unknown command: %s\n", command)
 		printUsage()

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,9 +14,9 @@ import (
 )
 
 // Status shows deployment status
-func Status(orch *orchestrator.Orchestrator) error {
+func Status(ctx context.Context, orch *orchestrator.Orchestrator) error {
 	log := orch.GetLogger()
-	status := orch.GetClusterStatus()
+	status := orch.GetClusterStatus(ctx)
 
 	// Access the cluster name through the Orchestrator helper
 	clusterName := orch.GetClusterName()
@@ -63,5 +64,5 @@ func StatusFromClusterDir(clusterName string, debug bool) error {
 
 	orch := orchestrator.NewOrchestrator(&cfg, daemonCfg, appLogger, workspaceDir, debug)
 
-	return Status(orch)
+	return Status(context.Background(), orch)
 }
