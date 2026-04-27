@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -28,33 +29,87 @@ const version = "0.3.0-byoi-agent"
 
 func main() {
 	// Define command-line flags
-	command := flag.String("command", "", "Command to execute: create, delete, validate, status, list, dump-config, version")
+	command := flag.String("command", "", "Command to execute: create, delete, validate, status, list, dump-config, generate-config, version")
 	configFile := flag.String("config", "config.yaml", "Path to agent configuration file")
 	clusterName := flag.String("cluster", "", "Cluster name override")
 	debug := flag.Bool("debug", false, "Enable debug output to terminal (all logs always saved to workspace)")
-	flag.Parse()
+	configType := flag.String("type", "sno", "Type of config to generate for 'generate-config' (sno or multi)")
+	bootMethod := flag.String("boot", "iso", "Boot method to generate for 'generate-config' (iso or netboot)")
 
-	// --- NEW: Allow positional arguments to act as the command ---
-	if *command == "" && flag.NArg() > 0 {
-		*command = flag.Arg(0)
+	// --- FIX: Indestructible Positional Argument & Help Interception ---
+	// We build a custom argument slice to feed directly into the flag parser.
+	// This completely bypasses Go's default os.Args quirky behavior.
+	var customArgs []string
+	targetCmd := ""
+
+	if len(os.Args) > 1 {
+		if !strings.HasPrefix(os.Args[1], "-") {
+			// Positional command detected (e.g., `./shiftlaunch generate-config -type multi`)
+			targetCmd = os.Args[1]
+			customArgs = append([]string{"-command", os.Args[1]}, os.Args[2:]...)
+		} else {
+			// Standard flag usage
+			customArgs = os.Args[1:]
+		}
+	}
+
+	// Trap help flags cleanly before parsing
+	for _, arg := range customArgs {
+		if arg == "-h" || arg == "--help" || arg == "help" {
+			targetCmd = "help"
+			break
+		}
+	}
+
+	// Override default flag usage to use our context-aware help menu
+	flag.Usage = func() {
+		helpContext := ""
+		if targetCmd != "help" && targetCmd != "" {
+			helpContext = targetCmd
+		} else if len(os.Args) > 2 && os.Args[1] == "help" {
+			helpContext = os.Args[2]
+		}
+		printUsage(helpContext)
+		os.Exit(0)
+	}
+
+	// Force the flag parser to use our perfectly crafted slice!
+	// (Note: Do NOT call flag.Parse() after this line)
+	flag.CommandLine.Parse(customArgs)
+
+	// Fallback catch for standard `-command` usage
+	if targetCmd == "" && *command != "" {
+		targetCmd = *command
 	}
 
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
-	if *command == "version" {
+	if *command == "version" || targetCmd == "version" {
 		fmt.Printf("ShiftLaunch Local Agent v%s\n", version)
 		fmt.Println("A tool for bootstrapping OpenShift clusters on IBM Power Systems")
 		os.Exit(0)
 	}
 
-	if *command == "help" || *command == "-h" || *command == "--help" || *command == "" {
-		printUsage()
+	if *command == "help" || targetCmd == "help" || targetCmd == "" {
+		context := ""
+		if len(os.Args) > 2 && os.Args[1] == "help" {
+			context = os.Args[2]
+		}
+		printUsage(context)
 		os.Exit(0)
 	}
 
-	// --- NEW: Handle list command early so it doesn't try to load config.yaml ---
+	// --- Handle list command early so it doesn't try to load config.yaml ---
 	if *command == "list" {
 		if err := cmd.List(); err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	if *command == "generate-config" {
+		if err := cmd.GenerateConfig(*configType, *bootMethod, *configFile); err != nil {
 			fmt.Printf("Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -65,7 +120,6 @@ func main() {
 	// Graceful Shutdown & Signal Handling
 	// ---------------------------------------------------------
 	ctx, cancel := context.WithCancel(context.Background())
-	// Remove the defer cancel() from here, as we will handle it explicitly
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
@@ -74,8 +128,8 @@ func main() {
 		<-sigCh
 		fmt.Println("\n\n[WARNING] Interrupt signal received! Attempting graceful shutdown...")
 		// Canceling the context will cause localexec commands and HMC waits to abort
-		cancel() 
-		
+		cancel()
+
 		// DO NOT call os.Exit(130) here. Let the context cancellation propagate
 		// down to the active functions, which will return an error, unwind the stack,
 		// and naturally trigger the `defer ReleaseLock()` in the orchestrator.
@@ -108,13 +162,14 @@ func main() {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		log.Fatalf("Failed to parse YAML configuration: %v", err)
 	}
-	
+
 	// Debug: Log config source and node counts for delete/status commands
 	if *command == "delete" || *command == "status" {
 		log.Printf("Loaded config from: %s", configPath)
 		log.Printf("Config validation: SNO=%v, Bootstrap=%d, Masters=%d, Workers=%d",
 			cfg.IsSNO(), len(cfg.Nodes.Bootstrap), len(cfg.Nodes.Masters), len(cfg.Nodes.Workers))
 	}
+	
 	// --- NEW: Auto-Discover Controller IP ---
 	if cfg.Controller.NetworkInterface != "" {
 		ip, err := controller.GetInterfaceIPv4(cfg.Controller.NetworkInterface)
@@ -180,8 +235,8 @@ func main() {
 			log.Fatalf("❌ Error: Cluster '%s' is already managed and fully deployed.\n"+
 				"The cluster directory at '%s' contains a successful deployment.\n"+
 				"If you want to:\n"+
-				"  - View cluster status: shiftlaunch -command status -cluster %s\n"+
-				"  - Delete the cluster: shiftlaunch -command delete -cluster %s\n"+
+				"  - View cluster status: shiftlaunch status -cluster %s\n"+
+				"  - Delete the cluster: shiftlaunch delete -cluster %s\n"+
 				"  - Deploy a new cluster: First delete the existing one, then create again\n"+
 				"\nRefusing to overwrite managed cluster to prevent data loss.",
 				*clusterName, workspaceDir, *clusterName, *clusterName)
@@ -202,7 +257,6 @@ func main() {
 	}
 
 	// Setup logging
-	//var orchMutex sync.Mutex
 	logFilePath := filepath.Join(workspaceDir, "deployment.log")
 	appLogger, err := logger.New(*debug, logFilePath)
 	if err != nil {
@@ -211,9 +265,7 @@ func main() {
 		appLogger, _ = logger.New(*debug, "") // Assuming your logger handles empty string as console-only
 	}
 
-	//orchMutex.Lock()
 	orch := orchestrator.NewOrchestrator(&cfg, daemonCfg, appLogger, workspaceDir, *debug)
-	//orchMutex.Unlock()
 
 	// ---------------------------------------------------------
 	// Auto-Resume Detection & Command Tracking
@@ -221,7 +273,7 @@ func main() {
 	autoResume := false
 	stateManager := types.NewStateManager(*clusterName)
 	var phasesBefore []string
-	
+
 	if *command == "create" {
 		if state, err := stateManager.LoadState(); err == nil && state != nil {
 			phasesBefore = append([]string{}, state.CompletedPhases...)
@@ -237,14 +289,14 @@ func main() {
 			}
 		}
 	}
-	
+
 	// Record command execution start
 	hostname, _ := os.Hostname()
 	username := os.Getenv("USER")
 	if username == "" {
 		username = os.Getenv("USERNAME")
 	}
-	
+
 	cmdExec := types.CommandExecution{
 		Command:      *command,
 		StartTime:    time.Now().Format(time.RFC3339),
@@ -266,7 +318,7 @@ func main() {
 	cmdStartTime := time.Now()
 	err = runCLI(ctx, orch, &cfg, *command, *debug, autoResume)
 	cmdDuration := time.Since(cmdStartTime)
-	
+
 	// Record command execution end
 	cmdExec.EndTime = time.Now().Format(time.RFC3339)
 	cmdExec.Duration = cmdDuration.String()
@@ -276,7 +328,7 @@ func main() {
 	} else {
 		cmdExec.Status = "success"
 	}
-	
+
 	// Get phases after execution
 	if state, loadErr := stateManager.LoadState(); loadErr == nil && state != nil {
 		cmdExec.PhasesAfter = append([]string{}, state.CompletedPhases...)
@@ -284,7 +336,7 @@ func main() {
 		stateManager.AddCommandExecution(state, cmdExec)
 		stateManager.SaveState(state)
 	}
-	
+
 	if err != nil {
 		fmt.Printf("\nError: %v\n", err)
 		os.Exit(1)
@@ -301,7 +353,7 @@ func runCLI(ctx context.Context, orch *orchestrator.Orchestrator, cfg *types.Age
 		exec := localexec.NewLocalClient(orch.GetLogger())
 		v := validation.NewValidator(cfg, exec, debug)
 		v.SetLogger(orch.GetLogger())
-		
+
 		// Set up HMC client for Phase 3 validation (LPAR existence checks)
 		provider, err := compute.NewProvider(cfg, orch.GetLogger(), debug)
 		if err != nil {
@@ -312,10 +364,10 @@ func runCLI(ctx context.Context, orch *orchestrator.Orchestrator, cfg *types.Age
 				v.SetHMCClient(hmcProvider.GetHMCClient())
 			}
 		}
-		
+
 		return v.Validate(ctx)
 	case "create":
-		return orch.Deploy(ctx,resume)
+		return orch.Deploy(ctx, resume)
 	case "delete":
 		return orch.Teardown(ctx)
 	case "status":
@@ -325,35 +377,89 @@ func runCLI(ctx context.Context, orch *orchestrator.Orchestrator, cfg *types.Age
 		return orch.DumpConfigs(ctx)
 	default:
 		fmt.Printf("Unknown command: %s\n", command)
-		printUsage()
+		printUsage("")
 		return fmt.Errorf("invalid command provided")
 	}
 }
 
-func printUsage() {
-	fmt.Println("ShiftLaunch Local Agent - Boot OpenShift clusters on IBM Power Systems")
-	fmt.Println()
-	fmt.Println("Usage:")
-	fmt.Println("  shiftlaunch -command <command> [options]")
-	fmt.Println()
-	fmt.Println("Commands:")
-	fmt.Println("  validate     Validate cluster configuration against infrastructure")
-	fmt.Println("  create       Execute cluster deployment pipeline")
-	fmt.Println("  delete       Power off LPARs and remove local services")
-	fmt.Println("  status       Show cluster deployment status and endpoints")
-	fmt.Println("  list         List all managed clusters in the workspace")
-	fmt.Println("  dump-config  Dump configuration requirements for unmanaged services")
-	fmt.Println("  version      Show version information")
-	fmt.Println()
-	fmt.Println("Options:")
-	fmt.Println("  -config string")
-	fmt.Println("        Path to configuration file (default: config.yaml)")
-	fmt.Println("  -cluster string")
-	fmt.Println("        Cluster name override")
-	fmt.Println("  -debug")
-	fmt.Println("        Enable debug output to terminal")
-	fmt.Println()
-	fmt.Println("Note: The 'create' command automatically resumes from the last completed phase")
-	fmt.Println("      if an existing deployment is detected for the specified cluster.")
-	fmt.Println()
+func printUsage(target string) {
+	// If no specific command was targeted, print the clean global menu
+	if target == "" {
+		fmt.Println("ShiftLaunch Local Agent - Boot OpenShift clusters on IBM Power Systems")
+		fmt.Println("\nUsage:")
+		fmt.Println("  shiftlaunch <command> [options]")
+		fmt.Println("\nCommands:")
+		fmt.Println("  generate-config  Generate a starter config.yaml template")
+		fmt.Println("  validate         Validate cluster configuration against infrastructure")
+		fmt.Println("  create           Execute cluster deployment pipeline")
+		fmt.Println("  delete           Power off LPARs and remove local services")
+		fmt.Println("  status           Show cluster deployment status and endpoints")
+		fmt.Println("  list             List all managed clusters in the workspace")
+		fmt.Println("  dump-config      Dump configuration requirements for unmanaged services")
+		fmt.Println("  version          Show version information")
+		fmt.Println("\nRun 'shiftlaunch <command> -h' for command-specific options.")
+		return
+	}
+
+	// Print command-specific help menus
+	switch target {
+	case "generate-config":
+		fmt.Println("Usage: shiftlaunch generate-config [options]")
+		fmt.Println("\nGenerates a starter configuration template based on topology and boot method.")
+		fmt.Println("\nOptions:")
+		fmt.Println("  -config string   Path to save the generated file (default: config.yaml)")
+		fmt.Println("  -type string     Cluster topology: 'sno' or 'multi' (default: sno)")
+		fmt.Println("  -boot string     Boot method: 'iso' or 'netboot' (default: iso)")
+		fmt.Println("\nExamples:")
+		fmt.Println("  shiftlaunch generate-config -type multi -boot iso -config prod-cluster.yaml")
+	
+	case "create":
+		fmt.Println("Usage: shiftlaunch create [options]")
+		fmt.Println("\nExecutes the cluster deployment pipeline. Automatically resumes if a partial deployment is detected.")
+		fmt.Println("\nOptions:")
+		fmt.Println("  -config string   Path to configuration file (default: config.yaml)")
+		fmt.Println("  -cluster string  Cluster name override")
+		fmt.Println("  -debug           Enable debug output to terminal")
+		fmt.Println("\nExamples:")
+		fmt.Println("  shiftlaunch create -config my-cluster.yaml")
+	
+	case "delete":
+		fmt.Println("Usage: shiftlaunch delete [options]")
+		fmt.Println("\nSafely tears down a cluster, unmaps storage, and cleans up local services.")
+		fmt.Println("\nOptions:")
+		fmt.Println("  -config string   Path to configuration file (default: config.yaml)")
+		fmt.Println("  -cluster string  Target cluster name (if not using a config file)")
+		fmt.Println("  -debug           Enable debug output to terminal")
+		fmt.Println("\nExamples:")
+		fmt.Println("  shiftlaunch delete -cluster ocp-sno")
+	
+	case "validate":
+		fmt.Println("Usage: shiftlaunch validate [options]")
+		fmt.Println("\nPerforms pre-flight checks against the YAML and physical HMC infrastructure.")
+		fmt.Println("\nOptions:")
+		fmt.Println("  -config string   Path to configuration file (default: config.yaml)")
+		fmt.Println("  -debug           Enable debug output to terminal")
+	
+	case "status":
+		fmt.Println("Usage: shiftlaunch status [options]")
+		fmt.Println("\nDisplays the current deployment state, URLs, and credentials of a managed cluster.")
+		fmt.Println("\nOptions:")
+		fmt.Println("  -config string   Path to configuration file (default: config.yaml)")
+		fmt.Println("  -cluster string  Target cluster name (if not using a config file)")
+	
+	case "list":
+		fmt.Println("Usage: shiftlaunch list")
+		fmt.Println("\nLists all active clusters currently managed in the local workspace.")
+	
+	case "dump-config":
+		fmt.Println("Usage: shiftlaunch dump-config [options]")
+		fmt.Println("\nGenerates DNS/DHCP/HAProxy requirements for network administrators if you disabled managed_services in YAML.")
+		fmt.Println("\nOptions:")
+		fmt.Println("  -config string   Path to configuration file (default: config.yaml)")
+		fmt.Println("  -debug           Enable debug output to terminal")
+	
+	default:
+		fmt.Printf("Unknown command: %s\n", target)
+		fmt.Println("Run 'shiftlaunch -h' for a list of valid commands.")
+	}
 }
