@@ -150,34 +150,47 @@ func NewDNSmasqManager(cfg *types.AgentConfig, daemonCfg *config.AgentDaemonConf
 // SetupServices configures the system-level dnsmasq records (DNS, DHCP, PXE Flags)
 func (m *DNSmasqManager) SetupServices(ctx context.Context) error {
 	// Configure DNS records
-	if err := m.writeConfig(ctx,"10", "dns", dnsConfigTemplate); err != nil {
+	if err := m.writeConfig(ctx, "10", "dns", dnsConfigTemplate); err != nil {
 		return err
 	}
 	// Configure DHCP reservations
-	if err := m.writeConfig(ctx,"20", "dhcp", dhcpConfigTemplate); err != nil {
+	if err := m.writeConfig(ctx, "20", "dhcp", dhcpConfigTemplate); err != nil {
 		return err
 	}
 	// Configure PXE service flags
-	return m.writeConfig(ctx,"30", "pxe", pxeConfigTemplate)
+	return m.writeConfig(ctx, "30", "pxe", pxeConfigTemplate)
 }
 
 // ConfigurePXEBoot handles the physical artifacts: grub2 structure, core.elf, images, and grub configs
-func (m *DNSmasqManager) ConfigurePXEBoot(ctx context.Context,workspaceDir string) error {
+func (m *DNSmasqManager) ConfigurePXEBoot(ctx context.Context, workspaceDir string) error {
 	clusterName := m.cfg.OpenShift.ClusterName
 	tftpRoot := m.daemonCfg.Paths.TFTPRoot
 	clusterTftpDir := filepath.Join(tftpRoot, clusterName)
 
 	// 1. Setup GRUB2 environment
-	m.executor.Execute(ctx,fmt.Sprintf("sudo grub2-mknetdir --net-directory=%s", tftpRoot))
-	m.executor.Execute(ctx,fmt.Sprintf("sudo mkdir -p %s/rhcos", clusterTftpDir))
+	// --- FIX: Surface errors if grub2-mknetdir fails due to missing ppc64le modules ---
+	out, err := m.executor.Execute(ctx, fmt.Sprintf("sudo grub2-mknetdir --net-directory=%s", tftpRoot))
+	if err != nil {
+		return fmt.Errorf("failed to generate PXE bootloader (grub2-mknetdir): %w\nOutput: %s\n(Hint: Ensure grub2-ppc64le-modules is installed)", err, out)
+	}
 
-	// 2. Stage bootloader for Power systems [cite: 812]
-	m.executor.Execute(ctx,fmt.Sprintf("sudo cp %s/boot/grub2/powerpc-ieee1275/core.elf %s/", tftpRoot, clusterTftpDir))
+	if _, err := m.executor.Execute(ctx, fmt.Sprintf("sudo mkdir -p %s/rhcos", clusterTftpDir)); err != nil {
+		return fmt.Errorf("failed to create rhcos TFTP directory: %w", err)
+	}
 
-	// 3. Stage RHCOS artifacts from local workspace [cite: 821]
-	m.executor.Execute(ctx,fmt.Sprintf("sudo cp %s/rhcos/kernel %s/rhcos/initramfs.img %s/rhcos/", workspaceDir, workspaceDir, clusterTftpDir))
+	// 2. Stage bootloader for Power systems
+	// --- FIX: Strictly verify the core.elf file copied successfully ---
+	out, err = m.executor.Execute(ctx, fmt.Sprintf("sudo cp %s/boot/grub2/powerpc-ieee1275/core.elf %s/", tftpRoot, clusterTftpDir))
+	if err != nil {
+		return fmt.Errorf("failed to stage core.elf bootloader: %w\nOutput: %s", err, out)
+	}
 
-	// 4. Generate MAC-specific GRUB configs [cite: 814]
+	// 3. Stage RHCOS artifacts from local workspace
+	if _, err := m.executor.Execute(ctx, fmt.Sprintf("sudo cp %s/rhcos/kernel %s/rhcos/initramfs.img %s/rhcos/", workspaceDir, workspaceDir, clusterTftpDir)); err != nil {
+		return fmt.Errorf("failed to stage RHCOS artifacts to TFTP root: %w", err)
+	}
+
+	// 4. Generate MAC-specific GRUB configs
 	tmpl, _ := template.New("grub").Parse(grubTemplate)
 	for _, node := range m.cfg.GetAllNodes() {
 		if node.MACAddress == "" {
@@ -187,18 +200,18 @@ func (m *DNSmasqManager) ConfigurePXEBoot(ctx context.Context,workspaceDir strin
 		macFile := "grub.cfg-01-" + strings.ToLower(strings.ReplaceAll(node.MACAddress, ":", "-"))
 		destPath := filepath.Join(clusterTftpDir, macFile)
 
-		data := m.prepareGrubData(ctx,node)
+		data := m.prepareGrubData(ctx, node)
 		var buf bytes.Buffer
-		tmpl.Execute( &buf, data)
+		tmpl.Execute(&buf, data)
 
-		if err := m.executor.WriteFile(ctx,destPath, buf.Bytes(), 0644); err != nil {
-			return err
+		if err := m.executor.WriteFile(ctx, destPath, buf.Bytes(), 0644); err != nil {
+			return fmt.Errorf("failed to write GRUB config for node %s: %w", node.Hostname, err)
 		}
 	}
 
-	// 5. Finalize permissions and SELinux [cite: 786, 822]
-	m.executor.Execute(ctx,fmt.Sprintf("sudo chown -R nobody:nobody %s", clusterTftpDir))
-	m.executor.Execute(ctx,fmt.Sprintf("sudo restorecon -Rv %s", clusterTftpDir))
+	// 5. Finalize permissions and SELinux
+	m.executor.Execute(ctx, fmt.Sprintf("sudo chown -R nobody:nobody %s", clusterTftpDir))
+	m.executor.Execute(ctx, fmt.Sprintf("sudo restorecon -Rv %s", clusterTftpDir))
 
 	return nil
 }
@@ -276,7 +289,7 @@ func (m *DNSmasqManager) prepareTemplateData(ctx context.Context) map[string]int
 	return data
 }
 
-func (m *DNSmasqManager) prepareGrubData(ctx context.Context,node *types.NodeConfig) interface{} {
+func (m *DNSmasqManager) prepareGrubData(ctx context.Context, node *types.NodeConfig) interface{} {
 	role := node.Role
 	ctrlIP := m.cfg.Controller.IP
 	clusterName := m.cfg.OpenShift.ClusterName
@@ -328,28 +341,29 @@ func (m *DNSmasqManager) prepareGrubData(ctx context.Context,node *types.NodeCon
 	}
 }
 
-// Cleanup removes all cluster-specific fragments and artifacts [cite: 824]
+// Cleanup removes all cluster-specific fragments and artifacts
 func (m *DNSmasqManager) Cleanup(ctx context.Context) {
 	cluster := m.cfg.OpenShift.ClusterName
-	m.executor.Execute(ctx,fmt.Sprintf("sudo rm -f /etc/dnsmasq.d/*-%s-*.conf", cluster))
-	m.executor.Execute(ctx,fmt.Sprintf("sudo rm -rf /var/lib/tftpboot/%s", cluster))
+	m.executor.Execute(ctx, fmt.Sprintf("sudo rm -f /etc/dnsmasq.d/*-%s-*.conf", cluster))
+	m.executor.Execute(ctx, fmt.Sprintf("sudo rm -rf /var/lib/tftpboot/%s", cluster))
 	m.CleanupLeases(ctx)
-	_ = m.executor.SystemctlRestart(ctx,"dnsmasq")
+	_ = m.executor.SystemctlRestart(ctx, "dnsmasq")
 }
 
-// CleanupLeases cleans the local lease file [cite: 442]
+// CleanupLeases cleans the local lease file
 func (m *DNSmasqManager) CleanupLeases(ctx context.Context) {
 	leaseFile := "/var/lib/dnsmasq/dnsmasq.leases"
 	for _, node := range m.cfg.GetAllNodes() {
 		if node.MACAddress != "" {
 			mac := strings.ToLower(strings.ReplaceAll(node.MACAddress, "-", ":"))
-			m.executor.Execute(ctx,fmt.Sprintf("sudo sed -i '/%s/d' %s", mac, leaseFile))
+			m.executor.Execute(ctx, fmt.Sprintf("sudo sed -i '/%s/d' %s", mac, leaseFile))
 		}
 		if node.IP != "" {
-			m.executor.Execute(ctx,fmt.Sprintf("sudo sed -i '/%s/d' %s", node.IP, leaseFile))
+			m.executor.Execute(ctx, fmt.Sprintf("sudo sed -i '/%s/d' %s", node.IP, leaseFile))
 		}
 	}
 }
+
 // Restart cleanly restarts the dnsmasq service once
 func (m *DNSmasqManager) Restart(ctx context.Context) error {
 	m.executor.Execute(ctx, "sudo systemctl daemon-reload") // Good practice

@@ -54,22 +54,23 @@ func main() {
 	}
 
 	// Trap help flags cleanly before parsing
-	for _, arg := range customArgs {
+	wantsHelp := false
+	for _, arg := range os.Args[1:] {
 		if arg == "-h" || arg == "--help" || arg == "help" {
-			targetCmd = "help"
+			wantsHelp = true
 			break
 		}
 	}
 
 	// Override default flag usage to use our context-aware help menu
 	flag.Usage = func() {
-		helpContext := ""
-		if targetCmd != "help" && targetCmd != "" {
-			helpContext = targetCmd
-		} else if len(os.Args) > 2 && os.Args[1] == "help" {
-			helpContext = os.Args[2]
+		helpCtx := targetCmd
+		if targetCmd == "help" && len(os.Args) > 2 {
+			helpCtx = os.Args[2]
+		} else if targetCmd == "help" {
+			helpCtx = ""
 		}
-		printUsage(helpContext)
+		printUsage(helpCtx)
 		os.Exit(0)
 	}
 
@@ -90,12 +91,15 @@ func main() {
 		os.Exit(0)
 	}
 
-	if *command == "help" || targetCmd == "help" || targetCmd == "" {
-		context := ""
-		if len(os.Args) > 2 && os.Args[1] == "help" {
-			context = os.Args[2]
+	// Serve the context-aware help menu if requested
+	if wantsHelp || targetCmd == "" {
+		helpCtx := targetCmd
+		if targetCmd == "help" && len(os.Args) > 2 {
+			helpCtx = os.Args[2]
+		} else if targetCmd == "help" {
+			helpCtx = ""
 		}
-		printUsage(context)
+		printUsage(helpCtx)
 		os.Exit(0)
 	}
 
