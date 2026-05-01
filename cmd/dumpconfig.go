@@ -4,13 +4,42 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/spf13/cobra"
+
 	"github.com/sudeeshjohn/shiftlaunch/orchestrator"
 	"github.com/sudeeshjohn/shiftlaunch/services"
 	"github.com/sudeeshjohn/shiftlaunch/types"
 )
 
-// DumpConfig dumps the required external service configurations for a cluster
-func DumpConfig(orch *orchestrator.Orchestrator, cfg *types.AgentConfig) error {
+var dumpConfigCmd = &cobra.Command{
+	Use:   "dump-config",
+	Short: "Dump configuration requirements for unmanaged services",
+	Long: `Generates DNS/DHCP/HAProxy requirements for network administrators if you
+disabled managed_services in YAML.
+
+The dump-config command outputs:
+- DNS records (A records for API, apps, nodes)
+- DHCP configuration (ISC DHCP format)
+- PXE/TFTP configuration (GRUB2 configs)
+- Load Balancer configuration (HAProxy format)`,
+	RunE: runDumpConfig,
+}
+
+func init() {
+	rootCmd.AddCommand(dumpConfigCmd)
+}
+
+func runDumpConfig(cmd *cobra.Command, args []string) error {
+	cfg, _, orch, err := loadConfig(true)
+	if err != nil {
+		return err
+	}
+
+	return dumpConfig(orch, cfg)
+}
+
+// dumpConfig dumps the required external service configurations for a cluster
+func dumpConfig(orch *orchestrator.Orchestrator, cfg *types.AgentConfig) error {
 	clusterName := cfg.OpenShift.ClusterName
 	vip := cfg.Network.LoadBalancerIP
 
