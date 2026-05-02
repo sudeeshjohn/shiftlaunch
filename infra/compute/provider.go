@@ -35,9 +35,9 @@ func NewProviderWithState(cfg *types.AgentConfig, log *logger.Logger, debug bool
 	hmcLogger := infra.NewHMCLoggerAdapter(log, debug)
 	client.SetLogger(hmcLogger)
 	
-	// The library now wants (username, password, verbose_tracing_enabled)
+	// The library now wants (ctx, username, password, verbose_tracing_enabled)
 	log.Info("Authenticating with HMC...")
-	if err := client.Login(cfg.HMC.Username, cfg.HMC.Password, debug); err != nil {
+	if err := client.Login(context.Background(), cfg.HMC.Username, cfg.HMC.Password, debug); err != nil {
 		return nil, fmt.Errorf("HMC login failed for user %s at %s: %w. Please verify HMC is accessible and credentials are correct", cfg.HMC.Username, cfg.HMC.IP, err)
 	}
 	

@@ -39,14 +39,14 @@ func (h *HMCProvider) DiscoverMetadata(ctx context.Context) error {
 		h.logger.Debug("Querying", "system", node.SystemName, "lpar", node.ExistingLPARName)
 
 		// 1. Get System UUID
-		sysUUID, _, err := h.hmcClient.GetManagedSystemByName(node.SystemName, true)
+		sysUUID, _, err := h.hmcClient.GetManagedSystemByName(ctx, node.SystemName, true)
 		if err != nil {
 			return fmt.Errorf("failed to find system %s: %w", node.SystemName, err)
 		}
 
 		// 2. Get LPAR UUID
 		// Pass false for debug to avoid logging all LPARs on the system
-		lpars, err := h.hmcClient.GetLogicalPartitionsQuickAll(sysUUID, false)
+		lpars, err := h.hmcClient.GetLogicalPartitionsQuickAll(ctx, sysUUID, false)
 		if err != nil { return err }
 		
 		for _, l := range lpars {
@@ -61,7 +61,7 @@ func (h *HMCProvider) DiscoverMetadata(ctx context.Context) error {
 
 		// 3. Get LPAR Profile UUID (Required for Netboot)
 		// Pass false for debug to avoid excessive logging
-		profiles, err := h.hmcClient.GetLogicalPartitionProfiles(node.UUID, false)
+		profiles, err := h.hmcClient.GetLogicalPartitionProfiles(ctx, node.UUID, false)
 		if err != nil || len(profiles) == 0 {
 			return fmt.Errorf("no profile found for LPAR %s. A profile is required for network boot", node.ExistingLPARName)
 		}
@@ -69,7 +69,7 @@ func (h *HMCProvider) DiscoverMetadata(ctx context.Context) error {
 
 		// 4. Get MAC and Location Code for DHCP/PXE
 		// Pass false for debug to avoid excessive logging
-		adapters, err := h.hmcClient.GetClientNetworkAdapters(sysUUID, node.UUID, false)
+		adapters, err := h.hmcClient.GetClientNetworkAdapters(ctx, sysUUID, node.UUID, false)
 		if err != nil || len(adapters) == 0 {
 			return fmt.Errorf("no network adapter found on LPAR %s", node.ExistingLPARName)
 		}
@@ -156,7 +156,7 @@ func (h *HMCProvider) networkBootLpar(ctx context.Context, node *types.NodeConfi
 	
 	// Retry loop for 406/Intermittent HMC errors with re-authentication
 	for i := 0; i < maxRetries; i++ {
-		lparDetailed, err = h.hmcClient.GetLogicalPartitionDetailed(node.UUID, true)
+		lparDetailed, err = h.hmcClient.GetLogicalPartitionDetailed(ctx, node.UUID, true)
 		if err == nil {
 			break
 		}
@@ -166,7 +166,7 @@ func (h *HMCProvider) networkBootLpar(ctx context.Context, node *types.NodeConfi
 			h.logger.Warn(fmt.Sprintf("HMC returned 406 error (attempt %d/%d). Logging out and re-authenticating...", i+1, maxRetries), "error", err)
 			
 			// Logout from old session first
-			if logoutErr := h.hmcClient.Logoff(); logoutErr != nil {
+			if logoutErr := h.hmcClient.Logoff(ctx); logoutErr != nil {
 				h.logger.Debug("Logout failed (session may already be invalid)", "error", logoutErr)
 			}
 			
@@ -174,7 +174,7 @@ func (h *HMCProvider) networkBootLpar(ctx context.Context, node *types.NodeConfi
 			time.Sleep(2 * time.Second)
 			
 			// Re-authenticate with fresh session
-			if loginErr := h.hmcClient.Login(h.cfg.HMC.Username, h.cfg.HMC.Password, h.debug); loginErr != nil {
+			if loginErr := h.hmcClient.Login(ctx, h.cfg.HMC.Username, h.cfg.HMC.Password, h.debug); loginErr != nil {
 				h.logger.Warn("Re-authentication failed", "error", loginErr)
 			} else {
 				h.logger.Info("Successfully re-authenticated with HMC")
@@ -259,7 +259,7 @@ func (h *HMCProvider) networkBootLpar(ctx context.Context, node *types.NodeConfi
 	// --- FIX: Corrected the struct type here ---
 	var bootDevices []hmc.NetworkBootDevice
 	for i := 0; i < maxRetries; i++ {
-		bootDevices, err = h.hmcClient.GetNetworkBootDevices(node.UUID, profileUUID, true)
+		bootDevices, err = h.hmcClient.GetNetworkBootDevices(ctx, node.UUID, profileUUID, true)
 		if err == nil && len(bootDevices) > 0 {
 			break
 		}
@@ -312,7 +312,7 @@ func (h *HMCProvider) networkBootLpar(ctx context.Context, node *types.NodeConfi
 	h.logger.Info("✓ Network boot initiated successfully", "lpar", node.ExistingLPARName, "status", status)
 
 	h.logger.Info("Saving profile to persist configuration...")
-	_ = h.hmcClient.SaveCurrentLparConfig(node.UUID, "default_profile", true, true)
+	_ = h.hmcClient.SaveCurrentLparConfig(ctx, node.UUID, "default_profile", true, true)
 
 	return nil
 }
@@ -359,7 +359,7 @@ func (h *HMCProvider) PowerOffNodes(ctx context.Context) error {
 // Cleanup logs out from HMC and cleans up resources
 func (h *HMCProvider) Cleanup() error {
 	h.logger.Debug("Logging out from HMC session...")
-	if err := h.hmcClient.Logoff(); err != nil {
+	if err := h.hmcClient.Logoff(context.Background()); err != nil {
 		h.logger.Debug("HMC logout failed (session may already be invalid)", "error", err)
 		return err
 	}
@@ -378,7 +378,7 @@ func (h *HMCProvider) bootNodeWithISO(ctx context.Context, node *types.NodeConfi
 	
 	// Step 2: Ensure viosadmin user exists (required for VIOS operations)
 	h.logger.Info("Checking viosadmin user on HMC")
-	viosUsername, viosPassword, viosUserCreated, err := h.hmcClient.EnsureVIOSAdminUser(h.cfg.HMC.Username, h.cfg.HMC.Password, h.debug)
+	viosUsername, viosPassword, viosUserCreated, err := h.hmcClient.EnsureVIOSAdminUser(ctx, h.cfg.HMC.Username, h.cfg.HMC.Password, h.debug)
 	if err != nil {
 		return fmt.Errorf("failed to ensure viosadmin user: %w", err)
 	}
@@ -408,7 +408,7 @@ func (h *HMCProvider) bootNodeWithISO(ctx context.Context, node *types.NodeConfi
 	}
 	
 	// Step 4: Get system UUID
-	sysUUID, _, err := h.hmcClient.GetManagedSystemByName(node.SystemName, true)
+	sysUUID, _, err := h.hmcClient.GetManagedSystemByName(ctx, node.SystemName, true)
 	if err != nil {
 		return fmt.Errorf("failed to get system UUID: %w", err)
 	}
@@ -465,16 +465,16 @@ func (h *HMCProvider) bootNodeWithISO(ctx context.Context, node *types.NodeConfi
 		var mountErr error
 		maxRetries := 3
 		for i := 0; i < maxRetries; i++ {
-			_, mountErr = hmc.MountNFS(h.hmcClient, node.SystemName, viosName, nfsServer, exportPath, mountPoint, "3", h.debug)
+			_, mountErr = hmc.MountNFS(ctx, h.hmcClient, node.SystemName, viosName, nfsServer, exportPath, mountPoint, "3", h.debug)
 			if mountErr == nil || strings.Contains(mountErr.Error(), "already mounted") {
 				mountErr = nil
 				break
 			}
 			if (strings.Contains(mountErr.Error(), "500") || strings.Contains(mountErr.Error(), "session is null")) && i < maxRetries-1 {
 				h.logger.Warn(fmt.Sprintf("HMC session corrupted during NFS mount (attempt %d/%d). Re-authenticating...", i+1, maxRetries))
-				_ = h.hmcClient.Logoff()
+				_ = h.hmcClient.Logoff(ctx)
 				time.Sleep(2 * time.Second)
-				_ = h.hmcClient.Login(h.cfg.HMC.Username, h.cfg.HMC.Password, h.debug)
+				_ = h.hmcClient.Login(ctx, h.cfg.HMC.Username, h.cfg.HMC.Password, h.debug)
 				time.Sleep(3 * time.Second)
 				continue
 			}
@@ -541,9 +541,9 @@ func (h *HMCProvider) bootNodeWithISO(ctx context.Context, node *types.NodeConfi
 	
 	// Refresh HMC session before long-running operation to prevent timeout
 	h.logger.Info("Refreshing HMC session before ISO upload...")
-	_ = h.hmcClient.Logoff()
+	_ = h.hmcClient.Logoff(ctx)
 	time.Sleep(2 * time.Second)
-	if err := h.hmcClient.Login(h.cfg.HMC.Username, h.cfg.HMC.Password, h.debug); err != nil {
+	if err := h.hmcClient.Login(ctx, h.cfg.HMC.Username, h.cfg.HMC.Password, h.debug); err != nil {
 		return fmt.Errorf("failed to refresh HMC session: %w", err)
 	}
 	time.Sleep(3 * time.Second)
@@ -553,6 +553,7 @@ func (h *HMCProvider) bootNodeWithISO(ctx context.Context, node *types.NodeConfi
 	// Note: We don't use -nfslink because it doesn't respect the -ro flag
 	// The ISO will be copied into the VIOS media repository
 	err = h.hmcClient.CreateVirtualOpticalMedia(
+		ctx,              // ctx
 		node.SystemName,  // sysName
 		viosUUID,         // viosUUID
 		viosName,         // viosName
@@ -560,7 +561,7 @@ func (h *HMCProvider) bootNodeWithISO(ctx context.Context, node *types.NodeConfi
 		isoPath,          // sourceFile (path to ISO on NFS mount)
 		0,                // sizeMB (not used when sourceFile is provided)
 		true,             // readOnly (create with -ro flag)
-		true,            // nfsLink (false to copy and respect -ro flag)
+		true,             // nfsLink (false to copy and respect -ro flag)
 		h.debug,          // debug
 	)
 	if err != nil {
@@ -574,7 +575,7 @@ func (h *HMCProvider) bootNodeWithISO(ctx context.Context, node *types.NodeConfi
 	h.logger.Info("Checking if optical media is already mapped to LPAR...", "lpar", node.ExistingLPARName, "media", mediaName)
 
 	alreadyMapped := false
-	mappings, mapCheckErr := h.hmcClient.GetViosSCSIMappings(viosUUID, h.debug)
+	mappings, mapCheckErr := h.hmcClient.GetViosSCSIMappings(ctx, viosUUID, h.debug)
 	if mapCheckErr != nil {
 		h.logger.Warn("Failed to fetch VIOS mappings for verification, proceeding with map attempt", "error", mapCheckErr)
 	} else {
@@ -596,7 +597,7 @@ func (h *HMCProvider) bootNodeWithISO(ctx context.Context, node *types.NodeConfi
 	} else {
 		h.logger.Info("Mapping optical media to LPAR", "lpar", node.ExistingLPARName, "media", mediaName)
 		
-		_, err = h.hmcClient.CreateVirtualOpticalMaps(sysUUID, viosUUID, node.UUID, []string{mediaName}, h.debug)
+		_, err = h.hmcClient.CreateVirtualOpticalMaps(ctx, sysUUID, viosUUID, node.UUID, []string{mediaName}, h.debug)
 		if err != nil {
 			return fmt.Errorf("failed to map optical media: %w", err)
 		}
@@ -610,7 +611,7 @@ func (h *HMCProvider) bootNodeWithISO(ctx context.Context, node *types.NodeConfi
 	profileName := "default_profile"
 	h.logger.Info("Saving partition profile", "profile", profileName)
 	
-	err = h.hmcClient.SaveCurrentLparConfig(node.UUID, profileName, true, h.debug)
+	err = h.hmcClient.SaveCurrentLparConfig(ctx, node.UUID, profileName, true, h.debug)
 	if err != nil {
 		return fmt.Errorf("failed to save partition profile: %w", err)
 	}
@@ -620,7 +621,7 @@ func (h *HMCProvider) bootNodeWithISO(ctx context.Context, node *types.NodeConfi
 	// ========================================================================
 	h.logger.Info("Setting Pending Boot String to 'cd/dvd-all'...")
 	
-	err = h.hmcClient.SetPartitionBootString(node.UUID, "cd/dvd-all", h.debug)
+	err = h.hmcClient.SetPartitionBootString(ctx, node.UUID, "cd/dvd-all", h.debug)
 	if err != nil {
 		h.logger.Warn("Failed to set boot string (may require manual SMS boot)", "error", err)
 	} else {
@@ -630,7 +631,7 @@ func (h *HMCProvider) bootNodeWithISO(ctx context.Context, node *types.NodeConfi
 	// ========================================================================
 	// STEP 10: GET PROFILE UUID AND POWER ON
 	// ========================================================================
-	lparDetails, err := h.hmcClient.GetLogicalPartitionDetailed(node.UUID, h.debug)
+	lparDetails, err := h.hmcClient.GetLogicalPartitionDetailed(ctx, node.UUID, h.debug)
 	if err != nil {
 		return fmt.Errorf("failed to get LPAR details: %w", err)
 	}
@@ -723,12 +724,12 @@ func (h *HMCProvider) bootNodeWithISO(ctx context.Context, node *types.NodeConfi
 
 // getActiveVIOS discovers and returns the first active VIOS on the system
 func (h *HMCProvider) getActiveVIOS(ctx context.Context, systemName string) (uuid, name string, err error) {
-	sysUUID, _, err := h.hmcClient.GetManagedSystemByName(systemName, h.debug)
+	sysUUID, _, err := h.hmcClient.GetManagedSystemByName(ctx, systemName, h.debug)
 	if err != nil {
 		return "", "", err
 	}
 	
-	viosList, err := h.hmcClient.GetVirtualIOServersQuick(sysUUID, h.debug)
+	viosList, err := h.hmcClient.GetVirtualIOServersQuick(ctx, sysUUID, h.debug)
 	if err != nil {
 		return "", "", err
 	}
@@ -742,7 +743,7 @@ func (h *HMCProvider) getActiveVIOS(ctx context.Context, systemName string) (uui
 		viosUUIDs[i] = v.UUID
 	}
 	
-	activeVIOSMap, err := h.hmcClient.GetActiveVIOSServers(sysUUID, viosUUIDs, h.debug)
+	activeVIOSMap, err := h.hmcClient.GetActiveVIOSServers(ctx, sysUUID, viosUUIDs, h.debug)
 	if err != nil {
 		return "", "", err
 	}
@@ -780,7 +781,7 @@ func (h *HMCProvider) CleanupISOMappings(ctx context.Context) error {
 	} else {
 		// Ensure viosadmin user exists
 		var created bool
-		viosUsername, viosPassword, created, err = h.hmcClient.EnsureVIOSAdminUser(h.cfg.HMC.Username, h.cfg.HMC.Password, h.debug)
+		viosUsername, viosPassword, created, err = h.hmcClient.EnsureVIOSAdminUser(ctx, h.cfg.HMC.Username, h.cfg.HMC.Password, h.debug)
 		if err != nil {
 			h.logger.Warn("Failed to get viosadmin credentials, cleanup may fail", "error", err)
 			// Continue with cleanup attempt using default credentials
@@ -794,7 +795,7 @@ func (h *HMCProvider) CleanupISOMappings(ctx context.Context) error {
 	
 	for _, mapping := range h.isoMappings {
 		// Get system UUID
-		sysUUID, _, err := h.hmcClient.GetManagedSystemByName(mapping.SystemName, h.debug)
+		sysUUID, _, err := h.hmcClient.GetManagedSystemByName(ctx, mapping.SystemName, h.debug)
 		if err != nil {
 			h.logger.Warn("Failed to get system UUID for cleanup", "system", mapping.SystemName, "error", err)
 			continue
@@ -806,6 +807,7 @@ func (h *HMCProvider) CleanupISOMappings(ctx context.Context) error {
 			"media", mapping.MediaName)
 		
 		_, err = h.hmcClient.DeleteVirtualOpticalMaps(
+			ctx,
 			sysUUID,
 			mapping.VIOSUUID,
 			mapping.LparUUID,
@@ -823,7 +825,7 @@ func (h *HMCProvider) CleanupISOMappings(ctx context.Context) error {
 			// Use the default profile name and force overwrite
 			h.logger.Info("Saving LPAR profile after unmapping", "node", mapping.NodeName)
 			profileName := "default_profile"
-			err = h.hmcClient.SaveCurrentLparConfig(mapping.LparUUID, profileName, true, h.debug)
+			err = h.hmcClient.SaveCurrentLparConfig(ctx, mapping.LparUUID, profileName, true, h.debug)
 			if err != nil {
 				h.logger.Warn("Failed to save LPAR profile after unmapping",
 					"node", mapping.NodeName,
@@ -847,12 +849,13 @@ func (h *HMCProvider) CleanupISOMappings(ctx context.Context) error {
 			"vios", mapping.VIOSName)
 
 		// Look Before You Leap: Check if media actually exists using the SDK
-		_, err := h.hmcClient.GetVirtualOpticalMedia(mapping.SystemName, mapping.VIOSName, mapping.MediaName, h.debug)
+		_, err := h.hmcClient.GetVirtualOpticalMedia(ctx, mapping.SystemName, mapping.VIOSName, mapping.MediaName, h.debug)
 
 		if err == nil {
 			// Media exists, safe to delete
 			h.logger.Info("Media found in repository. Deleting...", "media", mapping.MediaName)
 			delErr := h.hmcClient.DeleteVirtualOpticalMedia(
+				ctx,
 				mapping.SystemName,
 				mapping.VIOSName,
 				mapping.MediaName,
@@ -893,7 +896,7 @@ func (h *HMCProvider) CleanupISOMappings(ctx context.Context) error {
 		h.logger.Info("Unmounting shared NFS from VIOS...", "mount_point", mapping.MountPoint, "vios", mapping.VIOSName)
 
 		// Attempt to unmount
-		_, err := hmc.UnmountNFS(h.hmcClient, mapping.SystemName, mapping.VIOSName, mapping.MountPoint, h.debug)
+		_, err := hmc.UnmountNFS(ctx, h.hmcClient, mapping.SystemName, mapping.VIOSName, mapping.MountPoint, h.debug)
 
 		// Check if it was already unmounted
 		if err != nil && (strings.Contains(err.Error(), "Could not find anything to unmount") || strings.Contains(err.Error(), "not mounted")) {
