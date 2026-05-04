@@ -6,7 +6,46 @@ import (
 	"os"
 	"strings"
 	"text/template"
+
+	"github.com/spf13/cobra"
 )
+
+var (
+	genConfigType string
+	genBootMethod string
+	genOutputPath string
+)
+
+var generateConfigCmd = &cobra.Command{
+	Use:   "generate-config",
+	Short: "Generate a starter config.yaml template",
+	Long: `Generates a starter configuration template based on topology and boot method.
+
+The generate-config command creates:
+- A cluster configuration file (config.yaml)
+- An agent daemon configuration file (agent.yaml) if it doesn't exist
+
+Supported topologies:
+- sno: Single Node OpenShift
+- multi: Multi-node cluster (3 masters + workers)
+
+Supported boot methods:
+- iso: Agent-based installer (ISO boot)
+- netboot: Network boot (PXE/TFTP)`,
+	RunE: runGenerateConfig,
+}
+
+func init() {
+	rootCmd.AddCommand(generateConfigCmd)
+
+	generateConfigCmd.Flags().StringVarP(&genConfigType, "type", "t", "sno", "Cluster topology: 'sno' or 'multi'")
+	generateConfigCmd.Flags().StringVarP(&genBootMethod, "boot", "b", "iso", "Boot method: 'iso' or 'netboot'")
+	generateConfigCmd.Flags().StringVarP(&genOutputPath, "output", "o", "config.yaml", "Path to save the generated file")
+}
+
+func runGenerateConfig(cmd *cobra.Command, args []string) error {
+	return GenerateConfig(genConfigType, genBootMethod, genOutputPath)
+}
 
 const configTemplate = `# =============================================================================
 # ShiftLaunch Agent Configuration Template

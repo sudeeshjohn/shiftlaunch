@@ -1,14 +1,39 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
+	"os"
+	"time"
 
-	"github.com/sudeeshjohn/shiftlaunch/orchestrator"
+	"github.com/spf13/cobra"
+
+	"github.com/sudeeshjohn/shiftlaunch/types"
 )
 
-// Delete executes the cluster teardown process
-func Delete(ctx context.Context,orch *orchestrator.Orchestrator) error {
+var deleteCmd = &cobra.Command{
+	Use:   "delete",
+	Short: "Power off LPARs and remove local services",
+	Long: `Safely tears down a cluster, unmaps storage, and cleans up local services.
+
+The delete command will:
+- Power off all cluster LPARs
+- Remove network services (DNS, DHCP, PXE, Load Balancer)
+- Clean up local workspace files
+- Mark the cluster as deleted`,
+	RunE: runDelete,
+}
+
+func init() {
+	rootCmd.AddCommand(deleteCmd)
+}
+
+func runDelete(cmd *cobra.Command, args []string) error {
+	cfg, _, orch, err := loadConfig(true)
+	if err != nil {
+		return err
+	}
+
+	ctx := GetContext()
 	log := orch.GetLogger()
 
 	if orch.IsDeleted() {
@@ -16,13 +41,58 @@ func Delete(ctx context.Context,orch *orchestrator.Orchestrator) error {
 		return nil
 	}
 
-	log.Info("=== Starting Cluster Teardown ===")
-
-	// The Orchestrator's Teardown method handles the safe BYOI power-off natively
-	if err := orch.Teardown(ctx); err != nil {
-		return err
+	// Record command execution
+	hostname, _ := os.Hostname()
+	username := os.Getenv("USER")
+	if username == "" {
+		username = os.Getenv("USERNAME")
 	}
 
-	log.Info("=== Cluster Teardown Completed Successfully ===")
-	return nil
+	stateManager := types.NewStateManager(cfg.OpenShift.ClusterName)
+	var phasesBefore []string
+	if state, err := stateManager.LoadState(); err == nil && state != nil {
+		phasesBefore = append([]string{}, state.CompletedPhases...)
+	}
+
+	cmdExec := types.CommandExecution{
+		Command:      "delete",
+		StartTime:    time.Now().Format(time.RFC3339),
+		Status:       "in_progress",
+		User:         username,
+		Hostname:     hostname,
+		PID:          os.Getpid(),
+		ConfigFile:   configFile,
+		PhasesBefore: phasesBefore,
+		Flags: map[string]string{
+			"debug":   fmt.Sprintf("%v", debug),
+			"cluster": cfg.OpenShift.ClusterName,
+		},
+	}
+
+	log.Info("=== Starting Cluster Teardown ===")
+
+	cmdStartTime := time.Now()
+	err = orch.Teardown(ctx)
+	cmdDuration := time.Since(cmdStartTime)
+
+	// Record command execution end
+	cmdExec.EndTime = time.Now().Format(time.RFC3339)
+	cmdExec.Duration = cmdDuration.String()
+	if err != nil {
+		cmdExec.Status = "failed"
+		cmdExec.Error = err.Error()
+	} else {
+		cmdExec.Status = "success"
+		log.Info("=== Cluster Teardown Completed Successfully ===")
+	}
+
+	// Update state with command execution
+	if state, loadErr := stateManager.LoadState(); loadErr == nil && state != nil {
+		cmdExec.PhasesAfter = append([]string{}, state.CompletedPhases...)
+		state.Version = version
+		stateManager.AddCommandExecution(state, cmdExec)
+		stateManager.SaveState(state)
+	}
+
+	return err
 }

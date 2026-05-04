@@ -1,41 +1,68 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 
+	"github.com/spf13/cobra"
+
+	"github.com/sudeeshjohn/shiftlaunch/infra/compute"
 	"github.com/sudeeshjohn/shiftlaunch/localexec"
-	"github.com/sudeeshjohn/shiftlaunch/orchestrator"
-	"github.com/sudeeshjohn/shiftlaunch/types"
 	"github.com/sudeeshjohn/shiftlaunch/validation"
 )
 
-// Validate validates cluster configuration
-func Validate(ctx context.Context,orch *orchestrator.Orchestrator, config *types.AgentConfig) error {
-	log := orch.GetLogger()
-	log.Info("=== Validating Configuration ===")
+var validateCmd = &cobra.Command{
+	Use:   "validate",
+	Short: "Validate cluster configuration against infrastructure",
+	Long: `Performs pre-flight checks against the YAML and physical HMC infrastructure.
 
-	clusterName := config.OpenShift.ClusterName
-	log.Info(fmt.Sprintf("Validating cluster: %s", clusterName))
+The validate command will check:
+- Configuration file syntax and completeness
+- Network connectivity and prerequisites
+- HMC connectivity and LPAR existence
+- Resource availability`,
+	RunE: runValidate,
+}
+
+func init() {
+	rootCmd.AddCommand(validateCmd)
+}
+
+func runValidate(cmd *cobra.Command, args []string) error {
+	cfg, _, orch, err := loadConfig(true)
+	if err != nil {
+		return err
+	}
+
+	ctx := GetContext()
+	log := orch.GetLogger()
+
+	log.Info("=== Validating Configuration ===")
+	log.Info("Validating cluster", "cluster", cfg.OpenShift.ClusterName)
 
 	// Initialize local executor for environment validation
 	exec := localexec.NewLocalClient(log)
 
-	// Create validator using the new signature: (cfg, executor, debug)
-	validator := validation.NewValidator(config, exec, orch.GetDebug())
-	
-	// Inject the orchestrator's logger to capture validation details
+	// Create validator
+	validator := validation.NewValidator(cfg, exec, debug)
 	validator.SetLogger(log)
 
-	// If HMC credentials are provided, the orchestrator/main should have 
-	// initialized the HMC client which can be injected here for Phase 3 checks.
-	// For now, we run the standard validation suite.
-	if err := validator.Validate(ctx); err != nil {
-		return fmt.Errorf("validation failed for cluster %s: %w", clusterName, err)
+	// Set up HMC client for Phase 3 validation (LPAR existence checks)
+	provider, err := compute.NewProvider(cfg, log, debug)
+	if err != nil {
+		log.Warn("Could not connect to HMC for validation. Skipping Phase 3 (LPAR validation).", "error", err)
+	} else {
+		// Extract the HMC client from the provider
+		if hmcProvider, ok := provider.(*compute.HMCProvider); ok {
+			validator.SetHMCClient(hmcProvider.GetHMCClient())
+		}
 	}
 
-	log.Info(fmt.Sprintf("✓ Cluster '%s' configuration is valid", clusterName))
+	if err := validator.Validate(ctx); err != nil {
+		return fmt.Errorf("validation failed for cluster %s: %w", cfg.OpenShift.ClusterName, err)
+	}
+
+	log.Info("✓ Cluster configuration is valid", "cluster", cfg.OpenShift.ClusterName)
 	log.Info("=== All Validations Passed ===")
-	
+
 	return nil
 }
