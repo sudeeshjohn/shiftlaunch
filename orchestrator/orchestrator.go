@@ -39,10 +39,14 @@ func NewOrchestrator(cfg *types.AgentConfig, daemonCfg *config.AgentDaemonConfig
 	if err != nil || state == nil {
 		// Fresh deployment
 		state = &types.DeploymentState{
+			StateVersion:    2, // Current version with granular tracking
 			ClusterName:     cfg.OpenShift.ClusterName,
 			Status:          "in_progress",
 			StartTime:       time.Now().Format(time.RFC3339),
 			CompletedPhases: []string{},
+			CompletedEvents: []string{},
+			DownloadProgress: make(map[string]types.DownloadProgress),
+			NodeBootStatus:   make(map[string]types.NodeBootStatus),
 		}
 	}
 
@@ -168,10 +172,14 @@ func (o *Orchestrator) Deploy(ctx context.Context,resume bool) (err error) {
 		}
 		// Reset state for fresh deployment
 		o.state = &types.DeploymentState{
-			ClusterName:     o.cfg.OpenShift.ClusterName,
-			Status:          "in_progress",
-			StartTime:       time.Now().Format(time.RFC3339),
-			CompletedPhases: []string{},
+			StateVersion:     2, // Current version with granular tracking
+			ClusterName:      o.cfg.OpenShift.ClusterName,
+			Status:           "in_progress",
+			StartTime:        time.Now().Format(time.RFC3339),
+			CompletedPhases:  []string{},
+			CompletedEvents:  []string{},
+			DownloadProgress: make(map[string]types.DownloadProgress),
+			NodeBootStatus:   make(map[string]types.NodeBootStatus),
 		}
 	}
 
@@ -335,7 +343,9 @@ func (o *Orchestrator) Deploy(ctx context.Context,resume bool) (err error) {
 				cidr := o.cfg.Network.MachineCIDR
 				
 				if err := netMgr.AddVIPAlias(ctx,iface, vip, cidr); err != nil {
-					o.logger.Warn("Failed to configure VIP via nmcli. HAProxy will start, but routing may fail.", "error", err)
+					o.trackServiceEnd(haproxySvc, err, "")
+					phaseErr = fmt.Errorf("FATAL: Failed to configure VIP alias '%s' on interface '%s': %w", vip, iface, err)
+					return
 				}
 
 				// 4. Generate config and start the service

@@ -47,7 +47,7 @@ func (c *ControllerSetup) getRequiredPackages() []string {
 		pkgs = append(pkgs, "dnsmasq")
 	}
 	if needsPXE {
-		pkgs = append(pkgs, "tftp-server", "syslinux-tftpboot")
+		pkgs = append(pkgs, "tftp-server", "syslinux-tftpboot", "grub2-tools-extra")
 	}
 	if c.cfg.ManagedServices.LoadBalancer {
 		pkgs = append(pkgs, "haproxy")
