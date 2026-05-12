@@ -22,9 +22,9 @@ type HMCProvider struct {
 	// Track mount points per VIOS to enable sharing across nodes
 	viosMountPoints map[string]string // key: viosUUID, value: mountPoint
 	viosMounted     map[string]bool   // key: viosUUID, value: true if already mounted
-	// Store selected VIOS to ensure all nodes use the same one
-	selectedVIOSUUID string
-	selectedVIOSName string
+	// Store selected VIOS per system to support multi-system clusters
+	systemVIOSUUIDs map[string]string // key: SystemName
+	systemVIOSNames map[string]string // key: SystemName
 }
 
 // GetHMCClient returns the underlying HMC REST client for external use (e.g., validation)
@@ -406,23 +406,28 @@ func (h *HMCProvider) bootNodeWithISO(ctx context.Context, node *types.NodeConfi
 		h.logger.Info("viosadmin user already exists", "username", viosUsername)
 	}
 
-	// Step 3: Get or select active VIOS (reuse same VIOS for all nodes)
+	// Step 3: Get or select active VIOS (per physical system)
+	if h.systemVIOSUUIDs == nil {
+		h.systemVIOSUUIDs = make(map[string]string)
+		h.systemVIOSNames = make(map[string]string)
+	}
+
 	var viosUUID, viosName string
-	if h.selectedVIOSUUID != "" {
-		// Reuse previously selected VIOS
-		viosUUID = h.selectedVIOSUUID
-		viosName = h.selectedVIOSName
-		h.logger.Info("Reusing selected VIOS for all nodes", "name", viosName, "uuid", viosUUID)
+	if id, exists := h.systemVIOSUUIDs[node.SystemName]; exists {
+		// Reuse previously selected VIOS for this specific system
+		viosUUID = id
+		viosName = h.systemVIOSNames[node.SystemName]
+		h.logger.Info("Reusing selected VIOS for system", "system", node.SystemName, "vios", viosName)
 	} else {
-		// First node: discover and store VIOS selection
+		// First node on this system: discover and store VIOS selection
 		var err error
 		viosUUID, viosName, err = h.getActiveVIOS(ctx, node.SystemName)
 		if err != nil {
-			return fmt.Errorf("failed to get active VIOS: %w", err)
+			return fmt.Errorf("failed to get active VIOS for system %s: %w", node.SystemName, err)
 		}
-		h.selectedVIOSUUID = viosUUID
-		h.selectedVIOSName = viosName
-		h.logger.Info("Selected VIOS for cluster", "name", viosName, "uuid", viosUUID)
+		h.systemVIOSUUIDs[node.SystemName] = viosUUID
+		h.systemVIOSNames[node.SystemName] = viosName
+		h.logger.Info("Selected VIOS for system", "system", node.SystemName, "vios", viosName)
 	}
 
 	// Step 4: Get system UUID
@@ -571,7 +576,7 @@ func (h *HMCProvider) bootNodeWithISO(ctx context.Context, node *types.NodeConfi
 	// STEP 6.5: ENSURE MEDIA REPOSITORY EXISTS
 	// ========================================================================
 	if err := h.ensureMediaRepository(ctx, node.SystemName, viosUUID, viosName); err != nil {
-		return fmt.Errorf("failed to ensure media repository exists: %w", err)
+		return fmt.Errorf("failed to ensure media repository exists on VIOS '%s' (System: '%s'): %w", viosName, node.SystemName, err)
 	}
 
 	// ========================================================================
@@ -604,7 +609,7 @@ func (h *HMCProvider) bootNodeWithISO(ctx context.Context, node *types.NodeConfi
 		h.debug,          // debug
 	)
 	if err != nil {
-		return fmt.Errorf("failed to create optical media: %w", err)
+		return fmt.Errorf("failed to create optical media on VIOS '%s' (System: '%s'): %w", viosName, node.SystemName, err)
 	}
 	h.logger.Info("Optical media created successfully", "media", mediaName)
 
@@ -961,12 +966,21 @@ func (h *HMCProvider) CleanupISOMappings(ctx context.Context) error {
 func (h *HMCProvider) ensureMediaRepository(ctx context.Context, systemName, viosUUID, viosName string) error {
 	repoInfo, err := h.hmcClient.GetMediaRepositoryInfo(ctx, systemName, viosName, h.debug)
 	
-	// FIX: The HMC API returns success (err == nil) but SizeMB = 0 if the repository isn't created!
+	// FIX: The HMC API can return success (err == nil) but SizeMB = 0 if the repository isn't created,
+	// OR it can return an error if the repository doesn't exist. Handle both cases.
 	if err == nil && repoInfo.SizeMB > 0 {
+		h.logger.Debug("Media Repository already exists", "vios", viosName, "size_mb", repoInfo.SizeMB)
 		return nil // Repository legitimately exists
 	}
 
-	h.logger.Info("Media Repository not found (or size is 0). Auto-creating...", "vios", viosName)
+	// If we got an error OR size is 0, we need to check if repository actually exists before creating
+	if err == nil && repoInfo.SizeMB == 0 {
+		h.logger.Debug("Media Repository query returned size 0, checking if it actually exists...", "vios", viosName)
+		// Size 0 might mean it exists but is empty, or it doesn't exist
+		// We'll attempt to create it, and if it fails with "already exists", that's fine
+	}
+
+	h.logger.Info("Media Repository not found. Auto-creating...", "vios", viosName)
 	
 	// Calculate size requirements
 	nodes := h.cfg.GetAllNodes()
@@ -1009,6 +1023,11 @@ func (h *HMCProvider) ensureMediaRepository(ctx context.Context, systemName, vio
 
 	h.logger.Info("Creating Media Repository", "size_mb", requiredMB, "vg", targetVG)
 	if createErr := h.hmcClient.CreateMediaRepository(ctx, systemName, viosUUID, viosName, targetVG, requiredMB, h.debug); createErr != nil {
+		// FIX: If repository already exists, that's actually OK - just log and continue
+		if strings.Contains(createErr.Error(), "already exists") {
+			h.logger.Info("Media Repository already exists (detected during creation attempt)", "vios", viosName)
+			return nil
+		}
 		return fmt.Errorf("failed to create media repository: %w", createErr)
 	}
 
