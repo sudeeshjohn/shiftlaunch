@@ -57,6 +57,16 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&clusterName, "cluster", "", "Cluster name override")
 	rootCmd.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "Enable debug output to terminal")
 
+	// Add dynamic completion for the --cluster flag
+	rootCmd.RegisterFlagCompletionFunc("cluster", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		// Get list of existing clusters
+		clusters, err := listClusters()
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveError
+		}
+		return clusters, cobra.ShellCompDirectiveNoFileComp
+	})
+
 	// Setup graceful shutdown
 	setupSignalHandler()
 }
