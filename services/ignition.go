@@ -230,6 +230,15 @@ func generateAgentISO(ctx context.Context, cfg *types.AgentConfig, exec *localex
 	}
 
 	agentConfigPath := filepath.Join(targetDir, "agent-config.yaml")
+	
+	// Backup existing agent-config.yaml if it exists
+	if _, err := os.Stat(agentConfigPath); err == nil {
+		backupPath := agentConfigPath + ".bak"
+		if err := os.Rename(agentConfigPath, backupPath); err != nil {
+			return fmt.Errorf("failed to backup existing agent-config.yaml: %w", err)
+		}
+	}
+	
 	if err := os.WriteFile(agentConfigPath, []byte(agentConfig), 0644); err != nil {
 		return fmt.Errorf("failed to write agent-config.yaml: %w", err)
 	}

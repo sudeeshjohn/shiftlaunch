@@ -12,12 +12,12 @@ import (
 )
 
 var dumpConfigCmd = &cobra.Command{
-	Use:   "dump-config",
-	Short: "Dump configuration requirements for unmanaged services",
-	Long: `Generates DNS/DHCP/HAProxy requirements for network administrators if you
+	Use:   "service-configs",
+	Short: "Generate configuration files for unmanaged external services",
+	Long: `Generates DNS/DHCP/HAProxy configuration files for network administrators if you
 disabled managed_services in YAML.
 
-The dump-config command outputs:
+The service-configs command outputs:
 - DNS records (A records for API, apps, nodes)
 - DHCP configuration (ISC DHCP format)
 - PXE/TFTP configuration (GRUB2 configs)
@@ -47,7 +47,16 @@ func dumpConfig(orch *orchestrator.Orchestrator, cfg *types.AgentConfig) error {
 	vip := cfg.Network.LoadBalancerIP
 
 	// Check if any external services are configured (Inverted logic for new ManagedServices block)
-	hasExternalServices := !cfg.ManagedServices.DNS || !cfg.ManagedServices.DHCP || !cfg.ManagedServices.PXE || !cfg.ManagedServices.LoadBalancer
+	// Boot method aware: DHCP/PXE only matter for netboot, NFS only matters for ISO
+	hasExternalServices := !cfg.ManagedServices.DNS || !cfg.ManagedServices.LoadBalancer
+	
+	// Add boot-method-specific checks
+	if cfg.Nodes.BootMethod != "iso" {
+		hasExternalServices = hasExternalServices || !cfg.ManagedServices.DHCP || !cfg.ManagedServices.PXE
+	}
+	if cfg.Nodes.BootMethod == "iso" {
+		hasExternalServices = hasExternalServices || !cfg.ManagedServices.NFS
+	}
 
 	if !hasExternalServices {
 		orch.GetLogger().Info("Cluster does not use any external services. All services will be managed by Shiftlaunch.")
@@ -72,18 +81,28 @@ func dumpConfig(orch *orchestrator.Orchestrator, cfg *types.AgentConfig) error {
 		dumpDNSConfig(cfg)
 	}
 
-	// Dump DHCP configuration
-	if !cfg.ManagedServices.DHCP {
+	// Dump DHCP configuration (only relevant for netboot)
+	if !cfg.ManagedServices.DHCP && cfg.Nodes.BootMethod != "iso" {
 		if err := dumpDHCPConfig(cfg); err != nil {
 			return fmt.Errorf("failed to generate DHCP config: %w", err)
 		}
 	}
 
-	// Dump PXE configuration using template
-	if !cfg.ManagedServices.PXE {
+	// Dump PXE configuration using template (only relevant for netboot)
+	if !cfg.ManagedServices.PXE && cfg.Nodes.BootMethod != "iso" {
 		if err := dumpPXEConfigFromTemplate(clusterName, cfg, nodes, cfg.Controller.IP); err != nil {
 			return fmt.Errorf("failed to generate PXE config: %w", err)
 		}
+	}
+	
+	// Dump NFS configuration (only relevant for ISO boot)
+	if !cfg.ManagedServices.NFS && cfg.Nodes.BootMethod == "iso" {
+		fmt.Println("--------------------------------------------------------------------------------")
+		fmt.Println("NFS Server Configuration (Required for ISO Boot)")
+		fmt.Println("--------------------------------------------------------------------------------")
+		fmt.Println("You must configure an NFS server to host the Agent ISO files.")
+		fmt.Printf("The VIOS will mount the ISO from: nfs://<your-nfs-server>/<export-path>\n")
+		fmt.Println()
 	}
 
 	// Dump Load Balancer configuration

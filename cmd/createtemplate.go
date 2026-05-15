@@ -17,11 +17,11 @@ var (
 )
 
 var generateConfigCmd = &cobra.Command{
-	Use:   "generate-config",
-	Short: "Generate a starter config.yaml template",
-	Long: `Generates a starter configuration template based on topology and boot method.
+	Use:   "create-template",
+	Short: "Create a starter config.yaml template",
+	Long: `Creates a starter configuration template based on topology and boot method.
 
-The generate-config command creates:
+The create-template command creates:
 - A cluster configuration file (config.yaml)
 - An agent daemon configuration file (agent.yaml) if it doesn't exist
 

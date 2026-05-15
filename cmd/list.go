@@ -123,19 +123,28 @@ func printClusterList(workspaceBase string) error {
 					deploymentType = "SNO"
 				}
 
-				// Evaluate new ManagedServices flags (inverted logic from BYOI pre-provisioned) [cite: 5]
+				// Evaluate new ManagedServices flags (inverted logic from BYOI pre-provisioned)
+				// Boot method aware: DHCP/PXE only matter for netboot, NFS only matters for ISO
 				var prepItems []string
 				if !cfg.ManagedServices.DNS {
 					prepItems = append(prepItems, "DNS")
 				}
-				if !cfg.ManagedServices.DHCP {
+				
+				// DHCP and PXE are only BYOI dependencies if doing a netboot
+				if !cfg.ManagedServices.DHCP && cfg.Nodes.BootMethod != "iso" {
 					prepItems = append(prepItems, "DHCP")
 				}
-				if !cfg.ManagedServices.PXE {
+				if !cfg.ManagedServices.PXE && cfg.Nodes.BootMethod != "iso" {
 					prepItems = append(prepItems, "PXE")
 				}
+				
 				if !cfg.ManagedServices.LoadBalancer {
 					prepItems = append(prepItems, "LB")
+				}
+				
+				// NFS is a BYOI dependency ONLY if doing an ISO boot
+				if !cfg.ManagedServices.NFS && cfg.Nodes.BootMethod == "iso" {
+					prepItems = append(prepItems, "NFS")
 				}
 
 				// Format the display string
