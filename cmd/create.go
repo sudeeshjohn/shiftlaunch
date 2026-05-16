@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/sudeeshjohn/shiftlaunch/infra/compute"
 	"github.com/sudeeshjohn/shiftlaunch/localexec"
@@ -16,9 +17,15 @@ import (
 	"github.com/sudeeshjohn/shiftlaunch/validation"
 )
 
+var (
+	createPullSecret string
+	createSSHKey     string
+)
+
 var createCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Execute cluster deployment pipeline",
+	GroupID: "core",
 	SilenceUsage: true,
 	SilenceErrors: true,
 	Long: `Execute the cluster deployment pipeline. Automatically resumes if a partial
@@ -34,6 +41,8 @@ The create command will:
 
 func init() {
 	rootCmd.AddCommand(createCmd)
+	createCmd.Flags().StringVar(&createPullSecret, "pull-secret", "", "Override path to OpenShift pull secret file")
+	createCmd.Flags().StringVar(&createSSHKey, "ssh-key", "", "Override path to SSH public key file")
 }
 
 func runCreate(cmd *cobra.Command, args []string) error {
@@ -47,6 +56,15 @@ func runCreate(cmd *cobra.Command, args []string) error {
 
 	ctx := GetContext()
 	log := orch.GetLogger()
+
+	// Apply CLI flag overrides for file paths
+	if createPullSecret != "" {
+		absPath, _ := filepath.Abs(createPullSecret)
+		cfg.OpenShift.PullSecretFile = absPath
+	}
+	if createSSHKey != "" {
+		cfg.OpenShift.SSHPublicKeyFile = createSSHKey
+	}
 
 	// Auto-Resume Detection
 	autoResume := false
@@ -125,9 +143,12 @@ func runCreate(cmd *cobra.Command, args []string) error {
 				log.Info("Backed up existing config", "path", configBackupPath)
 			}
 		}
-		// Read and save the config
-		data, _ := os.ReadFile(configFile)
-		os.WriteFile(existingConfigPath, data, 0644)
+		
+		// --- FIX: Use yaml.Marshal to ensure CLI overrides are safely persisted to the workspace! ---
+		data, err := yaml.Marshal(cfg)
+		if err == nil {
+			os.WriteFile(existingConfigPath, data, 0644)
+		}
 	}
 
 	// ========================================================================

@@ -310,13 +310,21 @@ func (v *Validator) validateOpenShift() {
 	if o.PullSecretFile == "" {
 		v.errors = append(v.errors, "openshift.pull_secret_file is required")
 	} else {
-		if _, err := os.Stat(o.PullSecretFile); os.IsNotExist(err) {
+		// Safely expand ~ to $HOME just in case
+		secretPath := os.ExpandEnv(strings.ReplaceAll(o.PullSecretFile, "~", "$HOME"))
+		if _, err := os.Stat(secretPath); os.IsNotExist(err) {
 			v.errors = append(v.errors, fmt.Sprintf("openshift.pull_secret_file '%s' does not exist locally", o.PullSecretFile))
 		}
 	}
 
 	if o.SSHPublicKeyFile == "" {
 		v.errors = append(v.errors, "openshift.ssh_public_key_file is required")
+	} else {
+		// Safely expand ~ to $HOME
+		keyPath := os.ExpandEnv(strings.ReplaceAll(o.SSHPublicKeyFile, "~", "$HOME"))
+		if _, err := os.Stat(keyPath); os.IsNotExist(err) {
+			v.errors = append(v.errors, fmt.Sprintf("openshift.ssh_public_key_file '%s' does not exist locally", o.SSHPublicKeyFile))
+		}
 	}
 
 	// Skip RHCOS validation for ISO boot (Agent installer downloads RHCOS automatically)
@@ -479,19 +487,10 @@ func (v *Validator) validateMultiNodeCluster() {
 // ============================================================================
 
 func (v *Validator) validateLocalEnvironment(ctx context.Context) {
-	// 1. Check if SSH public key exists locally
-	if v.cfg.OpenShift.SSHPublicKeyFile != "" {
-		keyPath := os.ExpandEnv(v.cfg.OpenShift.SSHPublicKeyFile)
-		checkCmd := fmt.Sprintf("test -f %s", keyPath)
-		if _, err := v.exec.Execute(ctx,checkCmd); err != nil {
-			v.errors = append(v.errors, fmt.Sprintf("SSH KEY MISSING: The public key file '%s' does not exist on the local system.", keyPath))
-		}
-	}
-
-	// 2. Check for sufficient disk space locally (must have at least 10GB free)
+	// Check for sufficient disk space locally (must have at least 10GB free)
 	v.validateLocalDiskSpace(ctx)
 
-	// 3. Check for Directory/Config Collisions
+	// Check for Directory/Config Collisions
 	clusterName := v.cfg.OpenShift.ClusterName
 	httpDir := fmt.Sprintf("/var/www/html/%s", clusterName)
 	dnsmasqPath := fmt.Sprintf("/etc/dnsmasq.d/*-%s-*.conf", clusterName)
