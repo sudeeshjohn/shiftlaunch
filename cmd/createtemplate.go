@@ -19,6 +19,7 @@ var (
 var generateConfigCmd = &cobra.Command{
 	Use:   "create-template",
 	Short: "Create a starter config.yaml template",
+	GroupID: "utils",
 	Long: `Creates a starter configuration template based on topology and boot method.
 
 The create-template command creates:

@@ -13,6 +13,7 @@ import (
 var validateCmd = &cobra.Command{
 	Use:   "validate",
 	Short: "Validate cluster configuration against infrastructure",
+	GroupID: "utils",
 	SilenceUsage: true, // Suppress usage menu on validation errors
 	Long: `Performs pre-flight checks against the YAML and physical HMC infrastructure.
 

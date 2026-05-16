@@ -10,24 +10,26 @@ import (
 	"github.com/sudeeshjohn/shiftlaunch/types"
 )
 
-var deleteCmd = &cobra.Command{
-	Use:   "delete",
-	Short: "Power off LPARs and remove local services",
+var removeCmd = &cobra.Command{
+	Use:     "remove",
+	Aliases: []string{"rm", "delete"},
+	Short:   "Power off LPARs and remove local services",
+	GroupID: "core",
 	Long: `Safely tears down a cluster, unmaps storage, and cleans up local services.
 
-The delete command will:
+The remove command will:
 - Power off all cluster LPARs
 - Remove network services (DNS, DHCP, PXE, Load Balancer)
 - Clean up local workspace files
 - Mark the cluster as deleted`,
-	RunE: runDelete,
+	RunE: runRemove,
 }
 
 func init() {
-	rootCmd.AddCommand(deleteCmd)
+	rootCmd.AddCommand(removeCmd)
 }
 
-func runDelete(cmd *cobra.Command, args []string) error {
+func runRemove(cmd *cobra.Command, args []string) error {
 	cfg, _, orch, err := loadConfig(true)
 	if err != nil {
 		return err
@@ -40,7 +42,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	log := orch.GetLogger()
 
 	if orch.IsDeleted() {
-		fmt.Println(" Cluster is already deleted. Nothing to do.")
+		log.Info("Cluster is already deleted. Nothing to do.", "cluster", cfg.OpenShift.ClusterName)
 		return nil
 	}
 
@@ -58,7 +60,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	}
 
 	cmdExec := types.CommandExecution{
-		Command:      "delete",
+		Command:      "remove",
 		StartTime:    time.Now().Format(time.RFC3339),
 		Status:       "in_progress",
 		User:         username,
@@ -72,7 +74,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 		},
 	}
 
-	log.Info("=== Starting Cluster Teardown ===")
+	log.Info(fmt.Sprintf("=== Tearing Down Cluster: %s ===", cfg.OpenShift.ClusterName))
 
 	cmdStartTime := time.Now()
 	err = orch.Teardown(ctx)

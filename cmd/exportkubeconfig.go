@@ -20,6 +20,7 @@ var (
 var exportCmd = &cobra.Command{
 	Use:   "export",
 	Short: "Export cluster resources",
+	GroupID: "utils",
 	Long:  `Export cluster resources such as kubeconfig.`,
 }
 

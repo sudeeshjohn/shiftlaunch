@@ -1,22 +1,30 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 
 	"github.com/sudeeshjohn/shiftlaunch/config"
+	"github.com/sudeeshjohn/shiftlaunch/logger"
 	"github.com/sudeeshjohn/shiftlaunch/types"
 	"gopkg.in/yaml.v3"
 )
 
+var listQuiet bool
+var listJson bool
+
 var listCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List all managed clusters in the workspace",
+	Use:     "list",
+	Aliases: []string{"ls"},
+	Short:   "List all managed clusters in the workspace",
+	GroupID: "core",
 	Long: `Lists all active clusters currently managed in the local workspace.
 
 The list command displays:
@@ -32,6 +40,8 @@ The list command displays:
 
 func init() {
 	rootCmd.AddCommand(listCmd)
+	listCmd.Flags().BoolVarP(&listQuiet, "quiet", "q", false, "Only display cluster names")
+	listCmd.Flags().BoolVar(&listJson, "json", false, "Output cluster list in pure JSON format")
 }
 
 func runList(cmd *cobra.Command, args []string) error {
@@ -60,21 +70,29 @@ func formatDuration(d time.Duration) string {
 
 // printClusterList prints all managed clusters and their current states from the local workspace
 func printClusterList(workspaceBase string) error {
+	// Initialize a console-only logger to match the rest of the CLI
+	log, _ := logger.New(debug, "")
 
 	entries, err := os.ReadDir(workspaceBase)
 	if err != nil {
-		fmt.Println("No clusters found or workspace directory does not exist.")
-		fmt.Printf("Clusters are stored in the '%s' directory.\n", workspaceBase)
+		if !listQuiet && !listJson {
+			log.Info("No clusters found or workspace directory does not exist.")
+		} else if listJson {
+			fmt.Println("[]") // Output empty array for valid JSON parsing
+		}
 		return nil
 	}
 
-	fmt.Println("=== Managed Clusters ===")
-	// --- FIX: Added "CLUSTER IP" column and adjusted spacing ---
-	fmt.Printf("%-20s %-15s %-16s %-12s %-20s %-10s %-25s %-20s\n",
-		"CLUSTER NAME", "STATUS", "CLUSTER IP", "TYPE", "PHASE", "DURATION", "PRE-PROVISIONED", "LAST UPDATED")
-	fmt.Printf("%s\n", strings.Repeat("-", 145)) // Extended dash line for new column
+	// Prepare table data for human output
+	tableData := pterm.TableData{
+		{"CLUSTER NAME", "STATUS", "CLUSTER IP", "TYPE", "PHASE", "DURATION", "PRE-PROVISIONED", "LAST UPDATED"},
+	}
 
 	visibleCount := 0
+	clusterNames := []string{} // For quiet mode
+	
+	// Create a slice of maps for JSON output
+	var jsonOutput []map[string]string
 
 	for _, entry := range entries {
 		if !entry.IsDir() {
@@ -95,9 +113,19 @@ func printClusterList(workspaceBase string) error {
 		// Try to load state
 		state, err := types.LoadState(clusterName)
 		if err != nil {
-			// --- FIX: Added "N/A" for the Cluster IP column in the fallback row ---
-			fmt.Printf("%-20s %-15s %-16s %-12s %-20s %-10s %-25s %-20s\n",
-				clusterName, "unknown", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
+			if listQuiet {
+				clusterNames = append(clusterNames, clusterName)
+			} else {
+				tableData = append(tableData, []string{
+					clusterName, "unknown", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A",
+				})
+				
+				// Append corrupted state to JSON as well
+				jsonOutput = append(jsonOutput, map[string]string{
+					"name":   clusterName,
+					"status": "unknown",
+				})
+			}
 			visibleCount++
 			continue
 		}
@@ -197,27 +225,73 @@ func printClusterList(workspaceBase string) error {
 			}
 		}
 
-		// Print the row
-		// --- FIX: Injected clusterIP into the print formatting ---
-		fmt.Printf("%-20s %-15s %-16s %-12s %-20s %-10s %-25s %-20s\n",
-			clusterName,
-			state.Status,
-			clusterIP,
-			clusterType,
-			state.CurrentPhase,
-			duration,
-			preProvStr,
-			timestamp)
+		// Add row to lists
+		if listQuiet {
+			clusterNames = append(clusterNames, clusterName)
+		} else {
+			tableData = append(tableData, []string{
+				clusterName,
+				state.Status,
+				clusterIP,
+				clusterType,
+				state.CurrentPhase,
+				duration,
+				preProvStr,
+				timestamp,
+			})
+			
+			// Append valid row to JSON array
+			jsonOutput = append(jsonOutput, map[string]string{
+				"name":            clusterName,
+				"status":          state.Status,
+				"cluster_ip":      clusterIP,
+				"type":            clusterType,
+				"phase":           state.CurrentPhase,
+				"duration":        duration,
+				"pre_provisioned": preProvStr,
+				"last_updated":    timestamp,
+			})
+		}
 
 		visibleCount++
 	}
 
-	if visibleCount == 0 {
-		fmt.Println("No active clusters found.")
-		fmt.Printf("Deleted preserved directories are hidden in the '%s' directory.\n", workspaceBase)
+	// Output logic based on flags
+	if listJson {
+		// Output pure JSON array
+		if jsonOutput == nil {
+			fmt.Println("[]")
+			return nil
+		}
+		jsonData, _ := json.MarshalIndent(jsonOutput, "", "  ")
+		fmt.Println(string(jsonData))
 		return nil
 	}
 
-	fmt.Printf("\nTotal clusters: %d\n", visibleCount)
+	if visibleCount == 0 {
+		if !listQuiet && !listJson {
+			log.Info("No active clusters found.")
+			log.Info("Deleted workspaces are hidden. Use 'shiftlaunch prune' to reclaim disk space.")
+		}
+		return nil
+	}
+
+	// Render output based on mode
+	if listQuiet {
+		// Quiet mode: just print cluster names
+		for _, name := range clusterNames {
+			fmt.Println(name)
+		}
+	} else {
+		// Normal mode: render beautiful pterm table
+		pterm.DefaultTable.
+			WithHasHeader().
+			WithHeaderStyle(pterm.NewStyle(pterm.FgCyan, pterm.Bold)).
+			WithData(tableData).
+			Render()
+		
+		fmt.Printf("Total clusters: %d\n", visibleCount)
+	}
+
 	return nil
 }

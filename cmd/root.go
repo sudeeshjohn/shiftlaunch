@@ -38,7 +38,6 @@ var rootCmd = &cobra.Command{
 	Long: `ShiftLaunch Local Agent - A tool for bootstrapping OpenShift clusters on IBM Power Systems.
 
 ShiftLaunch automates the deployment of OpenShift clusters by managing:
-- HMC LPAR provisioning
 - Network services (DNS, DHCP, PXE, Load Balancer)
 - OpenShift installation and configuration`,
 	Version: version,
@@ -52,10 +51,24 @@ func Execute() error {
 func init() {
 	cobra.OnInitialize(initConfig)
 
+	// Define Docker-style Command Groups
+	rootCmd.AddGroup(&cobra.Group{
+		ID:    "core",
+		Title: "Core Commands:",
+	})
+	rootCmd.AddGroup(&cobra.Group{
+		ID:    "utils",
+		Title: "Utility Commands:",
+	})
+
 	// Global persistent flags
 	rootCmd.PersistentFlags().StringVarP(&configFile, "config", "c", "config.yaml", "Path to agent configuration file")
 	rootCmd.PersistentFlags().StringVar(&clusterName, "cluster", "", "Cluster name override")
 	rootCmd.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "Enable debug output to terminal")
+
+	// Make the CLI quiet on errors (Like Docker)
+	rootCmd.SilenceUsage = true
+	rootCmd.SilenceErrors = true
 
 	// Add dynamic completion for the --cluster flag
 	rootCmd.RegisterFlagCompletionFunc("cluster", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -109,16 +122,30 @@ func loadConfig(requireConfig bool) (*types.AgentConfig, *config.AgentDaemonConf
 	// Determine config path
 	configPath := configFile
 	if clusterName != "" {
-		workspaceConfig := filepath.Join(daemonCfg.Paths.WorkspaceDir, clusterName, "config.yaml")
+		workspaceDir := filepath.Join(daemonCfg.Paths.WorkspaceDir, clusterName)
+		
+		// 1. SMART CHECK: Is the cluster explicitly marked as deleted?
+		deletedMarker := filepath.Join(workspaceDir, ".deleted")
+		if _, err := os.Stat(deletedMarker); err == nil {
+			return nil, nil, nil, fmt.Errorf("cluster '%s' has been deleted. Run 'shiftlaunch prune' to permanently remove its workspace", clusterName)
+		}
+
+		// 2. Prefer the workspace config if it exists
+		workspaceConfig := filepath.Join(workspaceDir, "config.yaml")
 		if _, err := os.Stat(workspaceConfig); err == nil {
 			configPath = workspaceConfig
+		} else if configFile == "config.yaml" {
+			// 3. PRUNED CHECK: If workspace config is missing, and the local default config is missing, it's a ghost cluster!
+			if _, err := os.Stat(configFile); os.IsNotExist(err) {
+				return nil, nil, nil, fmt.Errorf("cluster '%s' not found. It may have been pruned or never created", clusterName)
+			}
 		}
 	}
 
 	// Load cluster config
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to read configuration file: %w\n(Hint: Provide a valid config.yaml or specify the cluster name if it was already created)", err)
+		return nil, nil, nil, fmt.Errorf("failed to read configuration file: %v\n(Hint: Provide a valid config.yaml or specify an existing cluster using --cluster)", err)
 	}
 
 	var cfg types.AgentConfig

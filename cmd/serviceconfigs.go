@@ -14,6 +14,7 @@ import (
 var dumpConfigCmd = &cobra.Command{
 	Use:   "service-configs",
 	Short: "Generate configuration files for unmanaged external services",
+	GroupID: "utils",
 	Long: `Generates DNS/DHCP/HAProxy configuration files for network administrators if you
 disabled managed_services in YAML.
 

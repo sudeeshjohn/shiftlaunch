@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pterm/pterm"
 	"github.com/sudeeshjohn/shiftlaunch/config"
 	compute "github.com/sudeeshjohn/shiftlaunch/infra/compute"
 	"github.com/sudeeshjohn/shiftlaunch/infra/controller"
@@ -725,58 +726,91 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 }
 
 
-// GetClusterStatus returns a formatted string of the current deployment state
+// GetClusterStatus returns a beautifully formatted, Docker-style summary of the deployment
 func (o *Orchestrator) GetClusterStatus(ctx context.Context) string {
 	state := o.state
-	
-	status := fmt.Sprintf(`Cluster: %s
-Status: %s
-Current Phase: %s
-Completed Phases: %v
-Started: %s
-`, state.ClusterName, state.Status, state.CurrentPhase, state.CompletedPhases, state.StartTime)
+	var sb strings.Builder
 
-	if state.EndTime != "" {
-		status += fmt.Sprintf("Ended: %s\n", state.EndTime)
-	}
+	// --- 1. CLUSTER SUMMARY ---
+	sb.WriteString(pterm.Cyan("\n◉ CLUSTER SUMMARY\n"))
 
-	// Add cluster nodes information
-	if len(state.DiscoveredNodes) > 0 {
-		status += "\n=== Cluster Nodes ===\n"
-		for _, node := range state.DiscoveredNodes {
-			status += fmt.Sprintf("%-15s %-10s %s\n", node.Hostname, node.Role, node.IP)
-		}
-	}
-
+	// Dynamic status color
+	statusColor := pterm.FgLightYellow
 	if state.Status == "completed" {
-		status += "\n=== Service Endpoints ===\n"
+		statusColor = pterm.FgLightGreen
+	} else if state.Status == "failed" {
+		statusColor = pterm.FgLightRed
+	}
+
+	summaryData := pterm.TableData{
+		{"Name:", pterm.Bold.Sprint(state.ClusterName)},
+		{"Status:", statusColor.Sprint(strings.ToUpper(state.Status))},
+		{"Started:", state.StartTime},
+	}
+	if state.EndTime != "" {
+		summaryData = append(summaryData, []string{"Ended:", state.EndTime})
+	}
+
+	summaryTable, _ := pterm.DefaultTable.WithData(summaryData).Srender()
+	sb.WriteString(summaryTable)
+
+	// --- 2. CLUSTER NODES ---
+	if len(state.DiscoveredNodes) > 0 {
+		sb.WriteString(pterm.Cyan("\n◉ CLUSTER NODES\n"))
+		nodeData := pterm.TableData{{"HOSTNAME", "ROLE", "IP ADDRESS", "MAC ADDRESS"}}
+		
+		for _, node := range state.DiscoveredNodes {
+			nodeData = append(nodeData, []string{node.Hostname, node.Role, node.IP, node.MACAddress})
+		}
+		
+		nodeTable, _ := pterm.DefaultTable.
+			WithHasHeader().
+			WithHeaderStyle(pterm.NewStyle(pterm.FgCyan, pterm.Bold)).
+			WithData(nodeData).
+			Srender()
+		sb.WriteString(nodeTable)
+	}
+
+	// --- 3. ENDPOINTS & CREDENTIALS (Only if completed) ---
+	if state.Status == "completed" {
+		sb.WriteString(pterm.Cyan("\n◉ SERVICE ENDPOINTS\n"))
 		baseDomain := o.cfg.OpenShift.BaseDomain
 		clusterDomain := fmt.Sprintf("%s.%s", state.ClusterName, baseDomain)
-		
-		status += fmt.Sprintf("API Server:       https://api.%s:6443\n", clusterDomain)
-		status += fmt.Sprintf("Web Console:      https://console-openshift-console.apps.%s\n", clusterDomain)
-		status += fmt.Sprintf("OAuth Server:     https://oauth-openshift.apps.%s\n", clusterDomain)
-		status += fmt.Sprintf("Prometheus:       https://prometheus-k8s-openshift-monitoring.apps.%s\n", clusterDomain)
-		status += fmt.Sprintf("Grafana:          https://grafana-openshift-monitoring.apps.%s\n", clusterDomain)
 
-		// Add /etc/hosts entry (single line format)
-		status += "\n=== /etc/hosts Entry ===\n"
-		status += fmt.Sprintf("%s api.%s console-openshift-console.apps.%s integrated-oauth-server-openshift-authentication.apps.%s oauth-openshift.apps.%s prometheus-k8s-openshift-monitoring.apps.%s grafana-openshift-monitoring.apps.%s\n",
-			o.cfg.Network.LoadBalancerIP, clusterDomain, clusterDomain, clusterDomain, clusterDomain, clusterDomain, clusterDomain)
-		
-		// Add kubeadmin credentials if available locally
+		endpointData := pterm.TableData{
+			{"API Server", fmt.Sprintf("https://api.%s:6443", clusterDomain)},
+			{"Web Console", fmt.Sprintf("https://console-openshift-console.apps.%s", clusterDomain)},
+			{"OAuth Server", fmt.Sprintf("https://oauth-openshift.apps.%s", clusterDomain)},
+			{"Prometheus", fmt.Sprintf("https://prometheus-k8s-openshift-monitoring.apps.%s", clusterDomain)},
+			{"Grafana", fmt.Sprintf("https://grafana-openshift-monitoring.apps.%s", clusterDomain)},
+		}
+		epTable, _ := pterm.DefaultTable.WithData(endpointData).Srender()
+		sb.WriteString(epTable)
+
+		sb.WriteString(pterm.Cyan("\n◉ ACCESS CREDENTIALS\n"))
+		credData := pterm.TableData{}
 		kubeconfigPath := filepath.Join(o.workspaceDir, "install-dir", "auth", "kubeconfig")
 		pwPath := filepath.Join(o.workspaceDir, "install-dir", "auth", "kubeadmin-password")
-		
+
 		if _, err := os.Stat(kubeconfigPath); err == nil {
-			status += fmt.Sprintf("\nKubeconfig:       %s\n", kubeconfigPath)
+			credData = append(credData, []string{"KUBECONFIG:", kubeconfigPath})
 		}
 		if pwData, err := os.ReadFile(pwPath); err == nil {
-			status += fmt.Sprintf("Password:         %s\n", string(pwData))
+			credData = append(credData, []string{"Password:", string(pwData)})
 		}
+
+		if len(credData) > 0 {
+			credTable, _ := pterm.DefaultTable.WithData(credData).Srender()
+			sb.WriteString(credTable)
+		}
+
+		sb.WriteString(pterm.Cyan("\n◉ /etc/hosts ENTRY (Controller Override)\n"))
+		hostsEntry := fmt.Sprintf("%s api.%s console-openshift-console.apps.%s oauth-openshift.apps.%s prometheus-k8s-openshift-monitoring.apps.%s grafana-openshift-monitoring.apps.%s",
+			o.cfg.Network.LoadBalancerIP, clusterDomain, clusterDomain, clusterDomain, clusterDomain, clusterDomain)
+		sb.WriteString(pterm.Gray(hostsEntry) + "\n\n")
 	}
 
-	return status
+	return sb.String()
 }
 
 // DumpConfigs outputs required configuration records for Enterprise Admins

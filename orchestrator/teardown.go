@@ -32,10 +32,12 @@ func (o *Orchestrator) Teardown(ctx context.Context) error {
 		}
 	}()
 
-	o.logger.Info("Initiating Soft Teardown", "cluster", o.cfg.OpenShift.ClusterName)
+	// Downgraded to Debug to keep the terminal clean
+	o.logger.Debug("Initiating Soft Teardown", "cluster", o.cfg.OpenShift.ClusterName)
 
 	// Phase 1: Power off LPARs (MUST happen before unmapping ISO)
 	phaseExec := o.startPhase("teardown_poweroff")
+	o.logger.StartPhase("Powering off cluster LPARs...")
 	var phaseErr error
 	func() {
 		provider, err := compute.NewProvider(o.cfg, o.logger, o.debug)
@@ -49,17 +51,18 @@ func (o *Orchestrator) Teardown(ctx context.Context) error {
 			}
 		}()
 		
-		o.logger.Info("Powering off LPARs...")
 		if err := provider.PowerOffNodes(ctx); err != nil {
 			o.logger.Warn("Failed to power off some LPARs", "error", err)
 			phaseErr = err
 		}
 	}()
+	o.logger.EndPhase(phaseErr == nil, "Cluster LPARs powered off")
 	o.endPhase(phaseExec, phaseErr)
 
 	// Phase 2: Clean up ISO mappings (AFTER LPARs are powered off)
 	if o.cfg.Nodes.BootMethod == "iso" {
 		phaseExec := o.startPhase("teardown_iso_cleanup")
+		o.logger.StartPhase("Cleaning up VIOS ISO Mappings...")
 		phaseErr = nil
 		func() {
 			provider, err := compute.NewProviderWithState(o.cfg, o.logger, o.debug, o.stateManager)
@@ -73,7 +76,6 @@ func (o *Orchestrator) Teardown(ctx context.Context) error {
 				}
 			}()
 			
-			o.logger.Info("Cleaning up ISO mappings from HMC (after power off)...")
 			if hmcProvider, ok := provider.(*compute.HMCProvider); ok {
 				if err := hmcProvider.CleanupISOMappings(ctx); err != nil {
 					o.logger.Warn("Failed to clean up some ISO mappings", "error", err)
@@ -81,82 +83,69 @@ func (o *Orchestrator) Teardown(ctx context.Context) error {
 				}
 			}
 		}()
+		o.logger.EndPhase(phaseErr == nil, "VIOS ISO Mappings cleaned up")
 		o.endPhase(phaseExec, phaseErr)
 	}
 
 	// Phase 3: Clean up local services
 	phaseExec = o.startPhase("teardown_services")
+	o.logger.StartPhase("Removing local network and service configurations...")
 	phaseErr = nil
 	func() {
-		o.logger.Info("Cleaning up local network configurations...")
-
 		if o.cfg.ManagedServices.DNS || o.cfg.ManagedServices.DHCP || o.cfg.ManagedServices.PXE {
 			dnsmasq := services.NewDNSmasqManager(o.cfg, o.daemonCfg, o.executor)
 			dnsmasq.Cleanup(ctx)
 		}
 
 		if o.cfg.ManagedServices.LoadBalancer {
-			o.executor.Execute(ctx,fmt.Sprintf("sudo rm -f /etc/haproxy/conf.d/10-%s.cfg", o.cfg.OpenShift.ClusterName))
-			o.executor.SystemctlRestart(ctx,"haproxy")
+			o.executor.Execute(ctx, fmt.Sprintf("sudo rm -f /etc/haproxy/conf.d/10-%s.cfg", o.cfg.OpenShift.ClusterName))
+			o.executor.SystemctlRestart(ctx, "haproxy")
 
-			o.logger.Info("Removing VIP alias from controller network interface...")
-			
-			// Use the NetworkManager to cleanly prune the IP from the connection profile
 			netMgr := controller.NewNetworkManager(o.executor, o.debug, o.logger)
 			vip := o.cfg.Network.LoadBalancerIP
 			iface := o.cfg.Controller.NetworkInterface
 			cidr := o.cfg.Network.MachineCIDR
 			ctrlIP := o.cfg.Controller.IP
 
-			if err := netMgr.RemoveVIPAlias(ctx,iface, vip, cidr, ctrlIP); err != nil {
+			if err := netMgr.RemoveVIPAlias(ctx, iface, vip, cidr, ctrlIP); err != nil {
 				o.logger.Warn("Failed to cleanly remove VIP alias via nmcli", "error", err)
 				
-				// Fallback: Force remove it from the live interface using exact CIDR prefix
 				prefix := controller.ExtractCIDRPrefix(cidr)
-				o.executor.Execute(ctx,fmt.Sprintf("sudo ip addr del %s/%s dev %s", vip, prefix, iface))
+				o.executor.Execute(ctx, fmt.Sprintf("sudo ip addr del %s/%s dev %s", vip, prefix, iface))
 			}
 		}
 		
-		// ========================================================================
-		// LOCAL DNS OVERRIDE CLEANUP (State Aware)
-		// ========================================================================
 		if !o.stateManager.IsServiceRemoved(o.state, "local-hosts") {
-			o.logger.Info("Cleaning up local /etc/hosts entries...")
 			netMgr := controller.NewNetworkManager(o.executor, o.debug, o.logger)
-			
 			if err := netMgr.RemoveHostsEntry(ctx, o.cfg.OpenShift.ClusterName); err != nil {
 				o.logger.Warn("Failed to clean up /etc/hosts entry", "error", err)
 			} else {
-				// Record the successful cleanup in state.json
 				_ = o.stateManager.RecordServiceRemoved(o.state, "local-hosts")
 			}
 		}
-		// ========================================================================
 		
-		// Clean up HTTP Server
 		if o.cfg.Nodes.BootMethod != "iso" {
 			httpServer := services.NewHTTPServerManager(o.cfg, o.daemonCfg, o.executor, o.logger)
 			httpServer.Cleanup(ctx)
 		}
 		if o.cfg.Nodes.BootMethod == "iso" && o.cfg.ManagedServices.NFS {
-			o.logger.Info("Cleaning up NFS configuration...")
 			nfsMgr := services.NewNFSManager(o.cfg, o.executor, o.logger, o.workspaceDir)
 			nfsMgr.Cleanup(ctx)
 		}
 	}()
+	o.logger.EndPhase(phaseErr == nil, "Local network and services removed")
 	o.endPhase(phaseExec, phaseErr)
 
 	// Phase 4: Mark workspace as deleted
 	phaseExec = o.startPhase("teardown_finalize")
+	o.logger.StartPhase("Archiving cluster workspace...")
 	phaseErr = nil
 	func() {
-		o.logger.Info("Archiving local cluster workspace...")
 		if err := o.stateManager.MarkDeleted(); err != nil {
 			o.logger.Warn("Failed to create .deleted marker", "error", err)
 			phaseErr = err
 		}
 		
-		// --- FIX: Remove the markers so the cluster is officially unregistered ---
 		managedMarkerPath := filepath.Join(o.workspaceDir, ".managed")
 		if err := os.Remove(managedMarkerPath); err != nil && !os.IsNotExist(err) {
 			o.logger.Warn("Failed to remove .managed marker", "error", err)
@@ -167,6 +156,7 @@ func (o *Orchestrator) Teardown(ctx context.Context) error {
 			o.logger.Warn("Failed to remove .failed marker", "error", err)
 		}
 	}()
+	o.logger.EndPhase(phaseErr == nil, fmt.Sprintf("Workspace retained at %s", o.workspaceDir))
 	o.endPhase(phaseExec, phaseErr)
 
 	// Update State
@@ -175,7 +165,6 @@ func (o *Orchestrator) Teardown(ctx context.Context) error {
 	o.state.EndTime = time.Now().Format(time.RFC3339)
 	_ = o.stateManager.SaveState(o.state)
 
-	o.logger.Info(fmt.Sprintf("Local services stopped. Workspace retained at %s", o.workspaceDir))
 	return nil
 }
 
