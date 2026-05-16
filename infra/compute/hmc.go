@@ -88,15 +88,12 @@ func (h *HMCProvider) DiscoverMetadata(ctx context.Context) error {
 		// 5. Validate LPAR has attached storage
 		volumes, err := h.hmcClient.GetAttachedVolumes(ctx, sysUUID, node.UUID, false)
 		if err != nil || len(volumes) == 0 {
-			errMsg := "no volumes found"
-			if err != nil {
-				errMsg = err.Error()
-			}
-			h.logger.Error("No storage/disk found attached to LPAR", "lpar", node.ExistingLPARName, "reason", errMsg)
-			return fmt.Errorf("no storage/disk found attached to LPAR %s. Please attach at least one disk before deployment", node.ExistingLPARName)
+			// Downgrade to warning: Enterprise SANs (NPIV/vFC) or dedicated HBAs
+			// do not show up as attached vSCSI volumes on the HMC API!
+			h.logger.Warn("No vSCSI volumes found on LPAR. If using NPIV/SAN or dedicated HBAs, this is expected.", "lpar", node.ExistingLPARName)
 		}
 
-		h.logger.Info("Discovered", "lpar", node.ExistingLPARName, "mac", node.MACAddress, "uuid", node.UUID, "disks", len(volumes))
+		h.logger.Info("Discovered", "lpar", node.ExistingLPARName, "mac", node.MACAddress, "uuid", node.UUID, "vscsi_disks", len(volumes))
 
 		// Save discovered node to state file
 		if h.stateManager != nil {
@@ -335,14 +332,59 @@ func (h *HMCProvider) networkBootLpar(ctx context.Context, node *types.NodeConfi
 }
 
 func (h *HMCProvider) PowerOffNodes(ctx context.Context) error {
-	// We must discover metadata first to populate the node.UUID fields during a teardown run
-	h.logger.Info("Fetching LPAR UUIDs from HMC for teardown...")
+	h.logger.Info("Fetching LPAR UUIDs for teardown...")
 
 	nodes := h.cfg.GetAllNodes()
 	h.logger.Info("Found nodes to power off", "count", len(nodes))
 
-	if err := h.DiscoverMetadata(ctx); err != nil {
-		h.logger.Warn("Failed to discover some metadata during teardown, some LPARs may not power off", "error", err)
+	// =========================================================================
+	// FAST PATH: Try to populate UUIDs from the local state file first
+	// =========================================================================
+	if h.stateManager != nil {
+		if state, err := h.stateManager.LoadState(); err == nil && state != nil {
+			h.logger.Debug("Checking state file for known LPAR UUIDs...")
+			for _, node := range nodes {
+				for _, discovered := range state.DiscoveredNodes {
+					if node.Hostname == discovered.Hostname && discovered.UUID != "" {
+						node.UUID = discovered.UUID
+						h.logger.Debug("Found UUID in state file", "node", node.Hostname)
+						break
+					}
+				}
+			}
+		}
+	}
+
+	// =========================================================================
+	// SLOW PATH / FALLBACK: Lightweight HMC query for UUIDs not found in state
+	// =========================================================================
+	for _, node := range nodes {
+		if node.UUID != "" {
+			continue // Skip! We already got it from the state file.
+		}
+
+		h.logger.Info("UUID not found in state file, querying HMC fallback...", "lpar", node.ExistingLPARName)
+
+		// 1. Get System UUID quietly
+		sysUUID, _, err := h.hmcClient.GetManagedSystemByName(ctx, node.SystemName, false)
+		if err != nil {
+			h.logger.Debug("Could not resolve system UUID during teardown", "system", node.SystemName)
+			continue
+		}
+
+		// 2. Get LPARs quietly
+		lpars, err := h.hmcClient.GetLogicalPartitionsQuickAll(ctx, sysUUID, false)
+		if err != nil {
+			continue
+		}
+
+		// 3. Match LPAR name to UUID
+		for _, l := range lpars {
+			if l.PartitionName == node.ExistingLPARName {
+				node.UUID = l.UUID
+				break
+			}
+		}
 	}
 
 	h.logger.Info("Sending shutdown signals to all managed LPARs...")

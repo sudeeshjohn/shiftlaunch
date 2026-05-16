@@ -8,9 +8,12 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sudeeshjohn/shiftlaunch/infra/compute"
+	"github.com/sudeeshjohn/shiftlaunch/localexec"
 	"github.com/sudeeshjohn/shiftlaunch/logger"
 	"github.com/sudeeshjohn/shiftlaunch/orchestrator"
 	"github.com/sudeeshjohn/shiftlaunch/types"
+	"github.com/sudeeshjohn/shiftlaunch/validation"
 )
 
 var createCmd = &cobra.Command{
@@ -98,14 +101,15 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		}
 		log.Info("Resuming failed cluster deployment", "cluster", cfg.OpenShift.ClusterName)
 	} else if _, err := os.Stat(managedMarker); err == nil {
-		return fmt.Errorf("cluster '%s' is already managed and fully deployed.\n"+
-			"The cluster directory at '%s' contains a successful deployment.\n"+
-			"If you want to:\n"+
-			"  - View cluster status: shiftlaunch status --cluster %s\n"+
-			"  - Delete the cluster: shiftlaunch delete --cluster %s\n"+
-			"  - Deploy a new cluster: First delete the existing one, then create again\n"+
-			"\nRefusing to overwrite managed cluster to prevent data loss.",
-			cfg.OpenShift.ClusterName, workspaceDir, cfg.OpenShift.ClusterName, cfg.OpenShift.ClusterName)
+		log.Error("Cluster is already managed and fully deployed", "cluster", cfg.OpenShift.ClusterName, "workspace", workspaceDir)
+		log.Info("If you want to:")
+		log.Info("  - View cluster status: shiftlaunch status --cluster " + cfg.OpenShift.ClusterName)
+		log.Info("  - Delete the cluster: shiftlaunch delete --cluster " + cfg.OpenShift.ClusterName)
+		log.Info("  - Deploy a new cluster: First delete the existing one, then create again")
+		log.Error("Refusing to overwrite managed cluster to prevent data loss")
+		
+		// Return a short error so main.go still exits with status code 1
+		return fmt.Errorf("cluster already managed")
 	} else {
 		// Save config for new cluster
 		if _, err := os.Stat(existingConfigPath); err == nil {
@@ -121,6 +125,30 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		data, _ := os.ReadFile(configFile)
 		os.WriteFile(existingConfigPath, data, 0644)
 	}
+
+	// ========================================================================
+	// PRE-FLIGHT VALIDATION (Only run on fresh deployments!)
+	// ========================================================================
+	if !autoResume {
+		log.Info("Running pre-flight validation checks...")
+		exec := localexec.NewLocalClient(log)
+		validator := validation.NewValidator(cfg, exec, debug)
+		validator.SetLogger(log)
+
+		// Attach HMC client for LPAR validation
+		if provider, perr := compute.NewProvider(cfg, log, debug); perr == nil {
+			if hmcProvider, ok := provider.(*compute.HMCProvider); ok {
+				validator.SetHMCClient(hmcProvider.GetHMCClient())
+				defer hmcProvider.Cleanup()
+			}
+		}
+
+		if valErr := validator.Validate(ctx); valErr != nil {
+			log.Error("Pre-flight validation failed", "error", valErr)
+			return fmt.Errorf("validation failed")
+		}
+	}
+	// ========================================================================
 
 	// Record command execution
 	hostname, _ := os.Hostname()

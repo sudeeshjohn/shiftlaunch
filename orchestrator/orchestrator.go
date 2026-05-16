@@ -187,6 +187,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 	// Ensure lock is released and correct state markers are applied, even on panic/error
 	defer func() {
 		if err != nil {
+			o.logger.Error("Deployment failed", "error", err)
 			o.state.Status = "failed"
 			o.stateManager.MarkFailed()
 		} else {

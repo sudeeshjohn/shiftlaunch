@@ -72,7 +72,7 @@ func (o *Orchestrator) waitForInstallComplete(cancelCtx context.Context) error {
 		return o.waitForAgentInstall(cancelCtx)
 	}
 
-	timeoutSecs := 3600 // Default 60 minutes
+	timeoutSecs := 5400 // Default 90 minutes (1 hour 30 minutes)
 
 	var timeEstimate string
 	if o.cfg.IsSNO() {
@@ -127,7 +127,7 @@ func (o *Orchestrator) waitForInstallComplete(cancelCtx context.Context) error {
 
 // waitForAgentInstall waits for Agent-based installation to complete
 func (o *Orchestrator) waitForAgentInstall(cancelCtx context.Context) error {
-	timeoutSecs := 3600 // Default 60 minutes
+	timeoutSecs := 5400 // Default 90 minutes (1 hour 30 minutes)
 
 	var timeEstimate string
 	if o.cfg.IsSNO() {

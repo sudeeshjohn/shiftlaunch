@@ -552,7 +552,7 @@ func (v *Validator) validateLocalDiskSpace(ctx context.Context) {
 			fmt.Sprintf("INSUFFICIENT DISK SPACE: /var/www/html has only %.2f GB available, but at least %.0f GB is required.",
 				availableGB, requiredGB))
 	} else {
-		v.log.Info(fmt.Sprintf("  Controller has %.2f GB available in /var/www/html", availableGB))
+		v.log.Info(fmt.Sprintf("Controller has %.2f GB available in /var/www/html", availableGB))
 	}
 }
 
@@ -562,7 +562,7 @@ func (v *Validator) validateLocalDiskSpace(ctx context.Context) {
 
 // validateBYOILPARs validates that all specified LPARs exist in BYOI mode
 func (v *Validator) validateBYOILPARs() {
-	v.log.Info("    Validating pre-provisioned LPAR existence...")
+	v.log.Info("Validating pre-provisioned LPAR existence...")
 
 	allNodes := v.cfg.GetAllNodes()
 	systemLPARCache := make(map[string]map[string]*hmc.LogicalPartitionQuick)
@@ -574,7 +574,7 @@ func (v *Validator) validateBYOILPARs() {
 		}
 
 		if _, cached := systemLPARCache[node.SystemName]; !cached {
-			v.log.Info(fmt.Sprintf("      Querying system '%s' for LPARs...", node.SystemName))
+			v.log.Info(fmt.Sprintf("Querying system '%s' for LPARs...", node.SystemName))
 
 			var systemUUID string
 			var err error
@@ -601,7 +601,7 @@ func (v *Validator) validateBYOILPARs() {
 			}
 			systemLPARCache[node.SystemName] = lparMap
 
-			v.log.Debug(fmt.Sprintf("      Found %d LPARs on system '%s'", len(lpars), node.SystemName))
+			v.log.Debug(fmt.Sprintf("Found %d LPARs on system '%s'", len(lpars), node.SystemName))
 		}
 
 		if lparMap, ok := systemLPARCache[node.SystemName]; ok {
@@ -616,7 +616,7 @@ func (v *Validator) validateBYOILPARs() {
 						"SAFETY LOCK: BYOI LPAR '%s' is currently RUNNING on system '%s'. Shiftlaunch refuses to overwrite a running LPAR to prevent accidental data loss. Please power it off manually before deploying.",
 						node.ExistingLPARName, node.SystemName))
 				} else {
-					v.log.Info(fmt.Sprintf("      LPAR '%s' exists on system '%s' (state: %s, role: %s)",
+					v.log.Info(fmt.Sprintf("LPAR '%s' exists on system '%s' (state: %s, role: %s)",
 						node.ExistingLPARName, node.SystemName, lpar.PartitionState, node.Role))
 					validatedCount++
 				}
@@ -625,7 +625,7 @@ func (v *Validator) validateBYOILPARs() {
 	}
 
 	if len(v.errors) == 0 {
-		v.log.Info(fmt.Sprintf("    All %d pre-provisioned LPAR(s) validated successfully", validatedCount))
+		v.log.Info(fmt.Sprintf("All %d pre-provisioned LPAR(s) validated successfully", validatedCount))
 	}
 }
 
@@ -648,14 +648,14 @@ func (v *Validator) validateExternalServices(ctx context.Context) {
 		v.validateExternalLoadBalancer(ctx)
 	}
 	if v.cfg.Nodes.BootMethod == "iso" && !v.cfg.ManagedServices.NFS {
-		v.log.Info("    Validating external NFS configuration...")
+		v.log.Info("Validating external NFS configuration...")
 		v.warnings = append(v.warnings,
 			"External NFS detected for ISO boot. Ensure your external NFS server is configured to export the ISO directory to the VIOS, or enable 'managed_services.nfs' in your config.")
 	}
 }
 
 func (v *Validator) validateExternalDNS(ctx context.Context) {
-	v.log.Info("    Validating external DNS server...")
+	v.log.Info("Validating external DNS server...")
 
 	dnsServer := v.cfg.Network.Nameserver
 	if dnsServer == "" {
@@ -668,12 +668,28 @@ func (v *Validator) validateExternalDNS(ctx context.Context) {
 		v.warnings = append(v.warnings, fmt.Sprintf(
 			"External DNS server %s may not be reachable or responding. Ensure DNS is properly configured before deployment.", dnsServer))
 	} else {
-		v.log.Info(fmt.Sprintf("      External DNS server %s is reachable", dnsServer))
+		v.log.Info(fmt.Sprintf("External DNS server %s is reachable", dnsServer))
 	}
 }
 
 func (v *Validator) validateExternalDHCP() {
-	v.log.Info("    Validating external DHCP configuration...")
+	v.log.Info("Validating external DHCP configuration...")
+	
+	// Check if all nodes have static IPs configured
+	allNodesHaveStaticIP := true
+	nodes := v.cfg.GetAllNodes()
+	for _, node := range nodes {
+		if node.IP == "" {
+			allNodesHaveStaticIP = false
+			break
+		}
+	}
+	
+	// Skip DHCP warning if using static IPs
+	if allNodesHaveStaticIP {
+		v.log.Info("Static IPs configured for all nodes via NMState. DHCP not required.")
+		return
+	}
 	
 	// FIX: Provide contextual warnings based on the boot method
 	if v.cfg.Nodes.BootMethod == "iso" {
@@ -692,7 +708,7 @@ func (v *Validator) validateExternalDHCP() {
 }
 
 func (v *Validator) validateExternalPXE() {
-	v.log.Info("    Validating external PXE configuration...")
+	v.log.Info("Validating external PXE configuration...")
 	v.warnings = append(v.warnings,
 		"External PXE detected. Ensure PXE/TFTP server is configured with:\n"+
 			"   - TFTP service running on port 69\n"+
@@ -703,7 +719,7 @@ func (v *Validator) validateExternalPXE() {
 }
 
 func (v *Validator) validateExternalLoadBalancer(ctx context.Context) {
-	v.log.Info("    Validating external load balancer...")
+	v.log.Info("Validating external load balancer...")
 
 	vip := v.cfg.Network.LoadBalancerIP
 	if vip == "" {
@@ -728,7 +744,7 @@ func (v *Validator) validateExternalLoadBalancer(ctx context.Context) {
 				"External load balancer port %d (%s) at %s is not responding. This is expected before cluster deployment, but ensure load balancer is configured.",
 				p.port, p.name, vip))
 		} else {
-			v.log.Info(fmt.Sprintf("      Load balancer port %d (%s) is accessible", p.port, p.name))
+			v.log.Info(fmt.Sprintf("Load balancer port %d (%s) is accessible", p.port, p.name))
 		}
 	}
 
@@ -761,7 +777,7 @@ func (v *Validator) isValidHostname(hostname string) bool {
 // validateMediaRepositorySpace ensures the VIOS has a Media Repository with enough space for Agent ISO files.
 // If it doesn't exist, it verifies a Volume Group exists with sufficient space for Phase 5 to auto-create it.
 func (v *Validator) validateMediaRepositorySpace() {
-	v.log.Info("    Validating VIOS Media Repository capacity...")
+	v.log.Info("Validating VIOS Media Repository capacity...")
 
 	nodes := v.cfg.GetAllNodes()
 	if len(nodes) == 0 {
@@ -776,7 +792,7 @@ func (v *Validator) validateMediaRepositorySpace() {
 
 	// 2. Validate each unique system independently
 	for systemName, count := range systemNodeCount {
-		v.log.Info(fmt.Sprintf("      Validating repository on system '%s' for %d node(s)...", systemName, count))
+		v.log.Info(fmt.Sprintf("Validating repository on system '%s' for %d node(s)...", systemName, count))
 
 		_, sysUUID, err := v.hmcClient.GetManagedSystemByNameQuick(context.Background(), systemName, v.debug)
 		if err != nil {
@@ -820,7 +836,7 @@ func (v *Validator) validateMediaRepositorySpace() {
 		
 		// 2. If it fails OR SizeMB is 0, the repository is missing. Verify we HAVE the capacity to auto-create it later.
 		if err != nil || repoInfo.SizeMB == 0 {
-			v.log.Info(fmt.Sprintf("        Media Repository not found on VIOS '%s' (or size is 0). Verifying auto-creation capacity...", activeViosName))
+			v.log.Info(fmt.Sprintf("Media Repository not found on VIOS '%s' (or size is 0). Verifying auto-creation capacity...", activeViosName))
 			
 			// Discover a suitable Volume Group
 			vgs, vgErr := v.hmcClient.GetVolumeGroups(context.Background(), activeViosUUID, v.debug)
@@ -848,7 +864,7 @@ func (v *Validator) validateMediaRepositorySpace() {
 					freeSpaceGB, parseErr := strconv.ParseFloat(vg.FreeSpace, 64)
 					if parseErr == nil && freeSpaceGB >= requiredGB {
 						targetVG = vg.GroupName
-						v.log.Warn(fmt.Sprintf("        Warning: Will use '%s' for Media Repository as no other VG has %.2f GB free", vg.GroupName, requiredGB))
+						v.log.Warn(fmt.Sprintf("Warning: Will use '%s' for Media Repository as no other VG has %.2f GB free", vg.GroupName, requiredGB))
 						break
 					}
 				}
@@ -859,12 +875,12 @@ func (v *Validator) validateMediaRepositorySpace() {
 				continue
 			}
 			
-			v.log.Info(fmt.Sprintf("        ✓ Sufficient space found in VG '%s'. ShiftLaunch will auto-create the repository during deployment.", targetVG))
+			v.log.Info(fmt.Sprintf("✓ Sufficient space found in VG '%s'. ShiftLaunch will auto-create the repository during deployment.", targetVG))
 			continue
 		}
 
 		// 3. If repository already exists and has a size, validate its free space
-		v.log.Info(fmt.Sprintf("        Repository Size: %d MB | Free: %d MB | Required: %d MB (%d nodes)",
+		v.log.Info(fmt.Sprintf("Repository Size: %d MB | Free: %d MB | Required: %d MB (%d nodes)",
 			repoInfo.SizeMB, repoInfo.FreeMB, requiredMB, count))
 
 		if repoInfo.FreeMB < requiredMB {
@@ -874,7 +890,7 @@ func (v *Validator) validateMediaRepositorySpace() {
 				"   Solution 2: Expand the repository using 'chrep -size'.",
 				activeViosName, systemName, repoInfo.FreeMB, requiredMB))
 		} else {
-			v.log.Info(fmt.Sprintf("        ✓ Sufficient space available in VIOS Media Repository on '%s'", activeViosName))
+			v.log.Info(fmt.Sprintf("✓ Sufficient space available in VIOS Media Repository on '%s'", activeViosName))
 		}
 	}
 }

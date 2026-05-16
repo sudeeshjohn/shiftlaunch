@@ -61,11 +61,13 @@ func (d *Downloader) DownloadRHCOSImages(ctx context.Context,workspaceDir string
 
 	// 1. Fetch global manifest ONLY if checksum_url is provided
 	if urls.ChecksumURL != "" {
-		d.logger.Info("Integrity Mode: Downloading checksum manifest", "url", urls.ChecksumURL)
+		d.logger.Info("Integrity Mode: Fetching fresh checksum manifest", "url", urls.ChecksumURL)
 
-		// Apply timeout to manifest download as well
-		dlManifestCmd := fmt.Sprintf("curl -sSL --max-time %d -o %s '%s'", timeout, manifestPath, urls.ChecksumURL)
-		if _, err := d.exec.Execute(ctx,dlManifestCmd); err != nil {
+		// Force wipe any stale manifest to guarantee we get the latest
+		d.exec.Execute(ctx, fmt.Sprintf("rm -f %s", manifestPath))
+
+		dlManifestCmd := fmt.Sprintf("curl -sSL --fail --max-time %d -o %s '%s'", timeout, manifestPath, urls.ChecksumURL)
+		if _, err := d.exec.Execute(ctx, dlManifestCmd); err != nil {
 			return fmt.Errorf("failed to fetch checksum manifest: %w", err)
 		}
 
@@ -95,10 +97,13 @@ func (d *Downloader) DownloadRHCOSImages(ctx context.Context,workspaceDir string
 			expectedHash = img.specificCSUM
 			d.logger.Debug("Using individual checksum", "image", img.desc)
 		} else if urls.ChecksumURL != "" {
-			hash, err := d.extractHashFromManifest(ctx,img.url, manifestPath)
-			if err == nil && hash != "" {
+			hash, err := d.extractHashFromManifest(ctx, img.url, manifestPath)
+			if err != nil || hash == "" {
+				// Loudly warn if we downloaded a manifest but couldn't find this file's hash!
+				d.logger.Warn("Integrity Check Bypassed: Could not extract hash from manifest", "image", img.desc, "error", err)
+			} else {
 				expectedHash = hash
-				d.logger.Debug("Using manifest checksum", "image", img.desc)
+				d.logger.Debug("Using manifest checksum", "image", img.desc, "hash", expectedHash)
 			}
 		}
 
@@ -164,10 +169,13 @@ func (d *Downloader) DownloadOpenShiftTools(ctx context.Context,workspaceDir str
 
 	// 1. Fetch global manifest ONLY if checksum_url is provided
 	if ocpConfig.ChecksumURL != "" {
-		d.logger.Info("Integrity Mode: Downloading checksum manifest", "url", ocpConfig.ChecksumURL)
+		d.logger.Info("Integrity Mode: Fetching fresh checksum manifest", "url", ocpConfig.ChecksumURL)
 
-		dlManifestCmd := fmt.Sprintf("curl -sSL --max-time %d -o %s '%s'", timeout, manifestPath, ocpConfig.ChecksumURL)
-		if _, err := d.exec.Execute(ctx,dlManifestCmd); err != nil {
+		// Force wipe any stale manifest to guarantee we get the latest
+		d.exec.Execute(ctx, fmt.Sprintf("rm -f %s", manifestPath))
+
+		dlManifestCmd := fmt.Sprintf("curl -sSL --fail --max-time %d -o %s '%s'", timeout, manifestPath, ocpConfig.ChecksumURL)
+		if _, err := d.exec.Execute(ctx, dlManifestCmd); err != nil {
 			d.logger.Warn("Failed to fetch checksum manifest", "error", err)
 		} else {
 			d.logger.Info("Checksum manifest downloaded")
@@ -196,10 +204,13 @@ func (d *Downloader) DownloadOpenShiftTools(ctx context.Context,workspaceDir str
 			expectedHash = tool.specificCSUM
 			d.logger.Debug("Using individual checksum", "tool", tool.desc)
 		} else if ocpConfig.ChecksumURL != "" {
-			hash, err := d.extractHashFromManifest(ctx,tool.url, manifestPath)
-			if err == nil && hash != "" {
+			hash, err := d.extractHashFromManifest(ctx, tool.url, manifestPath)
+			if err != nil || hash == "" {
+				// Loudly warn if we downloaded a manifest but couldn't find this file's hash!
+				d.logger.Warn("Integrity Check Bypassed: Could not extract hash from manifest", "tool", tool.desc, "error", err)
+			} else {
 				expectedHash = hash
-				d.logger.Debug("Using manifest checksum", "tool", tool.desc)
+				d.logger.Debug("Using manifest checksum", "tool", tool.desc, "hash", expectedHash)
 			}
 		}
 
@@ -272,16 +283,29 @@ func (d *Downloader) extractOpenShiftTools(ctx context.Context,toolsDir string) 
 
 // extractHashFromManifest parses sha256sum.txt for a specific filename
 // Uses precise grep pattern to avoid partial matches (e.g., "kernel" vs "my-kernel")
-func (d *Downloader) extractHashFromManifest(ctx context.Context,originalURL, manifestPath string) (string, error) {
-	filename := filepath.Base(originalURL)
-	// Use [[:space:]] to match whitespace and $ to anchor end of line
-	// This prevents matching "my-kernel" when looking for "kernel"
-	extractCmd := fmt.Sprintf("grep -E '[[:space:]]%s$' %s | awk '{print $1}'", filename, manifestPath)
-	hash, err := d.exec.Execute(ctx,extractCmd)
-	if err != nil {
-		return "", err
+func (d *Downloader) extractHashFromManifest(ctx context.Context, originalURL, manifestPath string) (string, error) {
+	// Strip any query parameters from the URL (e.g., ?signature=123)
+	cleanURL := strings.Split(originalURL, "?")[0]
+	filename := filepath.Base(cleanURL)
+
+	// Ensure the manifest file actually exists before grepping
+	if _, err := d.exec.Execute(ctx, fmt.Sprintf("test -f %s", manifestPath)); err != nil {
+		return "", fmt.Errorf("manifest file not found on disk")
 	}
-	return strings.TrimSpace(hash), nil
+
+	// Use [[:space:]] to match whitespace and $ to anchor end of line
+	extractCmd := fmt.Sprintf("grep -E '[[:space:]]%s$' %s | awk '{print $1}'", filename, manifestPath)
+	hash, err := d.exec.Execute(ctx, extractCmd)
+	if err != nil {
+		return "", fmt.Errorf("grep command failed: %w", err)
+	}
+	
+	hash = strings.TrimSpace(hash)
+	if hash == "" {
+		return "", fmt.Errorf("filename '%s' not found inside the manifest", filename)
+	}
+
+	return hash, nil
 }
 
 // verifyFileHash calculates SHA256 hash of a file and compares it to expected hash
