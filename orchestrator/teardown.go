@@ -116,6 +116,22 @@ func (o *Orchestrator) Teardown(ctx context.Context) error {
 			}
 		}
 		
+		// ========================================================================
+		// LOCAL DNS OVERRIDE CLEANUP (State Aware)
+		// ========================================================================
+		if !o.stateManager.IsServiceRemoved(o.state, "local-hosts") {
+			o.logger.Info("Cleaning up local /etc/hosts entries...")
+			netMgr := controller.NewNetworkManager(o.executor, o.debug, o.logger)
+			
+			if err := netMgr.RemoveHostsEntry(ctx, o.cfg.OpenShift.ClusterName); err != nil {
+				o.logger.Warn("Failed to clean up /etc/hosts entry", "error", err)
+			} else {
+				// Record the successful cleanup in state.json
+				_ = o.stateManager.RecordServiceRemoved(o.state, "local-hosts")
+			}
+		}
+		// ========================================================================
+		
 		// Clean up HTTP Server
 		if o.cfg.Nodes.BootMethod != "iso" {
 			httpServer := services.NewHTTPServerManager(o.cfg, o.daemonCfg, o.executor, o.logger)

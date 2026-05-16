@@ -209,3 +209,32 @@ func GetInterfaceIPv4(ifaceName string) (string, error) {
 
 	return "", fmt.Errorf("no valid IPv4 address found on interface '%s'", ifaceName)
 }
+
+// AddHostsEntry appends the cluster API endpoints to the controller's /etc/hosts file
+// so the local openshift-install binary can resolve them without modifying the system DNS.
+func (nm *NetworkManager) AddHostsEntry(ctx context.Context, clusterName, baseDomain, vip string) error {
+	nm.logger.Info("Appending cluster API endpoints to local /etc/hosts")
+
+	domain := fmt.Sprintf("%s.%s", clusterName, baseDomain)
+	
+	// The installer strictly needs api and api-int. We add console and oauth for convenience.
+	entry := fmt.Sprintf("%s api.%s api-int.%s console-openshift-console.apps.%s oauth-openshift.apps.%s",
+		vip, domain, domain, domain, domain)
+	marker := fmt.Sprintf("# ShiftLaunch-Cluster-API: %s", clusterName)
+
+	// Clean up any stale entries first
+	nm.RemoveHostsEntry(ctx, clusterName)
+
+	// Append the new entry
+	addCmd := fmt.Sprintf("echo '%s %s' | sudo tee -a /etc/hosts > /dev/null", entry, marker)
+	_, err := nm.executor.Execute(ctx, addCmd)
+	return err
+}
+
+// RemoveHostsEntry safely removes the cluster's specific API endpoints from the hosts file
+func (nm *NetworkManager) RemoveHostsEntry(ctx context.Context, clusterName string) error {
+	marker := fmt.Sprintf("# ShiftLaunch-Cluster-API: %s", clusterName)
+	delCmd := fmt.Sprintf("sudo sed -i '/%s/d' /etc/hosts", marker)
+	_, err := nm.executor.Execute(ctx, delCmd)
+	return err
+}

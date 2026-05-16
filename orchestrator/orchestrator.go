@@ -208,7 +208,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 
 	// --- PHASE 0: VALIDATION (Only for fresh deployments) ---
 	if !resume || len(o.state.CompletedPhases) == 0 {
-		o.logger.Phase("[Phase 0] Pre-Deployment Validation")
+		o.logger.Phase("[Phase 0/7] Pre-Deployment Validation")
 		
 		// Validate VIP is not in use
 		if o.cfg.ManagedServices.LoadBalancer && o.cfg.Network.LoadBalancerIP != "" {
@@ -267,7 +267,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 	// --- PHASE 1: DISCOVERY ---
 	if !resume || !contains(o.state.CompletedPhases, "discovery") {
 		phaseExec := o.startPhase("discovery")
-		o.logger.Phase("[Phase 1] Pre-Flight & HMC Discovery")
+		o.logger.Phase("[Phase 1/7] Pre-Flight & HMC Discovery")
 		
 		var phaseErr error
 		func() {
@@ -310,7 +310,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 
 	if needsDownloads {
 		phaseExec := o.startPhase("downloads")
-		o.logger.Phase("[Phase 2] Downloading OpenShift Artifacts")
+		o.logger.Phase("[Phase 2/7] Downloading OpenShift Artifacts")
 		
 		downloader := services.NewDownloader(o.cfg, o.daemonCfg, o.executor, o.logger)
 		phaseErr := downloader.DownloadAll(ctx, o.workspaceDir)
@@ -325,7 +325,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 	// --- PHASE 3: MANAGED SERVICES ---
 	if !resume || !contains(o.state.CompletedPhases, "services") {
 		phaseExec := o.startPhase("services")
-		o.logger.Phase("[Phase 3] Configuring Managed Infrastructure Services")
+		o.logger.Phase("[Phase 3/7] Configuring Managed Infrastructure Services")
 
 		var phaseErr error
 		func() {
@@ -471,6 +471,23 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 				}
 				o.trackServiceEnd(restartSvc, nil, "DNSmasq service restarted successfully")
 			}
+			
+			// ========================================================================
+			// LOCAL DNS OVERRIDE (Tracked in State)
+			// ========================================================================
+			hostsSvc := o.trackServiceStart("local-hosts", "dns-override", true)
+			hostsSvc.ConfigFile = "/etc/hosts"
+			
+			o.logger.Info("Updating local /etc/hosts for installer resolution...")
+			netMgr := controller.NewNetworkManager(o.executor, o.debug, o.logger)
+			
+			if err := netMgr.AddHostsEntry(ctx, o.cfg.OpenShift.ClusterName, o.cfg.OpenShift.BaseDomain, o.cfg.Network.LoadBalancerIP); err != nil {
+				o.trackServiceEnd(hostsSvc, err, "")
+				o.logger.Warn("Failed to update /etc/hosts (installer wait phase may fail)", "error", err)
+			} else {
+				o.trackServiceEnd(hostsSvc, nil, "Added cluster API to /etc/hosts for local resolution")
+			}
+			// ========================================================================
 		}()
 
 		o.endPhase(phaseExec, phaseErr)
@@ -492,7 +509,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 
 	if needsIgnition {
 		phaseExec := o.startPhase("ignition")
-		o.logger.Phase("[Phase 4] Generating OpenShift Ignition Payload")
+		o.logger.Phase("[Phase 4/7] Generating OpenShift Ignition Payload")
 		
 		var phaseErr error
 		func() {
@@ -568,7 +585,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 	// --- PHASE 5: BOOT ---
 	if !resume || !contains(o.state.CompletedPhases, "boot") {
 		phaseExec := o.startPhase("boot")
-		o.logger.Phase("[Phase 5] Initiating Cluster Boot")
+		o.logger.Phase("[Phase 5/7] Initiating Cluster Boot")
 		
 		var phaseErr error
 		func() {
@@ -618,7 +635,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 	// --- PHASE 6: WAIT FOR INSTALLATION ---
 	if !resume || !contains(o.state.CompletedPhases, "wait") {
 		phaseExec := o.startPhase("wait")
-		o.logger.Phase("[Phase 6] Waiting for OpenShift Installation")
+		o.logger.Phase("[Phase 6/7] Waiting for OpenShift Installation")
 		
 		var phaseErr error
 		func() {
@@ -643,7 +660,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 	// --- PHASE 7: POST-INSTALL CLEANUP ---
 	if o.cfg.Nodes.BootMethod == "iso" && (!resume || !contains(o.state.CompletedPhases, "iso_cleanup")) {
 		phaseExec := o.startPhase("iso_cleanup")
-		o.logger.Phase("[Phase 7] Cleaning up VIOS ISO Mappings")
+		o.logger.Phase("[Phase 7/7] Cleaning up VIOS ISO Mappings")
 		
 		var phaseErr error
 		func() {

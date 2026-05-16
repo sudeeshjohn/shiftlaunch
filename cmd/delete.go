@@ -40,7 +40,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	log := orch.GetLogger()
 
 	if orch.IsDeleted() {
-		fmt.Println(" Cluster is already deleted (found .deleted marker). Nothing to do.")
+		fmt.Println(" Cluster is already deleted. Nothing to do.")
 		return nil
 	}
 
