@@ -325,11 +325,15 @@ func (h *HTTPServerManager) GetDiskUsage(ctx context.Context) (string, error) {
 // StageFiles copies the downloaded images and generated ignition configs into the HTTP root
 func (h *HTTPServerManager) StageFiles(ctx context.Context,workspaceDir string) error {
 	h.logger.Info("Staging artifacts to HTTP directory...", "cluster", h.cfg.OpenShift.ClusterName)
-	httpDir := h.GetClusterHTTPDir() // This safely points to /var/www/html/ocp-prod
+	httpDir := h.GetClusterHTTPDir()
+
+	// CRITICAL: Shield from cancellation! Truncated rootfs or ignition files
+	// hosted by Apache will cause catastrophic OpenShift boot failures!
+	shieldedCtx := context.WithoutCancel(ctx)
 
 	// 1. Copy RHCOS images from workspace to HTTP directory
 	copyRhcos := fmt.Sprintf("sudo cp -r %s/rhcos/* %s/rhcos/ 2>/dev/null || true", workspaceDir, httpDir)
-	if _, err := h.exec.Execute(ctx,copyRhcos); err != nil {
+	if _, err := h.exec.Execute(shieldedCtx, copyRhcos); err != nil {
 		h.logger.Warn("Failed to stage some RHCOS images", "error", err)
 	}
 
@@ -343,13 +347,13 @@ func (h *HTTPServerManager) StageFiles(ctx context.Context,workspaceDir string) 
 		copyIgnCmd = fmt.Sprintf("sudo cp %s/*.ign %s/ignition/", targetDir, httpDir)
 	}
 
-	if _, err := h.exec.Execute(ctx,copyIgnCmd); err != nil {
+	if _, err := h.exec.Execute(shieldedCtx, copyIgnCmd); err != nil {
 		return fmt.Errorf("failed to stage ignition files: %w", err)
 	}
 
 	// 3. Fix permissions and SELinux contexts for the HTTP server
-	h.exec.Execute(ctx,fmt.Sprintf("sudo chmod -R 755 %s", httpDir))
-	h.exec.Execute(ctx,fmt.Sprintf("sudo restorecon -Rv %s", httpDir))
+	h.exec.Execute(shieldedCtx, fmt.Sprintf("sudo chmod -R 755 %s", httpDir))
+	h.exec.Execute(shieldedCtx, fmt.Sprintf("sudo restorecon -Rv %s", httpDir))
 
 	h.logger.Info("Artifacts staged successfully")
 	return nil

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"text/template"
+	"time"
 
 	"github.com/sudeeshjohn/shiftlaunch/localexec"
 	"github.com/sudeeshjohn/shiftlaunch/types"
@@ -231,9 +232,10 @@ func generateAgentISO(ctx context.Context, cfg *types.AgentConfig, exec *localex
 
 	agentConfigPath := filepath.Join(targetDir, "agent-config.yaml")
 	
-	// Backup existing agent-config.yaml if it exists
+	// Backup existing agent-config.yaml if it exists (with timestamp to preserve history)
 	if _, err := os.Stat(agentConfigPath); err == nil {
-		backupPath := agentConfigPath + ".bak"
+		timestamp := time.Now().Format("20060102-150405")
+		backupPath := fmt.Sprintf("%s.backup.%s", agentConfigPath, timestamp)
 		if err := os.Rename(agentConfigPath, backupPath); err != nil {
 			return fmt.Errorf("failed to backup existing agent-config.yaml: %w", err)
 		}

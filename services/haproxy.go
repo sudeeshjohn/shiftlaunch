@@ -41,7 +41,11 @@ backend {{.ClusterName}}-openshift-api-server
     server {{.SNONode.Hostname}} {{.SNONode.IP}}:6443 check
 {{- else}}
 {{- if .Bootstrap}}
-    server {{.Bootstrap.Hostname}} {{.Bootstrap.IP}}:6443 check
+    server {{.Bootstrap.Hostname}} {{.Bootstrap.IP}}:6443 check inter 1s backup
+{{- else if .IsISO}}
+    {{- if .Masters}}
+    server bootstrap {{(index .Masters 0).IP}}:6443 check inter 1s backup
+    {{- end}}
 {{- end}}
 {{- range .Masters}}
     server {{.Hostname}} {{.IP}}:6443 check
@@ -62,7 +66,11 @@ backend {{.ClusterName}}-machine-config-server
     server {{.SNONode.Hostname}} {{.SNONode.IP}}:22623 check
 {{- else}}
 {{- if .Bootstrap}}
-    server {{.Bootstrap.Hostname}} {{.Bootstrap.IP}}:22623 check
+    server {{.Bootstrap.Hostname}} {{.Bootstrap.IP}}:22623 check inter 1s backup
+{{- else if .IsISO}}
+    {{- if .Masters}}
+    server bootstrap {{(index .Masters 0).IP}}:22623 check inter 1s backup
+    {{- end}}
 {{- end}}
 {{- range .Masters}}
     server {{.Hostname}} {{.IP}}:22623 check
@@ -166,6 +174,7 @@ func (h *HAProxyGenerator) Generate() (string, error) {
 		VIP         string
 		Timestamp   string
 		IsSNO       bool
+		IsISO       bool
 		SNONode     *types.NodeConfig
 		Bootstrap   *types.NodeConfig
 		Masters     []types.NodeConfig
@@ -177,6 +186,7 @@ func (h *HAProxyGenerator) Generate() (string, error) {
 		VIP:         cfg.Network.LoadBalancerIP,
 		Timestamp:   time.Now().Format(time.RFC3339),
 		IsSNO:       cfg.IsSNO(),
+		IsISO:       cfg.Nodes.BootMethod == "iso",
 		SNONode:     snoNode,
 	}
 

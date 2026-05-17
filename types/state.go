@@ -359,7 +359,7 @@ func (sm *StateManager) SaveState(state *DeploymentState) error {
 			// Write backup
 			if err := os.WriteFile(backupPath, existingData, 0644); err != nil {
 				// Log warning but don't fail
-				fmt.Fprintf(os.Stderr, "Warning: Failed to create state backup: %v\n", err)
+				sm.logger.Warn("Failed to create state backup", "error", err)
 			}
 		}
 	}

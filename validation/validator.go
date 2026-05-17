@@ -526,6 +526,9 @@ func (v *Validator) validateLocalEnvironment(ctx context.Context) {
 			}
 		}
 	}
+
+	// 5. Check for Node IP Conflicts on the network
+	v.validateNodeIPsNotAlive(ctx)
 }
 
 func (v *Validator) validateLocalDiskSpace(ctx context.Context) {
@@ -554,7 +557,7 @@ func (v *Validator) validateLocalDiskSpace(ctx context.Context) {
 			fmt.Sprintf("INSUFFICIENT DISK SPACE: /var/www/html has only %.2f GB available, but at least %.0f GB is required.",
 				availableGB, requiredGB))
 	} else {
-		v.log.Info(fmt.Sprintf("Controller has %.2f GB available in /var/www/html", availableGB))
+		v.log.Debug(fmt.Sprintf("Controller has %.2f GB available in /var/www/html", availableGB))
 	}
 }
 
@@ -689,7 +692,7 @@ func (v *Validator) validateExternalDHCP() {
 	
 	// Skip DHCP warning if using static IPs
 	if allNodesHaveStaticIP {
-		v.log.Info("Static IPs configured for all nodes via NMState. DHCP not required.")
+		v.log.Debug("Static IPs configured for all nodes via NMState. DHCP not required.")
 		return
 	}
 	
@@ -824,14 +827,15 @@ func (v *Validator) validateMediaRepositorySpace() {
 			continue
 		}
 
-		// Calculate requirements strictly for the nodes hosted on THIS system
-		requiredMB := 1536 * count
+		// Calculate ACTUAL requirements strictly for the nodes hosted on THIS system
+		actualRequiredMB := 1536 * count
 		
-		// Force a sensible minimum of 10GB (10240 MB) so the repo isn't undersized
-		if requiredMB < 10240 {
-			requiredMB = 10240
+		// What we will request if we have to auto-create it (enforce 10GB minimum for creation)
+		createRequestMB := actualRequiredMB
+		if createRequestMB < 10240 {
+			createRequestMB = 10240
 		}
-		requiredGB := float64(requiredMB) / 1024.0
+		requiredGB := float64(createRequestMB) / 1024.0
 
 		// 1. Try to fetch the existing repository info
 		repoInfo, err := v.hmcClient.GetMediaRepositoryInfo(context.Background(), systemName, activeViosName, v.debug)
@@ -881,18 +885,39 @@ func (v *Validator) validateMediaRepositorySpace() {
 			continue
 		}
 
-		// 3. If repository already exists and has a size, validate its free space
-		v.log.Info(fmt.Sprintf("Repository Size: %d MB | Free: %d MB | Required: %d MB (%d nodes)",
-			repoInfo.SizeMB, repoInfo.FreeMB, requiredMB, count))
+		// 3. If repository already exists, validate against ACTUAL required space, not the bloated creation minimum!
+		v.log.Info(fmt.Sprintf("Repository Size: %d MB | Free: %d MB | Actually Required: %d MB (%d nodes)",
+			repoInfo.SizeMB, repoInfo.FreeMB, actualRequiredMB, count))
 
-		if repoInfo.FreeMB < requiredMB {
+		if repoInfo.FreeMB < actualRequiredMB {
 			v.errors = append(v.errors, fmt.Sprintf(
 				"VIOS MEDIA REPOSITORY FULL: VIOS '%s' on system '%s' only has %d MB free, but %d MB is required.\n"+
 				"   Solution 1: Clean up old ISOs via HMC (rmvopt).\n"+
 				"   Solution 2: Expand the repository using 'chrep -size'.",
-				activeViosName, systemName, repoInfo.FreeMB, requiredMB))
+				activeViosName, systemName, repoInfo.FreeMB, actualRequiredMB))
 		} else {
 			v.log.Info(fmt.Sprintf("✓ Sufficient space available in VIOS Media Repository on '%s'", activeViosName))
+		}
+	}
+}
+
+// validateNodeIPsNotAlive pings every node IP to ensure it is not already in use by another machine
+func (v *Validator) validateNodeIPsNotAlive(ctx context.Context) {
+	v.log.Info("Checking network to ensure all node IPs are available...")
+
+	for _, node := range v.cfg.GetAllNodes() {
+		if node.IP == "" {
+			continue
+		}
+
+		// Ping the IP with 2 packets and 2 second timeout
+		// If the command SUCCEEDS (exit code 0), it means the IP answered us!
+		pingCmd := fmt.Sprintf("ping -c 2 -W 2 %s >/dev/null 2>&1", node.IP)
+		
+		if _, err := v.exec.Execute(ctx, pingCmd); err == nil {
+			v.errors = append(v.errors, fmt.Sprintf(
+				"IP CONFLICT: The IP %s (assigned to %s) is already actively responding on the network! Please choose an unused IP.",
+				node.IP, node.Hostname))
 		}
 	}
 }

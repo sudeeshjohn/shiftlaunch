@@ -24,6 +24,7 @@ var (
 
 var createCmd = &cobra.Command{
 	Use:   "create",
+	Aliases: []string{"deploy", "dep"},
 	Short: "Execute cluster deployment pipeline",
 	GroupID: "core",
 	SilenceUsage: true,
@@ -116,12 +117,12 @@ func runCreate(cmd *cobra.Command, args []string) error {
 
 	if _, err := os.Stat(failedMarker); err == nil {
 		if configFile != existingConfigPath && configFile != "config.yaml" {
-			log.Warn("Cluster has a failed deployment. Ignoring new config and resuming with existing configuration.",
+			log.Info("Resuming failed deployment with existing configuration",
 				"cluster", cfg.OpenShift.ClusterName,
 				"config", existingConfigPath)
+		} else {
+			log.Info("Resuming failed deployment", "cluster", cfg.OpenShift.ClusterName)
 		}
-		// Downgraded to Debug to avoid redundancy with the "=== Resuming ===" banner below
-		log.Debug("Resuming failed cluster deployment", "cluster", cfg.OpenShift.ClusterName)
 	} else if _, err := os.Stat(managedMarker); err == nil {
 		log.Error("Cluster is already managed and fully deployed", "cluster", cfg.OpenShift.ClusterName, "workspace", workspaceDir)
 		log.Info("If you want to:")
@@ -155,6 +156,9 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	// PRE-FLIGHT VALIDATION (Only run on fresh deployments!)
 	// ========================================================================
 	if !autoResume {
+		// Print validation banner
+		log.Info(fmt.Sprintf("=== Starting Validation: %s ===", cfg.OpenShift.ClusterName))
+		
 		// Change from Info to StartPhase to spin up the UI
 		log.StartPhase("Running pre-flight validation checks...")
 		

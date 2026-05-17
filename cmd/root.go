@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
@@ -92,13 +93,22 @@ func initConfig() {
 func setupSignalHandler() {
 	rootCtx, cancel = context.WithCancel(context.Background())
 
-	sigCh := make(chan os.Signal, 1)
+	// Buffer of 2 to catch rapid double-presses
+	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
 		<-sigCh
-		fmt.Println("\n\n[WARNING] Interrupt signal received! Attempting graceful shutdown...")
+		pterm.Println()
+		pterm.Warning.Println("Interrupt signal received!")
+		pterm.Warning.Println("Attempting graceful shutdown (waiting for active VIOS/HMC operations to complete)...")
+		pterm.Warning.Println("Press Ctrl+C again to forcefully terminate immediately (may cause VIOS corruption).")
 		cancel()
+
+		<-sigCh
+		pterm.Println()
+		pterm.Error.Println("Force quitting immediately!")
+		os.Exit(1)
 	}()
 }
 
@@ -185,8 +195,9 @@ func loadConfig(requireConfig bool) (*types.AgentConfig, *config.AgentDaemonConf
 	logFilePath := filepath.Join(workspaceDir, "deployment.log")
 	appLogger, err := logger.New(debug, logFilePath)
 	if err != nil {
-		fmt.Printf(" Warning: Could not setup file logging: %v. Using console only.\n", err)
+		// Instantiate the fallback logger FIRST, then use it to warn the user
 		appLogger, _ = logger.New(debug, "")
+		appLogger.Warn("Could not setup file logging. Using console only.", "error", err)
 	}
 
 	// Create orchestrator

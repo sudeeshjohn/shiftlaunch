@@ -237,24 +237,28 @@ func ConfigureHTTPD(ctx context.Context,exec *localexec.LocalClient, port int) e
 		return nil
 	}
 
+	// CRITICAL: Shield from cancellation! Killing sed -i mid-execution will
+	// permanently destroy the global Apache configuration file!
+	shieldedCtx := context.WithoutCancel(ctx)
+
 	// 2. If we reach here, httpd needs to be configured
-	if _, err := exec.Execute(ctx,fmt.Sprintf("sudo sed -i 's/^Listen .*/Listen %d/g' /etc/httpd/conf/httpd.conf", port)); err != nil {
+	if _, err := exec.Execute(shieldedCtx, fmt.Sprintf("sudo sed -i 's/^Listen .*/Listen %d/g' /etc/httpd/conf/httpd.conf", port)); err != nil {
 		return fmt.Errorf("failed to update Listen port in httpd.conf: %w", err)
 	}
 
 	// Ensure DocumentRoot is set strictly to /var/www/html
-	if _, err := exec.Execute(ctx,`sudo sed -i 's|^DocumentRoot .*|DocumentRoot "/var/www/html"|g' /etc/httpd/conf/httpd.conf`); err != nil {
+	if _, err := exec.Execute(shieldedCtx, `sudo sed -i 's|^DocumentRoot .*|DocumentRoot "/var/www/html"|g' /etc/httpd/conf/httpd.conf`); err != nil {
 		return fmt.Errorf("failed to update DocumentRoot in httpd.conf: %w", err)
 	}
 
 	// Ensure SELinux allows Apache to read the standard directory
-	exec.Execute(ctx,"sudo chcon -Rt httpd_sys_content_t /var/www/html")
+	exec.Execute(shieldedCtx, "sudo chcon -Rt httpd_sys_content_t /var/www/html")
 
 	// 3. Enable and restart the service
-	if err := exec.SystemctlEnable(ctx,"httpd"); err != nil {
+	if err := exec.SystemctlEnable(shieldedCtx, "httpd"); err != nil {
 		return fmt.Errorf("failed to enable httpd service: %w", err)
 	}
-	if err := exec.SystemctlRestart(ctx,"httpd"); err != nil {
+	if err := exec.SystemctlRestart(shieldedCtx, "httpd"); err != nil {
 		return fmt.Errorf("failed to restart httpd service: %w", err)
 	}
 

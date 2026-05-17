@@ -37,6 +37,9 @@ func NewNetworkManager(executor *localexec.LocalClient, debug bool, log *logger.
 
 // AddVIPAlias appends a secondary IP to the EXISTING connection profile via nmcli
 func (nm *NetworkManager) AddVIPAlias(ctx context.Context,iface, ip, cidr string) error {
+	// CRITICAL: Shield from cancellation so the VIP doesn't get orphaned in the NM profile without being activated!
+	shieldedCtx := context.WithoutCancel(ctx)
+	
 	prefix := ExtractCIDRPrefix(cidr)
 	nm.logger.Info("Appending persistent VIP via nmcli", "ip", ip, "interface", iface)
 
@@ -44,7 +47,7 @@ func (nm *NetworkManager) AddVIPAlias(ctx context.Context,iface, ip, cidr string
 
 	// 1. Discover the connection name managing the interface (e.g., "eth0" or "Wired connection 1")
 	getConCmd := fmt.Sprintf("nmcli -t -f GENERAL.CONNECTION device show %s | head -n1 | cut -d: -f2", iface)
-	conName, err := nm.executor.Execute(ctx,getConCmd)
+	conName, err := nm.executor.Execute(shieldedCtx,getConCmd)
 	conName = strings.TrimSpace(conName)
 	if err != nil || conName == "" {
 		return fmt.Errorf("failed to discover NetworkManager connection for interface %s: %v", iface, err)
@@ -53,16 +56,16 @@ func (nm *NetworkManager) AddVIPAlias(ctx context.Context,iface, ip, cidr string
 	// 2. Append the VIP to the existing profile
 	// The '+' prefix ensures we add the IP without overwriting existing ones.
 	addCmd := fmt.Sprintf("sudo nmcli connection modify \"%s\" +ipv4.addresses %s", conName, fullIP)
-	if _, err := nm.executor.Execute(ctx,addCmd); err != nil {
+	if _, err := nm.executor.Execute(shieldedCtx,addCmd); err != nil {
 		return fmt.Errorf("failed to modify connection profile: %v", err)
 	}
 
 	// 3. Apply changes without disrupting the connection
 	reapplyCmd := fmt.Sprintf("sudo nmcli device reapply %s", iface)
-	if _, err := nm.executor.Execute(ctx,reapplyCmd); err != nil {
+	if _, err := nm.executor.Execute(shieldedCtx,reapplyCmd); err != nil {
 		nm.logger.Warn("Device reapply failed, falling back to connection up", "error", err)
 		upCmd := fmt.Sprintf("sudo nmcli connection up \"%s\"", conName)
-		_, _ = nm.executor.Execute(ctx,upCmd)
+		_, _ = nm.executor.Execute(shieldedCtx,upCmd)
 	}
 
 	return nil
@@ -222,19 +225,26 @@ func (nm *NetworkManager) AddHostsEntry(ctx context.Context, clusterName, baseDo
 		vip, domain, domain, domain, domain)
 	marker := fmt.Sprintf("# ShiftLaunch-Cluster-API: %s", clusterName)
 
-	// Clean up any stale entries first
+	// Clean up any stale entries first (this is internally shielded now)
 	nm.RemoveHostsEntry(ctx, clusterName)
+
+	// CRITICAL: Shield from cancellation! Writing to /etc/hosts must never be aborted.
+	shieldedCtx := context.WithoutCancel(ctx)
 
 	// Append the new entry
 	addCmd := fmt.Sprintf("echo '%s %s' | sudo tee -a /etc/hosts > /dev/null", entry, marker)
-	_, err := nm.executor.Execute(ctx, addCmd)
+	_, err := nm.executor.Execute(shieldedCtx, addCmd)
 	return err
 }
 
 // RemoveHostsEntry safely removes the cluster's specific API endpoints from the hosts file
 func (nm *NetworkManager) RemoveHostsEntry(ctx context.Context, clusterName string) error {
+	// CRITICAL: Shield from cancellation! Killing sed -i mid-execution will
+	// permanently destroy the OS /etc/hosts file!
+	shieldedCtx := context.WithoutCancel(ctx)
+	
 	marker := fmt.Sprintf("# ShiftLaunch-Cluster-API: %s", clusterName)
 	delCmd := fmt.Sprintf("sudo sed -i '/%s/d' /etc/hosts", marker)
-	_, err := nm.executor.Execute(ctx, delCmd)
+	_, err := nm.executor.Execute(shieldedCtx, delCmd)
 	return err
 }

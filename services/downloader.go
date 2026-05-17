@@ -265,19 +265,23 @@ func (d *Downloader) DownloadOpenShiftTools(ctx context.Context,workspaceDir str
 }
 
 func (d *Downloader) extractOpenShiftTools(ctx context.Context,toolsDir string) error {
+	// CRITICAL: Shield from cancellation! Killing tar mid-extraction leaves a corrupted,
+	// half-written binary on disk that will crash all future ignition generations!
+	shieldedCtx := context.WithoutCancel(ctx)
+
 	tools := []string{"openshift-install-linux.tar.gz", "openshift-client-linux.tar.gz"}
 	for _, tool := range tools {
 		tarPath := filepath.Join(toolsDir, tool)
-		if _, err := d.exec.Execute(ctx,fmt.Sprintf("test -s %s", tarPath)); err != nil {
+		if _, err := d.exec.Execute(shieldedCtx, fmt.Sprintf("test -s %s", tarPath)); err != nil {
 			continue
 		}
 		extractCmd := fmt.Sprintf("cd %s && tar -xzf %s", toolsDir, tool)
-		if _, err := d.exec.Execute(ctx,extractCmd); err != nil {
+		if _, err := d.exec.Execute(shieldedCtx, extractCmd); err != nil {
 			return fmt.Errorf("failed to extract %s: %w", tool, err)
 		}
 	}
 	makeExecCmd := fmt.Sprintf("cd %s && chmod +x openshift-install oc kubectl 2>/dev/null || true", toolsDir)
-	_, err := d.exec.Execute(ctx,makeExecCmd)
+	_, err := d.exec.Execute(shieldedCtx, makeExecCmd)
 	return err
 }
 

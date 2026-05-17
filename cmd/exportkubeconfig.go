@@ -9,6 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/sudeeshjohn/shiftlaunch/config"
+	"github.com/sudeeshjohn/shiftlaunch/logger"
 )
 
 var (
@@ -118,14 +119,17 @@ func ExportKubeconfig(clusterName, kubeconfigPath string, stdout bool) error {
 		return err
 	}
 
+	// Initialize a console-only logger for a consistent UI
+	log, _ := logger.New(false, "")
+
 	// 8. Merge with existing kubeconfig if it exists
 	var finalKC *KubeconfigStructure
 	if existingKC, err := readExistingKubeconfig(destPath); err == nil {
 		finalKC = mergeKubeconfigs(existingKC, sourceKC)
-		fmt.Printf("Merged kubeconfig context '%s' into %s\n", clusterName, destPath)
+		log.Info("Merged kubeconfig context", "cluster", clusterName, "destination", destPath)
 	} else {
 		finalKC = sourceKC
-		fmt.Printf("Created new kubeconfig at %s\n", destPath)
+		log.Info("Created new kubeconfig", "destination", destPath)
 	}
 
 	// 9. Write merged kubeconfig to destination
@@ -133,8 +137,7 @@ func ExportKubeconfig(clusterName, kubeconfigPath string, stdout bool) error {
 		return err
 	}
 
-	fmt.Printf("Successfully exported kubeconfig for cluster '%s'\n", clusterName)
-	fmt.Printf("Current context set to: %s\n", clusterName)
+	log.Info("Successfully exported kubeconfig", "cluster", clusterName, "current_context", clusterName)
 	return nil
 }
 

@@ -132,6 +132,10 @@ func (o *Orchestrator) waitForAgentInstall(cancelCtx context.Context) error {
 	timeoutCtx, cancel := context.WithTimeout(cancelCtx, time.Duration(timeoutSecs)*time.Second)
 	defer cancel()
 
+	if !o.cfg.IsSNO() {
+		go o.autoApproveCSRs(timeoutCtx)
+	}
+
 	installerPath := filepath.Join(o.workspaceDir, "tools", "openshift-install")
 	targetDir := filepath.Join(o.workspaceDir, "install-dir")
 
@@ -188,7 +192,7 @@ func (o *Orchestrator) autoApproveCSRs(ctx context.Context) {
 			
 			if err == nil && strings.Contains(string(output), "approved") {
 				// Route through logger so it safely intercepts and updates the spinner text
-				o.logger.Info("Approved pending worker CSRs")
+				o.logger.Debug("Approved pending worker CSRs")
 				
 				// Send the raw output to the debug log file silently
 				o.logger.Debug(fmt.Sprintf("CSR Auto-Approver details:\n%s", string(output)))

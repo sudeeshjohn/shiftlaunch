@@ -290,7 +290,7 @@ func printClusterList(workspaceBase string) error {
 			WithData(tableData).
 			Render()
 		
-		fmt.Printf("Total clusters: %d\n", visibleCount)
+		log.Info("Workspace summary", "total_clusters", visibleCount)
 	}
 
 	return nil

@@ -60,9 +60,7 @@ func dumpConfig(orch *orchestrator.Orchestrator, cfg *types.AgentConfig) error {
 	}
 
 	if !hasExternalServices {
-		orch.GetLogger().Info("Cluster does not use any external services. All services will be managed by Shiftlaunch.")
-		fmt.Printf("Cluster '%s' does not use any external services.\n", clusterName)
-		fmt.Println("All services will be managed by Shiftlaunch.")
+		orch.GetLogger().Info("Cluster does not use any external services. All services will be managed by Shiftlaunch.", "cluster", clusterName)
 		return nil
 	}
 
@@ -111,11 +109,7 @@ func dumpConfig(orch *orchestrator.Orchestrator, cfg *types.AgentConfig) error {
 		dumpLoadBalancerConfig(clusterName, vip, cfg)
 	}
 
-	fmt.Println("================================================================================")
-	fmt.Println("Configuration dump complete.")
-	fmt.Println("================================================================================")
-
-	orch.GetLogger().Info("Configuration dump complete", "cluster", clusterName)
+	orch.GetLogger().Info("External configuration dump complete", "cluster", clusterName)
 	return nil
 }
 

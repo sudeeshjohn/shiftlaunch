@@ -163,30 +163,32 @@ func (m *DNSmasqManager) SetupServices(ctx context.Context) error {
 
 // ConfigurePXEBoot handles the physical artifacts: grub2 structure, core.elf, images, and grub configs
 func (m *DNSmasqManager) ConfigurePXEBoot(ctx context.Context, workspaceDir string) error {
+	// CRITICAL: Shield from cancellation! Truncated boot files in TFTP
+	// will cause immediate IBM Power LPAR Kernel Panics on boot!
+	shieldedCtx := context.WithoutCancel(ctx)
+
 	clusterName := m.cfg.OpenShift.ClusterName
 	tftpRoot := m.daemonCfg.Paths.TFTPRoot
 	clusterTftpDir := filepath.Join(tftpRoot, clusterName)
 
 	// 1. Setup GRUB2 environment
-	// --- FIX: Surface errors if grub2-mknetdir fails due to missing ppc64le modules ---
-	out, err := m.executor.Execute(ctx, fmt.Sprintf("sudo grub2-mknetdir --net-directory=%s", tftpRoot))
+	out, err := m.executor.Execute(shieldedCtx, fmt.Sprintf("sudo grub2-mknetdir --net-directory=%s", tftpRoot))
 	if err != nil {
 		return fmt.Errorf("failed to generate PXE bootloader (grub2-mknetdir): %w\nOutput: %s\n(Hint: Ensure grub2-ppc64le-modules is installed)", err, out)
 	}
 
-	if _, err := m.executor.Execute(ctx, fmt.Sprintf("sudo mkdir -p %s/rhcos", clusterTftpDir)); err != nil {
+	if _, err := m.executor.Execute(shieldedCtx, fmt.Sprintf("sudo mkdir -p %s/rhcos", clusterTftpDir)); err != nil {
 		return fmt.Errorf("failed to create rhcos TFTP directory: %w", err)
 	}
 
 	// 2. Stage bootloader for Power systems
-	// --- FIX: Strictly verify the core.elf file copied successfully ---
-	out, err = m.executor.Execute(ctx, fmt.Sprintf("sudo cp %s/boot/grub2/powerpc-ieee1275/core.elf %s/", tftpRoot, clusterTftpDir))
+	out, err = m.executor.Execute(shieldedCtx, fmt.Sprintf("sudo cp %s/boot/grub2/powerpc-ieee1275/core.elf %s/", tftpRoot, clusterTftpDir))
 	if err != nil {
 		return fmt.Errorf("failed to stage core.elf bootloader: %w\nOutput: %s", err, out)
 	}
 
 	// 3. Stage RHCOS artifacts from local workspace
-	if _, err := m.executor.Execute(ctx, fmt.Sprintf("sudo cp %s/rhcos/kernel %s/rhcos/initramfs.img %s/rhcos/", workspaceDir, workspaceDir, clusterTftpDir)); err != nil {
+	if _, err := m.executor.Execute(shieldedCtx, fmt.Sprintf("sudo cp %s/rhcos/kernel %s/rhcos/initramfs.img %s/rhcos/", workspaceDir, workspaceDir, clusterTftpDir)); err != nil {
 		return fmt.Errorf("failed to stage RHCOS artifacts to TFTP root: %w", err)
 	}
 
@@ -200,18 +202,18 @@ func (m *DNSmasqManager) ConfigurePXEBoot(ctx context.Context, workspaceDir stri
 		macFile := "grub.cfg-01-" + strings.ToLower(strings.ReplaceAll(node.MACAddress, ":", "-"))
 		destPath := filepath.Join(clusterTftpDir, macFile)
 
-		data := m.prepareGrubData(ctx, node)
+		data := m.prepareGrubData(shieldedCtx, node)
 		var buf bytes.Buffer
 		tmpl.Execute(&buf, data)
 
-		if err := m.executor.WriteFile(ctx, destPath, buf.Bytes(), 0644); err != nil {
+		if err := m.executor.WriteFile(shieldedCtx, destPath, buf.Bytes(), 0644); err != nil {
 			return fmt.Errorf("failed to write GRUB config for node %s: %w", node.Hostname, err)
 		}
 	}
 
 	// 5. Finalize permissions and SELinux
-	m.executor.Execute(ctx, fmt.Sprintf("sudo chown -R nobody:nobody %s", clusterTftpDir))
-	m.executor.Execute(ctx, fmt.Sprintf("sudo restorecon -Rv %s", clusterTftpDir))
+	m.executor.Execute(shieldedCtx, fmt.Sprintf("sudo chown -R nobody:nobody %s", clusterTftpDir))
+	m.executor.Execute(shieldedCtx, fmt.Sprintf("sudo restorecon -Rv %s", clusterTftpDir))
 
 	return nil
 }

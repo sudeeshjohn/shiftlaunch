@@ -68,8 +68,12 @@ func (c *ControllerSetup) InstallPackages(ctx context.Context) error {
 	pkgs := c.getRequiredPackages()
 	c.logger.Info("Installing required local packages...", "packages", strings.Join(pkgs, ", "))
 
+	// CRITICAL: Shield from cancellation! Killing dnf mid-transaction corrupts the local
+	// RPM database and leaves a permanent /var/lib/rpm/.rpm.lock file that breaks the OS!
+	shieldedCtx := context.WithoutCancel(ctx)
+
 	installCmd := fmt.Sprintf("sudo dnf install -y %s", strings.Join(pkgs, " "))
-	if _, err := c.executor.Execute(ctx,installCmd); err != nil {
+	if _, err := c.executor.Execute(shieldedCtx, installCmd); err != nil {
 		return fmt.Errorf("failed to install local packages: %w", err)
 	}
 
@@ -109,7 +113,9 @@ func (c *ControllerSetup) ConfigureFirewall(ctx context.Context) error {
 		services = append(services, "nfs", "rpc-bind", "mountd")
 	}
 
-	// --- FIX: Apply Ports and Services in separate isolated commands ---
+	// CRITICAL: Shield from cancellation! Killing firewall-cmd mid-execution
+	// can corrupt the /etc/firewalld/zones/public.xml file, breaking the OS firewall!
+	shieldedCtx := context.WithoutCancel(ctx)
 
 	// 1. Apply Ports
 	if len(ports) > 0 {
@@ -117,7 +123,7 @@ func (c *ControllerSetup) ConfigureFirewall(ctx context.Context) error {
 		for _, port := range ports {
 			portArgs += fmt.Sprintf(" --add-port=%s", port)
 		}
-		if _, err := c.executor.Execute(ctx, "sudo firewall-cmd --permanent"+portArgs); err != nil {
+		if _, err := c.executor.Execute(shieldedCtx, "sudo firewall-cmd --permanent"+portArgs); err != nil {
 			return fmt.Errorf("failed to add firewall port rules: %w", err)
 		}
 	}
@@ -128,13 +134,13 @@ func (c *ControllerSetup) ConfigureFirewall(ctx context.Context) error {
 		for _, svc := range services {
 			svcArgs += fmt.Sprintf(" --add-service=%s", svc)
 		}
-		if _, err := c.executor.Execute(ctx, "sudo firewall-cmd --permanent"+svcArgs); err != nil {
+		if _, err := c.executor.Execute(shieldedCtx, "sudo firewall-cmd --permanent"+svcArgs); err != nil {
 			return fmt.Errorf("failed to add firewall service rules: %w", err)
 		}
 	}
 
 	// 3. Reload to apply changes
-	if _, err := c.executor.Execute(ctx, "sudo firewall-cmd --reload"); err != nil {
+	if _, err := c.executor.Execute(shieldedCtx, "sudo firewall-cmd --reload"); err != nil {
 		return fmt.Errorf("failed to reload firewall: %w", err)
 	}
 

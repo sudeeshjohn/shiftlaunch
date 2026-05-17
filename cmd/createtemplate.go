@@ -8,6 +8,7 @@ import (
 	"text/template"
 
 	"github.com/spf13/cobra"
+	"github.com/sudeeshjohn/shiftlaunch/logger"
 )
 
 var (
@@ -66,19 +67,19 @@ const configTemplate = `# ======================================================
 # -----------------------------------------------------------------------------
 managed_services:
   # Setup local dnsmasq to answer for the cluster domain (api, *.apps, etc.)
-  dns: true            
+  dns: true
   
   # Setup local DHCP to assign static IPs to LPARs based on MAC addresses
-  dhcp: {{if eq .BootMethod "iso"}}false{{else}}true{{end}}           
+  dhcp: {{if eq .BootMethod "iso"}}false{{else}}true{{end}}
   
   # Setup local TFTP server (Required for Netboot, ignored for ISO)
-  pxe: {{if eq .BootMethod "netboot"}}true{{else}}false{{end}}           
+  pxe: {{if eq .BootMethod "netboot"}}true{{else}}false{{end}}
   
   # Setup local HAProxy to route traffic for the loadbalancer_ip (VIP)
-  load_balancer: true  
+  load_balancer: true
   
   # Setup local NFS server to host Agent ISOs to the VIOS (Required for ISO)
-  nfs: {{if eq .BootMethod "iso"}}true{{else}}false{{end}}           
+  nfs: {{if eq .BootMethod "iso"}}true{{else}}false{{end}}
 
 # -----------------------------------------------------------------------------
 # 2. CONTROLLER NODE (The "Where")
@@ -86,7 +87,7 @@ managed_services:
 controller:
   # The physical network interface on this machine where the VIP will be bound
   # Example: "eth0", "enP1p1s0f0", "env2"
-  network_interface: "eth0"     
+  network_interface: "eth0"
 
 # -----------------------------------------------------------------------------
 # 3. HMC CREDENTIALS
@@ -140,10 +141,10 @@ openshift:
   
   # Path to the SSH public key injected into the nodes (for 'core' user access)
   ssh_public_key_file: "~/.ssh/id_rsa.pub"
-{{if eq .BootMethod "netboot"}}  
+{{if eq .BootMethod "netboot"}}
   # RHCOS Images used for building the payloads (Required for Netboot/PXE)
   rhcos_images:
-    kernel_url: "<URL>/rhcos-live-kernel-ppc64le"
+    kernel_url: "<URL>/rhcos-live-kernel.ppc64le"
     initramfs_url: "<URL>/rhcos-live-initramfs.ppc64le.img"
     rootfs_url: "<URL>/rhcos-live-rootfs.ppc64le.img"
 {{end}}
@@ -270,20 +271,23 @@ func GenerateConfig(configType, bootMethod, outputPath string) error {
 		return fmt.Errorf("failed to write configuration file: %w", err)
 	}
 
-	fmt.Printf("Successfully generated %s (%s) cluster template at: %s\n", configType, bootMethod, outputPath)
+	// Initialize console-only logger
+	log, _ := logger.New(false, "")
+
+	log.Info("Successfully generated cluster template", "topology", configType, "boot_method", bootMethod, "path", outputPath)
 
 	// 2. Generate the Daemon Config (agent.yaml) if it doesn't already exist
 	agentPath := "agent.yaml"
 	if _, err := os.Stat(agentPath); os.IsNotExist(err) {
 		if err := os.WriteFile(agentPath, []byte(agentConfigTemplate), 0644); err != nil {
-			fmt.Printf(" Warning: Failed to generate agent.yaml: %v\n", err)
+			log.Warn("Failed to generate agent.yaml", "error", err)
 		} else {
-			fmt.Printf("Successfully generated internal daemon config template at: %s\n", agentPath)
+			log.Info("Successfully generated internal daemon config template", "path", agentPath)
 		}
 	} else {
-		fmt.Println("ℹ 'agent.yaml' already exists in the current directory, skipping generation.")
+		log.Info("Found existing agent.yaml in current directory, skipping generation")
 	}
 
-	fmt.Println("\nPlease edit these files with your specific infrastructure details before running the 'create' command.")
+	log.Info("Please edit these files with your specific infrastructure details before running the 'create' command.")
 	return nil
 }

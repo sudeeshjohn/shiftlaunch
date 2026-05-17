@@ -5,10 +5,13 @@ import (
 	"os"
 	"time"
 
+	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 
 	"github.com/sudeeshjohn/shiftlaunch/types"
 )
+
+var removeForce bool
 
 var removeCmd = &cobra.Command{
 	Use:     "remove",
@@ -27,6 +30,7 @@ The remove command will:
 
 func init() {
 	rootCmd.AddCommand(removeCmd)
+	removeCmd.Flags().BoolVarP(&removeForce, "force", "f", false, "Forcefully delete without prompting for confirmation")
 }
 
 func runRemove(cmd *cobra.Command, args []string) error {
@@ -44,6 +48,26 @@ func runRemove(cmd *cobra.Command, args []string) error {
 	if orch.IsDeleted() {
 		log.Info("Cluster is already deleted. Nothing to do.", "cluster", cfg.OpenShift.ClusterName)
 		return nil
+	}
+
+	// INTERACTIVE PROMPT: Only prompt if --force is NOT passed
+	if !removeForce {
+		// Use pterm to make a beautiful, styled interactive confirmation prompt
+		prompt := pterm.DefaultInteractiveConfirm.
+			WithDefaultValue(false).
+			WithTextStyle(pterm.NewStyle(pterm.FgLightYellow, pterm.Bold)).
+			WithConfirmStyle(pterm.NewStyle(pterm.FgLightRed, pterm.Bold))
+		
+		result, err := prompt.Show(fmt.Sprintf("Are you sure you want to completely remove cluster '%s'?", cfg.OpenShift.ClusterName))
+		if err != nil {
+			return err
+		}
+		
+		// If user selects "No", exit cleanly immediately
+		if !result {
+			log.Info("Teardown aborted by user.")
+			return nil
+		}
 	}
 
 	// Record command execution
@@ -71,6 +95,7 @@ func runRemove(cmd *cobra.Command, args []string) error {
 		Flags: map[string]string{
 			"debug":   fmt.Sprintf("%v", debug),
 			"cluster": cfg.OpenShift.ClusterName,
+			"force":   fmt.Sprintf("%v", removeForce),
 		},
 	}
 

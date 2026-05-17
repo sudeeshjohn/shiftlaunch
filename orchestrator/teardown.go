@@ -35,23 +35,29 @@ func (o *Orchestrator) Teardown(ctx context.Context) error {
 	// Downgraded to Debug to keep the terminal clean
 	o.logger.Debug("Initiating Soft Teardown", "cluster", o.cfg.OpenShift.ClusterName)
 
+	// --- NEW: Centralized HMC Connection Phase ---
+	o.logger.StartPhase("Connecting to HMC...")
+	provider, err := compute.NewProviderWithState(o.cfg, o.logger, o.debug, o.stateManager)
+	if err != nil {
+		o.logger.EndPhase(false, "Failed to connect to HMC")
+		return fmt.Errorf("failed to initialize compute provider: %w", err)
+	}
+	o.logger.EndPhase(true, "Connected to HMC")
+
+	defer func() {
+		if hmcProvider, ok := provider.(*compute.HMCProvider); ok {
+			hmcProvider.Cleanup()
+		}
+	}()
+
 	// Phase 1: Power off LPARs (MUST happen before unmapping ISO)
 	phaseExec := o.startPhase("teardown_poweroff")
 	o.logger.StartPhase("Powering off cluster LPARs...")
 	var phaseErr error
 	func() {
-		provider, err := compute.NewProvider(o.cfg, o.logger, o.debug)
-		if err != nil {
-			phaseErr = fmt.Errorf("failed to initialize compute provider: %w", err)
-			return
-		}
-		defer func() {
-			if hmcProvider, ok := provider.(*compute.HMCProvider); ok {
-				hmcProvider.Cleanup()
-			}
-		}()
-		
-		if err := provider.PowerOffNodes(ctx); err != nil {
+		// We no longer initialize the provider here!
+		shieldedCtx := context.WithoutCancel(ctx)
+		if err := provider.PowerOffNodes(shieldedCtx); err != nil {
 			o.logger.Warn("Failed to power off some LPARs", "error", err)
 			phaseErr = err
 		}
@@ -61,21 +67,11 @@ func (o *Orchestrator) Teardown(ctx context.Context) error {
 
 	// Phase 2: Clean up ISO mappings (AFTER LPARs are powered off)
 	if o.cfg.Nodes.BootMethod == "iso" {
-		phaseExec := o.startPhase("teardown_iso_cleanup")
+		phaseExec = o.startPhase("teardown_iso_cleanup")
 		o.logger.StartPhase("Cleaning up VIOS ISO Mappings...")
 		phaseErr = nil
 		func() {
-			provider, err := compute.NewProviderWithState(o.cfg, o.logger, o.debug, o.stateManager)
-			if err != nil {
-				phaseErr = fmt.Errorf("failed to initialize compute provider: %w", err)
-				return
-			}
-			defer func() {
-				if hmcProvider, ok := provider.(*compute.HMCProvider); ok {
-					hmcProvider.Cleanup()
-				}
-			}()
-			
+			// We no longer initialize the provider here either!
 			if hmcProvider, ok := provider.(*compute.HMCProvider); ok {
 				if err := hmcProvider.CleanupISOMappings(ctx); err != nil {
 					o.logger.Warn("Failed to clean up some ISO mappings", "error", err)
@@ -92,14 +88,17 @@ func (o *Orchestrator) Teardown(ctx context.Context) error {
 	o.logger.StartPhase("Removing local network and service configurations...")
 	phaseErr = nil
 	func() {
+		// CRITICAL: Shield local network cleanup from cancellation to prevent orphaned VIPs and NFS exports!
+		shieldedCtx := context.WithoutCancel(ctx)
+
 		if o.cfg.ManagedServices.DNS || o.cfg.ManagedServices.DHCP || o.cfg.ManagedServices.PXE {
 			dnsmasq := services.NewDNSmasqManager(o.cfg, o.daemonCfg, o.executor)
-			dnsmasq.Cleanup(ctx)
+			dnsmasq.Cleanup(shieldedCtx)
 		}
 
 		if o.cfg.ManagedServices.LoadBalancer {
-			o.executor.Execute(ctx, fmt.Sprintf("sudo rm -f /etc/haproxy/conf.d/10-%s.cfg", o.cfg.OpenShift.ClusterName))
-			o.executor.SystemctlRestart(ctx, "haproxy")
+			o.executor.Execute(shieldedCtx, fmt.Sprintf("sudo rm -f /etc/haproxy/conf.d/10-%s.cfg", o.cfg.OpenShift.ClusterName))
+			o.executor.SystemctlRestart(shieldedCtx, "haproxy")
 
 			netMgr := controller.NewNetworkManager(o.executor, o.debug, o.logger)
 			vip := o.cfg.Network.LoadBalancerIP
@@ -107,17 +106,17 @@ func (o *Orchestrator) Teardown(ctx context.Context) error {
 			cidr := o.cfg.Network.MachineCIDR
 			ctrlIP := o.cfg.Controller.IP
 
-			if err := netMgr.RemoveVIPAlias(ctx, iface, vip, cidr, ctrlIP); err != nil {
+			if err := netMgr.RemoveVIPAlias(shieldedCtx, iface, vip, cidr, ctrlIP); err != nil {
 				o.logger.Warn("Failed to cleanly remove VIP alias via nmcli", "error", err)
 				
 				prefix := controller.ExtractCIDRPrefix(cidr)
-				o.executor.Execute(ctx, fmt.Sprintf("sudo ip addr del %s/%s dev %s", vip, prefix, iface))
+				o.executor.Execute(shieldedCtx, fmt.Sprintf("sudo ip addr del %s/%s dev %s", vip, prefix, iface))
 			}
 		}
 		
 		if !o.stateManager.IsServiceRemoved(o.state, "local-hosts") {
 			netMgr := controller.NewNetworkManager(o.executor, o.debug, o.logger)
-			if err := netMgr.RemoveHostsEntry(ctx, o.cfg.OpenShift.ClusterName); err != nil {
+			if err := netMgr.RemoveHostsEntry(shieldedCtx, o.cfg.OpenShift.ClusterName); err != nil {
 				o.logger.Warn("Failed to clean up /etc/hosts entry", "error", err)
 			} else {
 				_ = o.stateManager.RecordServiceRemoved(o.state, "local-hosts")
@@ -126,11 +125,11 @@ func (o *Orchestrator) Teardown(ctx context.Context) error {
 		
 		if o.cfg.Nodes.BootMethod != "iso" {
 			httpServer := services.NewHTTPServerManager(o.cfg, o.daemonCfg, o.executor, o.logger)
-			httpServer.Cleanup(ctx)
+			httpServer.Cleanup(shieldedCtx)
 		}
 		if o.cfg.Nodes.BootMethod == "iso" && o.cfg.ManagedServices.NFS {
 			nfsMgr := services.NewNFSManager(o.cfg, o.executor, o.logger, o.workspaceDir)
-			nfsMgr.Cleanup(ctx)
+			nfsMgr.Cleanup(shieldedCtx)
 		}
 	}()
 	o.logger.EndPhase(phaseErr == nil, "Local network and services removed")
