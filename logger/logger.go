@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/charmbracelet/log"
 	"github.com/pterm/pterm"
@@ -22,6 +23,8 @@ func New(debug bool, logPath string) (*Logger, error) {
 	var file *os.File
 	var fileLogger *log.Logger
 	var err error
+
+	pterm.SetDefaultOutput(os.Stderr)
 
 	// 1. Attempt to open the log file if a path is provided
 	if logPath != "" {
@@ -62,26 +65,39 @@ func New(debug bool, logPath string) (*Logger, error) {
 }
 
 func (l *Logger) Info(msg string, keyvals ...interface{}) {
+	// 1. ALWAYS write every single piece of telemetry to the background log
 	if l.fileLogger != nil {
 		l.fileLogger.Info(msg, keyvals...)
 	}
 
 	formattedMsg := formatKV(msg, keyvals...)
 
-	// INTERCEPT: If a spinner is active, update its text instead of printing a new line!
+	// 2. Feed the intermediate logs into the spinner!
 	if l.activeSpinner != nil && !l.debug {
-		// Truncate strings that are too long so they don't wrap and break the terminal
-		if len(formattedMsg) > 85 {
-			formattedMsg = formattedMsg[:82] + "..."
+		plainText := pterm.RemoveColorFromString(formattedMsg)
+		
+		// 🛡️ THE DYNAMIC FIX
+		// Get the actual width of the user's terminal window
+		termWidth := pterm.GetTerminalWidth()
+		if termWidth <= 0 {
+			termWidth = 80 // Safe fallback if terminal width cannot be detected
+		}
+
+		// Reserve ~18 characters for the spinner prefix ("▀ ") and timer suffix (" (12m34s)")
+		maxLen := termWidth - 18
+		
+		// Only truncate if the text is ACTUALLY going to wrap and break the UI
+		if len(plainText) > maxLen {
+			plainText = plainText[:maxLen-3] + "..."
 		}
 		
-		// Pad with spaces to exactly 85 characters.
-		// This overwrites ghost characters and aligns the pterm timer on the right!
-		paddedMsg := fmt.Sprintf("%-85s", formattedMsg)
-		l.activeSpinner.UpdateText(paddedMsg)
-	} else {
-		l.consoleLogger.Info(formattedMsg)
+		l.activeSpinner.UpdateText(plainText)
+		l.activeSpinner.UpdateText(plainText + "\033[K")
+		return
 	}
+
+	// 3. Otherwise, print cleanly to terminal
+	l.consoleLogger.Info(formattedMsg)
 }
 
 func (l *Logger) Debug(msg string, keyvals ...interface{}) {
@@ -98,12 +114,17 @@ func (l *Logger) Error(msg string, keyvals ...interface{}) {
 	formatted := formatKV(msg, keyvals...)
 	
 	if l.activeSpinner != nil && !l.debug {
-		// Apply same padding for consistency
-		if len(formatted) > 85 {
-			formatted = formatted[:82] + "..."
+		termWidth := pterm.GetTerminalWidth()
+		if termWidth <= 0 {
+			termWidth = 80
 		}
-		paddedMsg := fmt.Sprintf("%-85s", formatted)
-		pterm.Error.Println(paddedMsg)
+		maxLen := termWidth - 18
+		if len(formatted) > maxLen {
+			formatted = formatted[:maxLen-3] + "..."
+		}
+		// Force Error to respect the Stderr stream lock
+		fmt.Fprint(os.Stderr, "\r\033[2K")
+		pterm.Error.WithWriter(os.Stderr).Println(formatted)
 	} else {
 		l.consoleLogger.Error(formatted)
 	}
@@ -115,14 +136,18 @@ func (l *Logger) Warn(msg string, keyvals ...interface{}) {
 	}
 	formatted := formatKV(msg, keyvals...)
 	
-	// pterm handles printing warnings safely above an active spinner
 	if l.activeSpinner != nil && !l.debug {
-		// Apply same padding for consistency
-		if len(formatted) > 85 {
-			formatted = formatted[:82] + "..."
+		termWidth := pterm.GetTerminalWidth()
+		if termWidth <= 0 {
+			termWidth = 80
 		}
-		paddedMsg := fmt.Sprintf("%-85s", formatted)
-		pterm.Warning.Println(paddedMsg)
+		maxLen := termWidth - 18
+		if len(formatted) > maxLen {
+			formatted = formatted[:maxLen-3] + "..."
+		}
+		// Force Warning to respect the Stderr stream lock
+		fmt.Fprint(os.Stderr, "\r\033[2K")
+		pterm.Warning.WithWriter(os.Stderr).Println(formatted)
 	} else {
 		l.consoleLogger.Warn(formatted)
 	}
@@ -153,14 +178,27 @@ func (l *Logger) StartPhase(msg string) {
 	}
 
 	if l.debug {
-		//pterm.Println()
 		pterm.NewStyle(pterm.FgCyan, pterm.Bold).Println(msg)
 		return
 	}
 
-	//pterm.Println()
-	spinner, _ := pterm.DefaultSpinner.WithText(pterm.Cyan(msg)).Start()
+	if l.activeSpinner != nil {
+		_ = l.activeSpinner.Stop()
+	}
+
+	// 1. THE STREAM SYNC FIX: Explicitly map to Stderr
+	// 2. THE CLEANUP FIX: Force the thread to erase itself when stopped
+	spinner, _ := pterm.DefaultSpinner.
+		WithWriter(os.Stderr).
+		WithRemoveWhenDone(true).
+		Start(pterm.Cyan(msg))
+		
 	l.activeSpinner = spinner
+
+	// 3. THE THREAD RACE FIX: Yield to the Go scheduler!
+	// Archiving takes <1ms. We MUST pause for a tiny fraction of a second to guarantee
+	// the background thread wakes up and stabilizes before EndPhase tries to kill it!
+	time.Sleep(10 * time.Millisecond)
 }
 
 // EndPhase cleanly stops the spinner and marks it with a check or cross
@@ -168,12 +206,20 @@ func (l *Logger) EndPhase(success bool, msg string) {
 	if l.activeSpinner == nil {
 		return
 	}
-	if success {
-		l.activeSpinner.Success(pterm.Cyan(msg))
-	} else {
-		l.activeSpinner.Fail(pterm.Red(msg))
-	}
+
+	spinner := l.activeSpinner
 	l.activeSpinner = nil
+
+	// Safely stop the animation. Because of the 10ms yield, the thread is
+	// guaranteed to be stable and will cleanly erase its line.
+	_ = spinner.Stop()
+
+	// Print the pristine status message directly to Stderr to prevent desyncs
+	if success {
+		pterm.Success.WithWriter(os.Stderr).Println(pterm.Cyan(msg))
+	} else {
+		pterm.Error.WithWriter(os.Stderr).Println(pterm.Red(msg))
+	}
 }
 
 // Phase prints a highly visible header to the console, while keeping the file log clean
