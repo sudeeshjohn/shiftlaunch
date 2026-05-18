@@ -435,7 +435,7 @@ func (h *HMCProvider) networkBootLpar(ctx context.Context, node *types.NodeConfi
 	// =========================================================================
 	// STEP 2: Get authoritative location code from profile
 	// =========================================================================
-	h.logger.Info("Retrieving network boot device information from profile...")
+	h.logger.Info("Retrieving network boot device information...")
 
 	var bootDevices []hmc.NetworkBootDevice
 	for i := 0; i < maxRetries; i++ {

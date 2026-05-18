@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/pterm/pterm"
@@ -85,7 +84,7 @@ func printClusterList(workspaceBase string) error {
 
 	// Prepare table data for human output
 	tableData := pterm.TableData{
-		{"CLUSTER NAME", "STATUS", "CLUSTER IP", "TYPE", "PHASE", "DURATION", "PRE-PROVISIONED", "LAST UPDATED"},
+		{"CLUSTER NAME", "STATUS", "CLUSTER IP", "TYPE", "DURATION", "LAST UPDATED"},
 	}
 
 	visibleCount := 0
@@ -117,7 +116,7 @@ func printClusterList(workspaceBase string) error {
 				clusterNames = append(clusterNames, clusterName)
 			} else {
 				tableData = append(tableData, []string{
-					clusterName, "unknown", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A",
+					clusterName, "unknown", "N/A", "N/A", "N/A", "N/A",
 				})
 				
 				// Append corrupted state to JSON as well
@@ -130,9 +129,8 @@ func printClusterList(workspaceBase string) error {
 			continue
 		}
 
-		// Extract and format the pre_provisioned items and cluster type
-		clusterType := "Multi/LPAR" // Default
-		preProvStr := "Unknown"
+		// Extract cluster type and IP
+		clusterType := "Multi (agent)" // Default
 		clusterIP := "Unknown" // --- FIX: Default value for Cluster IP ---
 
 		data, err := os.ReadFile(configFile)
@@ -151,40 +149,13 @@ func printClusterList(workspaceBase string) error {
 					deploymentType = "SNO"
 				}
 
-				// Evaluate new ManagedServices flags (inverted logic from BYOI pre-provisioned)
-				// Boot method aware: DHCP/PXE only matter for netboot, NFS only matters for ISO
-				var prepItems []string
-				if !cfg.ManagedServices.DNS {
-					prepItems = append(prepItems, "DNS")
-				}
-				
-				// DHCP and PXE are only BYOI dependencies if doing a netboot
-				if !cfg.ManagedServices.DHCP && cfg.Nodes.BootMethod != "iso" {
-					prepItems = append(prepItems, "DHCP")
-				}
-				if !cfg.ManagedServices.PXE && cfg.Nodes.BootMethod != "iso" {
-					prepItems = append(prepItems, "PXE")
-				}
-				
-				if !cfg.ManagedServices.LoadBalancer {
-					prepItems = append(prepItems, "LB")
-				}
-				
-				// NFS is a BYOI dependency ONLY if doing an ISO boot
-				if !cfg.ManagedServices.NFS && cfg.Nodes.BootMethod == "iso" {
-					prepItems = append(prepItems, "NFS")
+				// Determine boot method for display
+				bootMethod := "agent"
+				if cfg.Nodes.BootMethod == "netboot" {
+					bootMethod = "netboot"
 				}
 
-				// Format the display string
-				provisioningType := "LPAR"
-				if len(prepItems) > 0 {
-					preProvStr = strings.Join(prepItems, ",")
-					provisioningType = "BYOI"
-				} else {
-					preProvStr = "None"
-				}
-
-				clusterType = fmt.Sprintf("%s/%s", deploymentType, provisioningType)
+				clusterType = fmt.Sprintf("%s (%s)", deploymentType, bootMethod)
 			}
 		}
 
@@ -234,22 +205,18 @@ func printClusterList(workspaceBase string) error {
 				state.Status,
 				clusterIP,
 				clusterType,
-				state.CurrentPhase,
 				duration,
-				preProvStr,
 				timestamp,
 			})
 			
 			// Append valid row to JSON array
 			jsonOutput = append(jsonOutput, map[string]string{
-				"name":            clusterName,
-				"status":          state.Status,
-				"cluster_ip":      clusterIP,
-				"type":            clusterType,
-				"phase":           state.CurrentPhase,
-				"duration":        duration,
-				"pre_provisioned": preProvStr,
-				"last_updated":    timestamp,
+				"name":       clusterName,
+				"status":     state.Status,
+				"cluster_ip": clusterIP,
+				"type":       clusterType,
+				"duration":   duration,
+				"last_updated": timestamp,
 			})
 		}
 
@@ -290,7 +257,7 @@ func printClusterList(workspaceBase string) error {
 			WithData(tableData).
 			Render()
 		
-		log.Info("Workspace summary", "total_clusters", visibleCount)
+		log.Info("Managed clusters on this controller", "count", visibleCount)
 	}
 
 	return nil

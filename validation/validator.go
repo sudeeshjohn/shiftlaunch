@@ -102,6 +102,7 @@ func (v *Validator) Validate(ctx context.Context) error {
 
 	// Check 4: External Services Validation
 	if v.exec != nil {
+		// NFS is excluded from this check because it's a hard requirement for ISO boot (validated in Check 1)
 		hasExternalServices := !v.cfg.ManagedServices.DNS || !v.cfg.ManagedServices.DHCP || !v.cfg.ManagedServices.PXE || !v.cfg.ManagedServices.LoadBalancer
 
 		if hasExternalServices {
@@ -385,6 +386,11 @@ func (v *Validator) validateChecksum(checksum, fieldName string) {
 
 // validateNodes validates node configuration
 func (v *Validator) validateNodes() {
+	// 🛡️ FIX: Enforce NFS requirement for ISO boot
+	if v.cfg.Nodes.BootMethod == "iso" && !v.cfg.ManagedServices.NFS {
+		v.errors = append(v.errors, "managed_services.nfs MUST be true when using boot_method: 'iso'. ShiftLaunch requires local NFS to transfer the generated Agent ISO to the VIOS.")
+	}
+
 	if v.cfg.IsSNO() {
 		v.validateSNONode()
 	} else {
@@ -653,11 +659,7 @@ func (v *Validator) validateExternalServices(ctx context.Context) {
 	if !v.cfg.ManagedServices.LoadBalancer {
 		v.validateExternalLoadBalancer(ctx)
 	}
-	if v.cfg.Nodes.BootMethod == "iso" && !v.cfg.ManagedServices.NFS {
-		v.log.Info("Validating external NFS configuration...")
-		v.warnings = append(v.warnings,
-			"External NFS detected for ISO boot. Ensure your external NFS server is configured to export the ISO directory to the VIOS, or enable 'managed_services.nfs' in your config.")
-	}
+	// NFS validation removed - now enforced as hard error in validateNodes()
 }
 
 func (v *Validator) validateExternalDNS(ctx context.Context) {
