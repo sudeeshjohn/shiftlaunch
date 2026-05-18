@@ -210,7 +210,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 
 	// --- PHASE 0: VALIDATION (Only for fresh deployments) ---
 	if !resume || len(o.state.CompletedPhases) == 0 {
-		o.logger.StartPhase("[Phase 0/7] Pre-Deployment Validation")
+		o.logger.StartPhase("[Phase 0/6] Pre-Deployment Validation")
 		
 		// Validate VIP is not in use
 		if o.cfg.ManagedServices.LoadBalancer && o.cfg.Network.LoadBalancerIP != "" {
@@ -251,7 +251,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 			o.logger.Info("VIP is available", "vip", o.cfg.Network.LoadBalancerIP)
 		}
 		
-		o.logger.EndPhase(true, "[Phase 0/7] Pre-Deployment Validation Complete")
+		o.logger.EndPhase(true, "[Phase 0/6] Pre-Deployment Validation Complete")
 	}
 	// --- RESTORE IN-MEMORY STATE FOR RESUMES ---
 	if resume && len(o.state.DiscoveredNodes) > 0 {
@@ -271,7 +271,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 	// --- PHASE 1: DISCOVERY ---
 	if !resume || !contains(o.state.CompletedPhases, "discovery") {
 		phaseExec := o.startPhase("discovery")
-		o.logger.StartPhase("[Phase 1/7] Pre-Flight & HMC Discovery")
+		o.logger.StartPhase("[Phase 1/6] Pre-Flight & HMC Discovery")
 		
 		var phaseErr error
 		func() {
@@ -295,11 +295,11 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 		
 		o.endPhase(phaseExec, phaseErr)
 		if phaseErr != nil {
-			o.logger.EndPhase(false, "[Phase 1/7] Pre-Flight & HMC Discovery Failed")
+			o.logger.EndPhase(false, "[Phase 1/6] Pre-Flight & HMC Discovery Failed")
 			return phaseErr
 		}
 		
-		o.logger.EndPhase(true, "[Phase 1/7] Pre-Flight & HMC Discovery Complete")
+		o.logger.EndPhase(true, "[Phase 1/6] Pre-Flight & HMC Discovery Complete")
 		o.saveState("discovery")
 	}
 
@@ -317,25 +317,25 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 
 	if needsDownloads {
 		phaseExec := o.startPhase("downloads")
-		o.logger.StartPhase("[Phase 2/7] Downloading OpenShift Artifacts")
+		o.logger.StartPhase("[Phase 2/6] Downloading OpenShift Artifacts")
 		
 		downloader := services.NewDownloader(o.cfg, o.daemonCfg, o.executor, o.logger)
 		phaseErr := downloader.DownloadAll(ctx, o.workspaceDir)
 		
 		o.endPhase(phaseExec, phaseErr)
 		if phaseErr != nil {
-			o.logger.EndPhase(false, "[Phase 2/7] Downloading OpenShift Artifacts Failed")
+			o.logger.EndPhase(false, "[Phase 2/6] Downloading OpenShift Artifacts Failed")
 			return phaseErr
 		}
 		
-		o.logger.EndPhase(true, "[Phase 2/7] Downloading OpenShift Artifacts Complete")
+		o.logger.EndPhase(true, "[Phase 2/6] Downloading OpenShift Artifacts Complete")
 		o.saveState("downloads")
 	}
 
 	// --- PHASE 3: MANAGED SERVICES ---
 	if !resume || !contains(o.state.CompletedPhases, "services") {
 		phaseExec := o.startPhase("services")
-		o.logger.StartPhase("[Phase 3/7] Configuring Managed Infrastructure Services")
+		o.logger.StartPhase("[Phase 3/6] Configuring Managed Infrastructure Services")
 
 		var phaseErr error
 		func() {
@@ -502,11 +502,11 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 
 		o.endPhase(phaseExec, phaseErr)
 		if phaseErr != nil {
-			o.logger.EndPhase(false, "[Phase 3/7] Configuring Managed Infrastructure Services Failed")
+			o.logger.EndPhase(false, "[Phase 3/6] Configuring Managed Infrastructure Services Failed")
 			return phaseErr
 		}
 		
-		o.logger.EndPhase(true, "[Phase 3/7] Configuring Managed Infrastructure Services Complete")
+		o.logger.EndPhase(true, "[Phase 3/6] Configuring Managed Infrastructure Services Complete")
 		o.saveState("services")
 	}
 
@@ -522,7 +522,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 
 	if needsIgnition {
 		phaseExec := o.startPhase("ignition")
-		o.logger.StartPhase("[Phase 4/7] Generating OpenShift Ignition Payload")
+		o.logger.StartPhase("[Phase 4/6] Generating OpenShift Ignition Payload")
 		
 		var phaseErr error
 		func() {
@@ -590,18 +590,18 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 
 		o.endPhase(phaseExec, phaseErr)
 		if phaseErr != nil {
-			o.logger.EndPhase(false, "[Phase 4/7] Generating OpenShift Ignition Payload Failed")
+			o.logger.EndPhase(false, "[Phase 4/6] Generating OpenShift Ignition Payload Failed")
 			return phaseErr
 		}
 		
-		o.logger.EndPhase(true, "[Phase 4/7] Generating OpenShift Ignition Payload Complete")
+		o.logger.EndPhase(true, "[Phase 4/6] Generating OpenShift Ignition Payload Complete")
 		o.saveState("ignition")
 	}
 
 	// --- PHASE 5: BOOT ---
 	if !resume || !contains(o.state.CompletedPhases, "boot") {
 		phaseExec := o.startPhase("boot")
-		o.logger.StartPhase("[Phase 5/7] Initiating Cluster Boot")
+		o.logger.StartPhase("[Phase 5/6] Initiating Cluster Boot")
 		
 		var phaseErr error
 		func() {
@@ -624,37 +624,27 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 				}
 			}
 
-			for _, node := range o.cfg.GetAllNodes() {
-				bootMarker := "booted_" + node.Hostname
-				
-				if resume && contains(o.state.CompletedPhases, bootMarker) {
-					o.logger.Info("Skipping already booted node", "node", node.Hostname)
-					continue
-				}
-
-				if err := provider.BootNode(ctx, node); err != nil {
-					phaseErr = fmt.Errorf("HMC boot sequence failed for %s: %w", node.Hostname, err)
-					return
-				}
-				
-				o.saveState(bootMarker)
+			// Hand over the entire topology to the Provider to support bulk operations!
+			if err := provider.BootNodes(ctx); err != nil {
+				phaseErr = err
+				return
 			}
 		}()
 		
 		o.endPhase(phaseExec, phaseErr)
 		if phaseErr != nil {
-			o.logger.EndPhase(false, "[Phase 5/7] Initiating Cluster Boot Failed")
+			o.logger.EndPhase(false, "[Phase 5/6] Initiating Cluster Boot Failed")
 			return phaseErr
 		}
 		
-		o.logger.EndPhase(true, "[Phase 5/7] Initiating Cluster Boot Complete")
+		o.logger.EndPhase(true, "[Phase 5/6] Initiating Cluster Boot Complete")
 		o.saveState("boot")
 	}
 
 	// --- PHASE 6: WAIT FOR INSTALLATION ---
 	if !resume || !contains(o.state.CompletedPhases, "wait") {
 		phaseExec := o.startPhase("wait")
-		o.logger.StartPhase("[Phase 6/7] Waiting for OpenShift Installation")
+		o.logger.StartPhase("[Phase 6/6] Waiting for OpenShift Installation")
 		
 		var phaseErr error
 		func() {
@@ -671,55 +661,16 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 
 		o.endPhase(phaseExec, phaseErr)
 		if phaseErr != nil {
-			o.logger.EndPhase(false, "[Phase 6/7] Waiting for OpenShift Installation Failed")
+			o.logger.EndPhase(false, "[Phase 6/6] Waiting for OpenShift Installation Failed")
 			return phaseErr
 		}
 		
-		o.logger.EndPhase(true, "[Phase 6/7] Waiting for OpenShift Installation Complete")
+		o.logger.EndPhase(true, "[Phase 6/6] Waiting for OpenShift Installation Complete")
 		o.saveState("wait")
 	}
 
-	// --- PHASE 7: POST-INSTALL CLEANUP ---
-	if o.cfg.Nodes.BootMethod == "iso" && (!resume || !contains(o.state.CompletedPhases, "iso_cleanup")) {
-		phaseExec := o.startPhase("iso_cleanup")
-		o.logger.StartPhase("[Phase 7/7] Cleaning up VIOS ISO Mappings")
-		
-		var phaseErr error
-		func() {
-			provider, err := compute.NewProviderWithState(o.cfg, o.logger, o.debug, o.stateManager)
-			if err != nil {
-				phaseErr = err
-				return
-			}
-			defer func() {
-				if hmcProvider, ok := provider.(*compute.HMCProvider); ok {
-					hmcProvider.Cleanup()
-				}
-			}()
-
-			if hmcProvider, ok := provider.(*compute.HMCProvider); ok {
-				if err := hmcProvider.CleanupISOMappings(ctx); err != nil {
-					o.logger.Warn("Failed to clean up ISO mappings, manual VIOS cleanup may be required", "error", err)
-				}
-			}
-
-			if o.cfg.ManagedServices.NFS {
-				o.logger.Info("Cleaning up local NFS configuration on controller...")
-				nfsMgr := services.NewNFSManager(o.cfg, o.executor, o.logger, o.workspaceDir)
-				if err := nfsMgr.Cleanup(ctx); err != nil {
-					o.logger.Warn("Failed to clean up local NFS exports", "error", err)
-				}
-			}
-		}()
-
-		o.endPhase(phaseExec, phaseErr)
-		if phaseErr != nil {
-			o.logger.EndPhase(false, "[Phase 7/7] Cleaning up VIOS ISO Mappings Failed")
-		} else {
-			o.logger.EndPhase(true, "[Phase 7/7] Cleaning up VIOS ISO Mappings Complete")
-		}
-		o.saveState("iso_cleanup")
-	}
+	// Phase 7 (POST-INSTALL CLEANUP) has been removed - cleanup now handled by 'shiftlaunch delete' command
+	// This allows the cluster to remain operational with ISOs attached until explicit teardown
 
 	o.logger.Debug("ShiftLaunch Agent Execution Complete! OpenShift is ready.")
 	return nil

@@ -1,7 +1,7 @@
 module github.com/sudeeshjohn/shiftlaunch
 
 go 1.26.2
-
+replace github.ibm.com/sudeeshjohn/infra-go-sdk => ../../infra-go-sdk
 require (
 	golang.org/x/crypto v0.51.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1

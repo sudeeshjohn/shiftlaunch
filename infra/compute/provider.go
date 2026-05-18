@@ -16,7 +16,12 @@ type ComputeProvider interface {
 	DiscoverMetadata(ctx context.Context) error
 	
 	// BootNode triggers the boot sequence for a SINGLE node (e.g., Netboot via HMC)
+	// DEPRECATED: Use BootNodes for better performance with bulk operations
 	BootNode(ctx context.Context, node *types.NodeConfig) error
+	
+	// BootNodes triggers the boot sequence for ALL nodes in the cluster simultaneously
+	// This method supports bulk ISO mapping operations for improved performance
+	BootNodes(ctx context.Context) error
 	
 	// PowerOffNodes gracefully stops nodes for the 'delete' command [cite: 39]
 	PowerOffNodes(ctx context.Context) error

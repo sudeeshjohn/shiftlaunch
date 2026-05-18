@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/sudeeshjohn/shiftlaunch/localexec"
 	"github.com/sudeeshjohn/shiftlaunch/logger"
@@ -903,21 +904,38 @@ func (v *Validator) validateMediaRepositorySpace() {
 
 // validateNodeIPsNotAlive pings every node IP to ensure it is not already in use by another machine
 func (v *Validator) validateNodeIPsNotAlive(ctx context.Context) {
-	v.log.Info("Checking network to ensure all node IPs are available...")
+	v.log.Info("Checking network to ensure all node IPs are available (parallel ping)...")
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	conflictErrors := []string{}
 
 	for _, node := range v.cfg.GetAllNodes() {
 		if node.IP == "" {
 			continue
 		}
 
-		// Ping the IP with 2 packets and 2 second timeout
-		// If the command SUCCEEDS (exit code 0), it means the IP answered us!
-		pingCmd := fmt.Sprintf("ping -c 2 -W 2 %s >/dev/null 2>&1", node.IP)
-		
-		if _, err := v.exec.Execute(ctx, pingCmd); err == nil {
-			v.errors = append(v.errors, fmt.Sprintf(
-				"IP CONFLICT: The IP %s (assigned to %s) is already actively responding on the network! Please choose an unused IP.",
-				node.IP, node.Hostname))
-		}
+		wg.Add(1)
+		go func(n *types.NodeConfig) {
+			defer wg.Done()
+
+			// Ping the IP with 2 packets and 2 second timeout
+			// If the command SUCCEEDS (exit code 0), it means the IP answered us!
+			pingCmd := fmt.Sprintf("ping -c 2 -W 2 %s >/dev/null 2>&1", n.IP)
+			
+			if _, err := v.exec.Execute(ctx, pingCmd); err == nil {
+				mu.Lock()
+				conflictErrors = append(conflictErrors, fmt.Sprintf(
+					"IP CONFLICT: The IP %s (assigned to %s) is already actively responding on the network! Please choose an unused IP.",
+					n.IP, n.Hostname))
+				mu.Unlock()
+			}
+		}(node)
 	}
+
+	// Wait for all pings to complete
+	wg.Wait()
+
+	// Add all collected errors to validator errors
+	v.errors = append(v.errors, conflictErrors...)
 }

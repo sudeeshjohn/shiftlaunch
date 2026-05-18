@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"text/template"
-	"time"
 
 	"github.com/sudeeshjohn/shiftlaunch/localexec"
 	"github.com/sudeeshjohn/shiftlaunch/types"
@@ -232,18 +231,12 @@ func generateAgentISO(ctx context.Context, cfg *types.AgentConfig, exec *localex
 
 	agentConfigPath := filepath.Join(targetDir, "agent-config.yaml")
 	
-	// Backup existing agent-config.yaml if it exists (with timestamp to preserve history)
-	if _, err := os.Stat(agentConfigPath); err == nil {
-		timestamp := time.Now().Format("20060102-150405")
-		backupPath := fmt.Sprintf("%s.backup.%s", agentConfigPath, timestamp)
-		if err := os.Rename(agentConfigPath, backupPath); err != nil {
-			return fmt.Errorf("failed to backup existing agent-config.yaml: %w", err)
-		}
-	}
-	
 	if err := os.WriteFile(agentConfigPath, []byte(agentConfig), 0644); err != nil {
 		return fmt.Errorf("failed to write agent-config.yaml: %w", err)
 	}
+
+	// Backup agent-config.yaml because openshift-install consumes it
+	exec.Execute(ctx, fmt.Sprintf("cp %s %s.bak", agentConfigPath, agentConfigPath))
 
 	// 3. Run openshift-install agent create image
 	toolsDir := filepath.Join(workspaceDir, "tools")

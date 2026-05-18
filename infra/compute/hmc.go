@@ -5,12 +5,17 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sudeeshjohn/shiftlaunch/logger"
 	"github.com/sudeeshjohn/shiftlaunch/types"
 	hmc "github.ibm.com/sudeeshjohn/infra-go-sdk/phmc"
 )
+
+// apiTrafficMutex protects the HMC session token from data races during parallel operations
+// Uses RWMutex to allow concurrent reads but exclusive writes during re-authentication
+var apiTrafficMutex sync.RWMutex
 
 type HMCProvider struct {
 	cfg          *types.AgentConfig
@@ -34,80 +39,142 @@ func (h *HMCProvider) GetHMCClient() *hmc.HmcRestClient {
 
 // DiscoverMetadata loops through your nodes and queries the HMC for network adapter details
 func (h *HMCProvider) DiscoverMetadata(ctx context.Context) error {
-	h.logger.Info("Discovering LPAR metadata from HMC...")
+	h.logger.Info("Discovering LPAR metadata from HMC in parallel (Bounded & Context-Aware)...")
 
-	for _, node := range h.cfg.GetAllNodes() {
-		h.logger.Debug("Querying", "system", node.SystemName, "lpar", node.ExistingLPARName)
+	nodes := h.cfg.GetAllNodes()
 
-		// 1. Get System UUID
-		sysUUID, _, err := h.hmcClient.GetManagedSystemByName(ctx, node.SystemName, true)
-		if err != nil {
-			return fmt.Errorf("failed to find system %s: %w", node.SystemName, err)
-		}
+	// 1. PRE-FETCH SYSTEM DATA
+	type sysCache struct {
+		sysUUID string
+		lpars   []hmc.LogicalPartitionQuick
+	}
+	systemData := make(map[string]sysCache)
 
-		// 2. Get LPAR UUID
-		// Pass false for debug to avoid logging all LPARs on the system
-		lpars, err := h.hmcClient.GetLogicalPartitionsQuickAll(ctx, sysUUID, false)
-		if err != nil {
-			return err
-		}
-
-		for _, l := range lpars {
-			if l.PartitionName == node.ExistingLPARName {
-				node.UUID = l.UUID
-				break
-			}
-		}
-		if node.UUID == "" {
-			return fmt.Errorf("LPAR '%s' not found on system %s", node.ExistingLPARName, node.SystemName)
-		}
-
-		// 3. Get LPAR Profile UUID (Required for Netboot)
-		// Pass false for debug to avoid excessive logging
-		profiles, err := h.hmcClient.GetLogicalPartitionProfiles(ctx, node.UUID, false)
-		if err != nil || len(profiles) == 0 {
-			return fmt.Errorf("no profile found for LPAR %s. A profile is required for network boot", node.ExistingLPARName)
-		}
-		node.ProfileUUID = profiles[0].UUID
-
-		// 4. Get MAC and Location Code for DHCP/PXE
-		// Pass false for debug to avoid excessive logging
-		adapters, err := h.hmcClient.GetClientNetworkAdapters(ctx, sysUUID, node.UUID, false)
-		if err != nil || len(adapters) == 0 {
-			errMsg := "unknown error"
+	for _, node := range nodes {
+		if _, exists := systemData[node.SystemName]; !exists {
+			apiTrafficMutex.RLock()
+			sysUUID, _, err := h.hmcClient.GetManagedSystemByName(ctx, node.SystemName, false)
+			apiTrafficMutex.RUnlock()
 			if err != nil {
-				errMsg = err.Error()
+				return fmt.Errorf("failed to find system %s: %w", node.SystemName, err)
 			}
-			h.logger.Error("No network adapter found on LPAR", "lpar", node.ExistingLPARName, "reason", errMsg)
-			return fmt.Errorf("no network adapter found on LPAR %s", node.ExistingLPARName)
+
+			apiTrafficMutex.RLock()
+			lpars, err := h.hmcClient.GetLogicalPartitionsQuickAll(ctx, sysUUID, false)
+			apiTrafficMutex.RUnlock()
+			if err != nil {
+				return err
+			}
+			systemData[node.SystemName] = sysCache{sysUUID: sysUUID, lpars: lpars}
 		}
+	}
 
-		node.MACAddress = hmc.FormatMACAddress(adapters[0].MACAddress)
-		node.LocationCode = adapters[0].LocationCode
+	// 2. PARALLELIZE WITH SEMAPHORE AND CONTEXT AWARENESS
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(nodes))
+	var memMu sync.Mutex 
+	var discoveredData []types.DiscoveredNode
 
-		// 5. Validate LPAR has attached storage
-		volumes, err := h.hmcClient.GetAttachedVolumes(ctx, sysUUID, node.UUID, false)
-		if err != nil || len(volumes) == 0 {
-			// Downgrade to warning: Enterprise SANs (NPIV/vFC) or dedicated HBAs
-			// do not show up as attached vSCSI volumes on the HMC API!
-			h.logger.Warn("No vSCSI volumes found on LPAR. If using NPIV/SAN or dedicated HBAs, this is expected.", "lpar", node.ExistingLPARName)
-		}
+	concurrencyLimit := 3
+	semaphore := make(chan struct{}, concurrencyLimit)
 
-		h.logger.Info("Discovered", "lpar", node.ExistingLPARName, "mac", node.MACAddress, "uuid", node.UUID, "vscsi_disks", len(volumes))
+	for _, n := range nodes {
+		wg.Add(1)
+		go func(node *types.NodeConfig) {
+			defer wg.Done()
 
-		// Save discovered node to state file
-		if h.stateManager != nil {
-			state, err := h.stateManager.LoadState()
-			if err != nil || state == nil {
-				state = &types.DeploymentState{
-					ClusterName: h.cfg.OpenShift.ClusterName,
-					Status:      "in_progress",
-					StartTime:   time.Now().Format(time.RFC3339),
+			// Respect Context Cancellation before acquiring semaphore
+			select {
+			case <-ctx.Done():
+				errCh <- fmt.Errorf("discovery aborted for %s: %w", node.Hostname, ctx.Err())
+				return
+			case semaphore <- struct{}{}:
+				defer func() { <-semaphore }()
+			}
+
+			sysUUID := systemData[node.SystemName].sysUUID
+			lpars := systemData[node.SystemName].lpars
+
+			for _, l := range lpars {
+				if l.PartitionName == node.ExistingLPARName {
+					node.UUID = l.UUID
+					break
 				}
 			}
+			if node.UUID == "" {
+				errCh <- fmt.Errorf("LPAR '%s' not found on system %s", node.ExistingLPARName, node.SystemName)
+				return
+			}
 
-			// Create discovered node record
-			discoveredNode := types.DiscoveredNode{
+			// Implement Lock Upgrade Pattern Helper
+			apiCallWithRetry := func(call func(context.Context) error) error {
+				for i := 0; i < 3; i++ {
+					if ctx.Err() != nil {
+						return ctx.Err() // Abort if cancelled mid-flight
+					}
+					
+					apiTrafficMutex.RLock()
+					err := call(ctx)
+					apiTrafficMutex.RUnlock()
+					
+					if err != nil && strings.Contains(err.Error(), "406") {
+						// 🛡️ SHIELDED LOCK UPGRADE: If user hits Ctrl+C right now, 
+						// the login MUST complete to prevent session corruption!
+						shieldedCtx := context.WithoutCancel(ctx)
+						
+						apiTrafficMutex.Lock()
+						testErr := call(shieldedCtx)
+						if testErr != nil && strings.Contains(testErr.Error(), "406") {
+							_ = h.hmcClient.Logoff(shieldedCtx)
+							_ = h.hmcClient.Login(shieldedCtx, h.cfg.HMC.Username, h.cfg.HMC.Password, h.debug)
+						}
+						apiTrafficMutex.Unlock()
+						continue
+					}
+					return err
+				}
+				return fmt.Errorf("API failed after max re-auth attempts")
+			}
+
+			var profiles []hmc.LogicalPartitionProfile
+			err := apiCallWithRetry(func(c context.Context) error {
+				var e error
+				profiles, e = h.hmcClient.GetLogicalPartitionProfiles(c, node.UUID, false)
+				return e
+			})
+			if err != nil || len(profiles) == 0 {
+				errCh <- fmt.Errorf("no profile found for LPAR %s", node.ExistingLPARName)
+				return
+			}
+			node.ProfileUUID = profiles[0].UUID
+
+			var adapters []hmc.ClientNetworkAdapter
+			err = apiCallWithRetry(func(c context.Context) error {
+				var e error
+				adapters, e = h.hmcClient.GetClientNetworkAdapters(c, sysUUID, node.UUID, false)
+				return e
+			})
+			if err != nil || len(adapters) == 0 {
+				errCh <- fmt.Errorf("no network adapter found on LPAR %s", node.ExistingLPARName)
+				return
+			}
+			node.MACAddress = hmc.FormatMACAddress(adapters[0].MACAddress)
+			node.LocationCode = adapters[0].LocationCode
+
+			var volumes []hmc.StorageMap
+			_ = apiCallWithRetry(func(c context.Context) error {
+				var e error
+				volumes, e = h.hmcClient.GetAttachedVolumes(c, sysUUID, node.UUID, false)
+				return e
+			})
+			if len(volumes) == 0 {
+				h.logger.Warn("No vSCSI volumes found on LPAR. If using NPIV/SAN or dedicated HBAs, this is expected.", "lpar", node.ExistingLPARName)
+			}
+
+			h.logger.Info("Discovered", "lpar", node.ExistingLPARName, "mac", node.MACAddress, "uuid", node.UUID)
+
+			memMu.Lock()
+			discoveredData = append(discoveredData, types.DiscoveredNode{
 				Hostname:     node.Hostname,
 				Role:         node.Role,
 				IP:           node.IP,
@@ -118,34 +185,62 @@ func (h *HMCProvider) DiscoverMetadata(ctx context.Context) error {
 				SystemName:   node.SystemName,
 				LPARName:     node.ExistingLPARName,
 				DiscoveredAt: time.Now().Format(time.RFC3339),
-			}
+			})
+			memMu.Unlock()
 
-			// Check if node already exists in state
+		}(n)
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	// 🛡️ SAVE ON ABORT: We process the state save BEFORE evaluating errors.
+	// This guarantees that any nodes successfully discovered before the cancellation 
+	// are safely written to state.json and won't be lost!
+	if h.stateManager != nil && len(discoveredData) > 0 {
+		state, err := h.stateManager.LoadState()
+		
+		if err != nil || state == nil {
+			state = &types.DeploymentState{
+				StateVersion:     2,
+				ClusterName:      h.cfg.OpenShift.ClusterName,
+				Status:           "in_progress",
+				StartTime:        time.Now().Format(time.RFC3339),
+				CompletedPhases:  []string{},
+				CompletedEvents:  []string{},
+				DownloadProgress: make(map[string]types.DownloadProgress),
+				NodeBootStatus:   make(map[string]types.NodeBootStatus),
+			}
+		}
+
+		for _, dNode := range discoveredData {
 			nodeExists := false
 			for i, existing := range state.DiscoveredNodes {
-				if existing.UUID == discoveredNode.UUID {
-					// Update existing node
-					state.DiscoveredNodes[i] = discoveredNode
+				if existing.Hostname == dNode.Hostname {
+					state.DiscoveredNodes[i] = dNode
 					nodeExists = true
 					break
 				}
 			}
-
 			if !nodeExists {
-				state.DiscoveredNodes = append(state.DiscoveredNodes, discoveredNode)
+				state.DiscoveredNodes = append(state.DiscoveredNodes, dNode)
 			}
+		}
 
-			if err := h.stateManager.SaveState(state); err != nil {
-				h.logger.Warn("Failed to save discovered node to state", "error", err)
-			}
+		if err := h.stateManager.SaveState(state); err != nil {
+			h.logger.Warn("Failed to save discovered nodes to state", "error", err)
+		} else {
+			h.logger.Info("Saved discovered nodes to state file", "count", len(state.DiscoveredNodes))
 		}
 	}
 
-	// Log summary of discovered nodes
-	if h.stateManager != nil {
-		if state, err := h.stateManager.LoadState(); err == nil && state != nil {
-			h.logger.Info("Saved discovered nodes to state file", "count", len(state.DiscoveredNodes))
-		}
+	// 3. FINALLY, RETURN THE ERRORS
+	var errs []string
+	for err := range errCh {
+		errs = append(errs, err.Error())
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("metadata discovery aborted or failed: %s", strings.Join(errs, "; "))
 	}
 
 	return nil
@@ -161,6 +256,67 @@ func (h *HMCProvider) BootNode(ctx context.Context, node *types.NodeConfig) erro
 	// Default to netboot
 	return h.networkBootLpar(ctx, node)
 }
+// BootNodes determines the boot strategy and executes it across the topology
+func (h *HMCProvider) BootNodes(ctx context.Context) error {
+	if h.cfg.Nodes.BootMethod == "iso" {
+		return h.bootNodesWithISOBulk(ctx)
+	}
+
+	// Netboot Fallback (PARALLELIZED)
+	h.logger.Info("Initiating parallel network boot sequence...")
+	state, _ := h.stateManager.LoadState()
+	
+	var wg sync.WaitGroup
+	var stateMu sync.Mutex // Mutex to prevent concurrent state file corruption
+	errCh := make(chan error, len(h.cfg.GetAllNodes()))
+
+	for _, n := range h.cfg.GetAllNodes() {
+		node := n // Prevent loop variable capture bug
+
+		bootMarker := "booted_" + node.Hostname
+		if state != nil && containsPhase(state.CompletedPhases, bootMarker) {
+			h.logger.Info("Skipping already booted node", "node", node.Hostname)
+			continue
+		}
+
+		wg.Add(1)
+		go func(targetNode *types.NodeConfig) {
+			defer wg.Done()
+			
+			// Execute the heavily I/O bound 45-second sequence asynchronously
+			if err := h.networkBootLpar(ctx, targetNode); err != nil {
+				errCh <- fmt.Errorf("HMC boot sequence failed for %s: %w", targetNode.Hostname, err)
+				return
+			}
+
+			// Safely lock, update, and save the state file
+			if state != nil {
+				stateMu.Lock()
+				state.CompletedPhases = append(state.CompletedPhases, bootMarker)
+				_ = h.stateManager.SaveState(state)
+				stateMu.Unlock()
+			}
+		}(node)
+	}
+
+	// Wait for all nodes to finish their 45-second boot sequences
+	wg.Wait()
+	close(errCh)
+
+	// Aggregate any errors that occurred in the goroutines
+	var errs []string
+	for err := range errCh {
+		errs = append(errs, err.Error())
+	}
+	
+	if len(errs) > 0 {
+		return fmt.Errorf("parallel boot encountered errors: %s", strings.Join(errs, "; "))
+	}
+
+	h.logger.Info("All nodes successfully network booted!")
+	return nil
+}
+
 
 // networkBootLpar executes the lpar_netboot command via REST API for a single node
 func (h *HMCProvider) networkBootLpar(ctx context.Context, node *types.NodeConfig) error {
@@ -179,22 +335,31 @@ func (h *HMCProvider) networkBootLpar(ctx context.Context, node *types.NodeConfi
 
 		// Check if error is 406 (session issue) and re-authenticate
 		if strings.Contains(err.Error(), "406") && i < maxRetries-1 {
-			h.logger.Warn(fmt.Sprintf("HMC returned 406 error (attempt %d/%d). Logging out and re-authenticating...", i+1, maxRetries), "error", err)
+			h.logger.Warn(fmt.Sprintf("HMC returned 406 error (attempt %d/%d). Attempting safe re-auth...", i+1, maxRetries), "node", node.Hostname)
 
-			// Logout from old session first
-			if logoutErr := h.hmcClient.Logoff(ctx); logoutErr != nil {
-				h.logger.Debug("Logout failed (session may already be invalid)", "error", logoutErr)
+			// 🛡️ Exclusive Lock: Pause ALL other goroutines from making API calls
+			apiTrafficMutex.Lock()
+			
+			// Do a quick test to see if another thread already fixed the token while we were waiting in line!
+			_, testErr := h.hmcClient.GetLogicalPartitionDetailed(ctx, node.UUID, false)
+			if testErr != nil && strings.Contains(testErr.Error(), "406") {
+				// Logout from old session first
+				if logoutErr := h.hmcClient.Logoff(ctx); logoutErr != nil {
+					h.logger.Debug("Logout failed (session may already be invalid)", "error", logoutErr)
+				}
+
+				// Wait a moment for HMC to clean up
+				time.Sleep(2 * time.Second)
+
+				// Re-authenticate with fresh session
+				if loginErr := h.hmcClient.Login(ctx, h.cfg.HMC.Username, h.cfg.HMC.Password, h.debug); loginErr != nil {
+					h.logger.Warn("Re-authentication failed", "error", loginErr)
+				} else {
+					h.logger.Info("Successfully re-authenticated with HMC")
+				}
 			}
-
-			// Wait a moment for HMC to clean up
-			time.Sleep(2 * time.Second)
-
-			// Re-authenticate with fresh session
-			if loginErr := h.hmcClient.Login(ctx, h.cfg.HMC.Username, h.cfg.HMC.Password, h.debug); loginErr != nil {
-				h.logger.Warn("Re-authentication failed", "error", loginErr)
-			} else {
-				h.logger.Info("Successfully re-authenticated with HMC")
-			}
+			
+			apiTrafficMutex.Unlock()
 			time.Sleep(5 * time.Second)
 		} else {
 			h.logger.Warn(fmt.Sprintf("Failed to get LPAR details (attempt %d/%d). Retrying in 5s...", i+1, maxRetries), "error", err)
@@ -426,8 +591,39 @@ func (h *HMCProvider) PowerOffNodes(ctx context.Context) error {
 	h.logger.Info("Power off signals sent", "powered_off", powerOffCount, "skipped", skippedCount, "total", len(nodes))
 
 	if powerOffCount > 0 {
-		h.logger.Info("Waiting 15 seconds for LPARs to fully transition to powered-off state...")
-		time.Sleep(15 * time.Second)
+		h.logger.Info("Waiting for LPARs to fully transition to powered-off state (this may take a minute)...")
+		
+		maxRetries := 36 // Up to 3 minutes (36 * 5 seconds)
+		for i := 0; i < maxRetries; i++ {
+			allPoweredOff := true
+			
+			for _, node := range nodes {
+				if node.UUID == "" {
+					continue
+				}
+				
+				// Natively query the lightweight JSON endpoint for the exact LPAR state
+				lpar, err := h.hmcClient.GetLogicalPartitionQuick(node.UUID, false)
+				if err == nil && lpar != nil {
+					state := strings.ToLower(lpar.PartitionState)
+					if state != "not activated" {
+						allPoweredOff = false
+						break // At least one LPAR is still powering down, no need to check the rest yet
+					}
+				}
+			}
+			
+			if allPoweredOff {
+				h.logger.Info("All LPARs successfully powered off and hardware locks released!")
+				break
+			}
+			
+			if i == maxRetries-1 {
+				h.logger.Warn("Timeout waiting for some LPARs to power off. ISO cleanup may fail.")
+			} else {
+				time.Sleep(5 * time.Second)
+			}
+		}
 	}
 
 	return nil
@@ -887,6 +1083,320 @@ func (h *HMCProvider) getActiveVIOS(ctx context.Context, systemName string) (uui
 	return "", "", fmt.Errorf("no active VIOS found on system %s", systemName)
 }
 
+// containsPhase checks if a phase exists in the completed phases list
+func containsPhase(phases []string, phase string) bool {
+	for _, p := range phases {
+		if p == phase {
+			return true
+		}
+	}
+	return false
+}
+
+// bootNodesWithISOBulk aggregates ISO mappings and triggers them atomically per VIOS
+func (h *HMCProvider) bootNodesWithISOBulk(ctx context.Context) error {
+	h.logger.Info("Bulk provisioning Agent ISOs via NFS for all nodes")
+
+	state, err := h.stateManager.LoadState()
+	if err != nil || state == nil {
+		state = &types.DeploymentState{
+			ClusterName: h.cfg.OpenShift.ClusterName,
+			Status:      "in_progress",
+		}
+	}
+
+	// 1. Identify which nodes actually need booting
+	var nodesToProcess []*types.NodeConfig
+	for _, node := range h.cfg.GetAllNodes() {
+		bootMarker := "booted_" + node.Hostname
+		if containsPhase(state.CompletedPhases, bootMarker) {
+			h.logger.Info("Skipping already booted node", "node", node.Hostname)
+			continue
+		}
+		if node.UUID == "" {
+			return fmt.Errorf("LPAR UUID not found for %s", node.ExistingLPARName)
+		}
+		nodesToProcess = append(nodesToProcess, node)
+	}
+
+	if len(nodesToProcess) == 0 {
+		return nil
+	}
+
+	h.logger.Info("Checking viosadmin user on HMC")
+	viosUsername, viosPassword, viosUserCreated, err := h.hmcClient.EnsureVIOSAdminUser(context.WithoutCancel(ctx), h.cfg.HMC.Username, h.cfg.HMC.Password, h.debug)
+	if err != nil {
+		return fmt.Errorf("failed to ensure viosadmin user: %w", err)
+	}
+
+	// Initialize tracking maps
+	if h.systemVIOSUUIDs == nil {
+		h.systemVIOSUUIDs = make(map[string]string)
+		h.systemVIOSNames = make(map[string]string)
+	}
+	if h.viosMountPoints == nil {
+		h.viosMountPoints = make(map[string]string)
+	}
+	if h.viosMounted == nil {
+		h.viosMounted = make(map[string]bool)
+	}
+
+	// 🛡️ NEW: Track ISO creation to share a single media file across all LPARs!
+	viosMediaCreated := make(map[string]string)
+	viosMediaUploaded := make(map[string]bool)
+
+	// bulkMap Structure: map[sysUUID]map[viosUUID]map[lparUUID][]string
+	bulkMap := make(map[string]map[string]map[string][]string)
+
+	// Keep track of metadata for the power-on sequence later
+	type nodeMeta struct {
+		sysUUID    string
+		viosUUID   string
+		viosName   string
+		mediaName  string
+		mountPoint string
+	}
+	metaTracker := make(map[string]nodeMeta)
+
+	for _, node := range nodesToProcess {
+		h.logger.Info("Preparing node for ISO boot...", "node", node.ExistingLPARName)
+
+		// Ensure LPAR is powered off
+		lparDetails, err := h.hmcClient.GetLogicalPartitionDetailed(ctx, node.UUID, h.debug)
+		if err == nil && (lparDetails.PartitionState == "running" || lparDetails.PartitionState == "open firmware") {
+			h.logger.Info("LPAR is active. Powering off before ISO boot...", "state", lparDetails.PartitionState)
+			_, _ = h.hmcClient.PowerOffPartition(ctx, node.UUID, "Immediate", false, true)
+			time.Sleep(15 * time.Second)
+		}
+
+		// Get or select active VIOS
+		var viosUUID, viosName string
+		if id, exists := h.systemVIOSUUIDs[node.SystemName]; exists {
+			viosUUID = id
+			viosName = h.systemVIOSNames[node.SystemName]
+		} else {
+			viosUUID, viosName, err = h.getActiveVIOS(ctx, node.SystemName)
+			if err != nil {
+				return fmt.Errorf("failed to get active VIOS for system %s: %w", node.SystemName, err)
+			}
+			h.systemVIOSUUIDs[node.SystemName] = viosUUID
+			h.systemVIOSNames[node.SystemName] = viosName
+		}
+
+		sysUUID, _, err := h.hmcClient.GetManagedSystemByName(ctx, node.SystemName, true)
+		if err != nil {
+			return fmt.Errorf("failed to get system UUID: %w", err)
+		}
+
+		// Calculate Media Name & Mount Point (with resume support)
+		var mountPoint, mediaName string
+		for _, m := range state.ISOMappings {
+			if m.NodeName == node.Hostname {
+				mountPoint = m.MountPoint
+				mediaName = m.MediaName
+				break
+			}
+		}
+
+		// FIX: Use a single, shared ISO name for the entire cluster
+		if mediaName == "" {
+			if existingMedia, ok := viosMediaCreated[viosUUID]; ok {
+				mediaName = existingMedia
+			} else {
+				// Ensure name is safe for VIOS (max 37 chars, alphanumeric, dashes)
+				mediaName = fmt.Sprintf("%s-iso", h.cfg.OpenShift.ClusterName)
+				mediaName = strings.ReplaceAll(mediaName, "_", "-")
+				if len(mediaName) > 30 {
+					mediaName = mediaName[:30]
+				}
+				viosMediaCreated[viosUUID] = mediaName
+			}
+		} else {
+			viosMediaCreated[viosUUID] = mediaName
+		}
+
+		if mountPoint == "" {
+			if mp, exists := h.viosMountPoints[viosUUID]; exists {
+				mountPoint = mp
+			} else {
+				mountPoint = fmt.Sprintf("/mnt/%s-%d", h.cfg.OpenShift.ClusterName, time.Now().Unix())
+				h.viosMountPoints[viosUUID] = mountPoint
+			}
+		}
+
+		// Ensure NFS is Mounted on VIOS
+		if !h.viosMounted[viosUUID] {
+			nfsServer := h.cfg.Controller.IP
+			exportPath := fmt.Sprintf("/opt/shiftlaunch/clusters/%s/install-dir", h.cfg.OpenShift.ClusterName)
+
+			h.logger.Info("Creating mount directory on VIOS", "path", mountPoint)
+			mkdirCmd := fmt.Sprintf(`viosvrcmd -m %s -p %s -c "mkdir -p %s" --admin`, node.SystemName, viosName, mountPoint)
+			hmc.CliRunnerViaSsh(h.cfg.HMC.IP, viosUsername, viosPassword, mkdirCmd, h.debug)
+
+			h.logger.Info("Mounting NFS on VIOS", "server", nfsServer, "export", exportPath)
+			_, err = hmc.MountNFS(context.WithoutCancel(ctx), h.hmcClient, node.SystemName, viosName, nfsServer, exportPath, mountPoint, "3", h.debug)
+			if err != nil && !strings.Contains(err.Error(), "already mounted") {
+				return fmt.Errorf("failed to mount NFS: %w", err)
+			}
+			h.viosMounted[viosUUID] = true
+		}
+
+		// Ensure Media Repository Exists
+		if err := h.ensureMediaRepository(ctx, node.SystemName, viosUUID, viosName); err != nil {
+			return fmt.Errorf("failed to ensure media repository: %w", err)
+		}
+
+		// 🛡️ FIX: Copy the ISO File to the VIOS locally (ONLY ONCE PER VIOS!)
+		if !viosMediaUploaded[viosUUID] {
+			isoPath := fmt.Sprintf("%s/agent.ppc64le.iso", mountPoint)
+			h.logger.Info("Uploading ISO to VIOS repository (this copies ~1GB and may take a few minutes)...", "iso", isoPath)
+			err = h.hmcClient.CreateVirtualOpticalMedia(
+				context.WithoutCancel(ctx), node.SystemName, viosUUID, viosName, mediaName, isoPath, 0, true, false, h.debug)
+			
+			if err != nil && !strings.Contains(err.Error(), "already exists") {
+				return fmt.Errorf("failed to create optical media on VIOS: %w", err)
+			}
+			viosMediaUploaded[viosUUID] = true
+		} else {
+			h.logger.Info("ISO already uploaded to this VIOS. Skipping file transfer.", "vios", viosName, "media", mediaName)
+		}
+
+		// Aggregating Mappings into Bulk Map
+		if bulkMap[sysUUID] == nil {
+			bulkMap[sysUUID] = make(map[string]map[string][]string)
+		}
+		if bulkMap[sysUUID][viosUUID] == nil {
+			bulkMap[sysUUID][viosUUID] = make(map[string][]string)
+		}
+		bulkMap[sysUUID][viosUUID][node.UUID] = append(bulkMap[sysUUID][viosUUID][node.UUID], mediaName)
+
+		metaTracker[node.Hostname] = nodeMeta{sysUUID, viosUUID, viosName, mediaName, mountPoint}
+
+		// Save state tracking
+		if h.isoMappings == nil {
+			h.isoMappings = []types.ISOMapping{}
+		}
+		
+		exists := false
+		for _, m := range h.isoMappings {
+			if m.NodeName == node.Hostname {
+				exists = true
+				break
+			}
+		}
+		
+		if !exists {
+			h.isoMappings = append(h.isoMappings, types.ISOMapping{
+				NodeName:   node.Hostname,
+				MediaName:  mediaName,
+				VIOSUUID:   viosUUID,
+				VIOSName:   viosName,
+				LparUUID:   node.UUID,
+				SystemName: node.SystemName,
+				MountPoint: mountPoint,
+				MappedAt:   time.Now().Format(time.RFC3339),
+			})
+		}
+	}
+
+	// 2. Execute Bulk Virtual Optical Mappings natively per VIOS
+	if len(bulkMap) > 0 {
+		h.logger.Info("Executing ATOMIC BULK MAP of Virtual Optical Media...")
+		for sysUUID, viosMap := range bulkMap {
+			for viosUUID, lparMediaMap := range viosMap {
+				h.logger.Info("Bulk mapping on VIOS", "viosUUID", viosUUID, "lpar_count", len(lparMediaMap))
+				
+				_, err := h.hmcClient.CreateVirtualOpticalMapsMultiLpar(
+					context.WithoutCancel(ctx), sysUUID, viosUUID, lparMediaMap, h.debug)
+				if err != nil {
+					return fmt.Errorf("failed to bulk map optical media: %w", err)
+				}
+			}
+		}
+		h.logger.Info("✅ Bulk ISO mapping completed successfully")
+	}
+
+	// Persist ISO configurations to State
+	state.ISOMappings = h.isoMappings
+	state.VIOSAdminUsername = viosUsername
+	state.VIOSAdminPassword = viosPassword
+	state.VIOSAdminCreated = viosUserCreated
+	_ = h.stateManager.SaveState(state)
+
+	// 3. Save Profiles and Power On (PARALLELIZED)
+	h.logger.Info("Saving profiles and powering on all LPARs concurrently...")
+	var wg sync.WaitGroup
+	var stateMu sync.Mutex
+	errCh := make(chan error, len(nodesToProcess)) // 🛡️ ADDED ERROR CHANNEL
+
+	for _, n := range nodesToProcess {
+		wg.Add(1)
+		
+		// Pass the node into the closure to prevent loop-capture bugs
+		go func(targetNode *types.NodeConfig) {
+			defer wg.Done()
+			
+			h.logger.Info("Configuring and booting", "lpar", targetNode.ExistingLPARName)
+			
+			// These operations are safe to run concurrently for DIFFERENT LparUUIDs
+			_ = h.hmcClient.SaveCurrentLparConfig(context.WithoutCancel(ctx), targetNode.UUID, "default_profile", true, h.debug)
+			_ = h.hmcClient.SetPartitionBootString(context.WithoutCancel(ctx), targetNode.UUID, "cd/dvd-all", h.debug)
+
+			lparDetails, err := h.hmcClient.GetLogicalPartitionDetailed(ctx, targetNode.UUID, h.debug)
+			if err != nil {
+				errCh <- fmt.Errorf("failed to fetch LPAR details for %s: %w", targetNode.Hostname, err)
+				return
+			}
+
+			profileHref := lparDetails.AssociatedPartitionProfile.Href
+			
+			// 🛡️ ADDED BOUNDARY SAFETY CHECK
+			if len(profileHref) < 36 {
+				errCh <- fmt.Errorf("invalid profile href format for LPAR %s: '%s'", targetNode.Hostname, profileHref)
+				return
+			}
+			profileUUID := profileHref[len(profileHref)-36:]
+
+			powerOnOpts := &hmc.PowerOnOptions{
+				ProfileUUID: profileUUID,
+				BootMode:    "norm",
+				Keylock:     "normal",
+			}
+			
+			_, err = h.hmcClient.PowerOnPartition(ctx, targetNode.UUID, powerOnOpts, h.debug)
+			if err != nil && !strings.Contains(err.Error(), "already running") {
+				errCh <- fmt.Errorf("failed to power on LPAR %s: %w", targetNode.Hostname, err)
+				return
+			}
+
+			// Update state tracking safely
+			bootMarker := "booted_" + targetNode.Hostname
+			stateMu.Lock()
+			if !containsPhase(state.CompletedPhases, bootMarker) {
+				state.CompletedPhases = append(state.CompletedPhases, bootMarker)
+				_ = h.stateManager.SaveState(state)
+			}
+			stateMu.Unlock()
+			
+			h.logger.Info("LPAR booted successfully", "lpar", targetNode.ExistingLPARName)
+		}(n)
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	// 🛡️ AGGREGATE AND RETURN ERRORS
+	var errs []string
+	for err := range errCh {
+		errs = append(errs, err.Error())
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("parallel boot encountered errors: %s", strings.Join(errs, "; "))
+	}
+
+	return nil
+}
+
 // CleanupISOMappings unmaps and deletes ISO media (called during teardown)
 func (h *HMCProvider) CleanupISOMappings(ctx context.Context) error {
 	// Load ISO mappings from state file if not in memory
@@ -924,53 +1434,94 @@ func (h *HMCProvider) CleanupISOMappings(ctx context.Context) error {
 
 	h.logger.Info("Cleaning up ISO mappings", "count", len(h.isoMappings))
 
+
+	errorCount := 0
+
+	// ========================================================================
+	// 0. BULK UNMAP VIRTUAL OPTICAL MEDIA
+	// ========================================================================
+	h.logger.Info("Preparing Bulk Optical Unmapping...")
+	// Structure: map[sysUUID]map[viosUUID]map[lparUUID][]string
+	unmapTargets := make(map[string]map[string]map[string][]string)
+
 	for _, mapping := range h.isoMappings {
-		// CRITICAL: Shield prerequisite lookup - teardown must not be aborted mid-unmap!
 		sysUUID, _, err := h.hmcClient.GetManagedSystemByName(context.WithoutCancel(ctx), mapping.SystemName, h.debug)
 		if err != nil {
 			h.logger.Warn("Failed to get system UUID for cleanup", "system", mapping.SystemName, "error", err)
 			continue
 		}
 
-		h.logger.Info("Unmapping optical media", "node", mapping.NodeName, "media", mapping.MediaName)
+		if unmapTargets[sysUUID] == nil {
+			unmapTargets[sysUUID] = make(map[string]map[string][]string)
+		}
+		if unmapTargets[sysUUID][mapping.VIOSUUID] == nil {
+			unmapTargets[sysUUID][mapping.VIOSUUID] = make(map[string][]string)
+		}
+		unmapTargets[sysUUID][mapping.VIOSUUID][mapping.LparUUID] = append(
+			unmapTargets[sysUUID][mapping.VIOSUUID][mapping.LparUUID], mapping.MediaName)
+	}
 
-		// CRITICAL: Shield from cancellation to prevent orphaned vSCSI adapters
-		_, err = h.hmcClient.DeleteVirtualOpticalMaps(
-			context.WithoutCancel(ctx),
-			sysUUID,
-			mapping.VIOSUUID,
-			mapping.LparUUID,
-			[]string{mapping.MediaName},
-			h.debug)
-		if err != nil {
-			h.logger.Error("Failed to unmap optical media", "media", mapping.MediaName, "error", err)
-		} else {
-			h.logger.Info("Successfully unmapped optical media", "media", mapping.MediaName)
-
-			h.logger.Info("Saving LPAR profile after unmapping", "node", mapping.NodeName)
-			profileName := "default_profile"
-			// CRITICAL: Shield from cancellation to prevent profile corruption
-			err = h.hmcClient.SaveCurrentLparConfig(context.WithoutCancel(ctx), mapping.LparUUID, profileName, true, h.debug)
+	// Execute Bulk Unmap Per VIOS
+	for sysUUID, viosMap := range unmapTargets {
+		for viosUUID, lparMediaMap := range viosMap {
+			h.logger.Info("Bulk unmapping optical media from VIOS...", "viosUUID", viosUUID, "lpar_count", len(lparMediaMap))
+			
+			_, err := h.hmcClient.DeleteVirtualOpticalMapsMultiLpar(
+				context.WithoutCancel(ctx), sysUUID, viosUUID, lparMediaMap, h.debug)
+			
 			if err != nil {
-				h.logger.Warn("Failed to save LPAR profile after unmapping", "node", mapping.NodeName, "profile", profileName, "error", err)
+				h.logger.Error("Failed to bulk unmap optical media", "error", err)
+				errorCount++
 			} else {
-				h.logger.Info("Successfully saved LPAR profile", "node", mapping.NodeName, "profile", profileName)
+				h.logger.Info("Successfully bulk unmapped optical media")
 			}
 		}
 	}
 
+	// Save LPAR Profiles safely now that media is unmapped (PARALLELIZED)
+	h.logger.Info("Saving LPAR profiles concurrently after unmapping...")
+	var wgSave sync.WaitGroup
+	
+	for _, m := range h.isoMappings {
+		wgSave.Add(1)
+		
+		go func(targetMapping types.ISOMapping) {
+			defer wgSave.Done()
+			
+			h.logger.Info("Saving LPAR profile", "node", targetMapping.NodeName)
+			
+			err := h.hmcClient.SaveCurrentLparConfig(context.WithoutCancel(ctx), targetMapping.LparUUID, "default_profile", true, h.debug)
+			if err != nil {
+				h.logger.Warn("Failed to save LPAR profile", "node", targetMapping.NodeName, "error", err)
+			}
+		}(m)
+	}
+	
+	// Wait for all profiles to finish saving to the Hypervisor
+	wgSave.Wait()
+
 	// ========================================================================
 	// 1. DELETE VIRTUAL OPTICAL MEDIA (Per-Node Media)
 	// ========================================================================
+	
+	// 🛡️ FIX: Deduplicate media deletion so we don't try to delete the shared ISO multiple times!
+	mediaDeleted := make(map[string]bool)
+
 	for _, mapping := range h.isoMappings {
-		// --- UPDATE THIS LINE TO REFLECT THE CURRENT WORK ---
+		
+		// Skip if we already deleted this exact media from this VIOS
+		mediaKey := fmt.Sprintf("%s_%s", mapping.VIOSUUID, mapping.MediaName)
+		if mediaDeleted[mediaKey] {
+			continue
+		}
+		mediaDeleted[mediaKey] = true
+
 		h.logger.Info(fmt.Sprintf("Checking repository for media: %s", mapping.MediaName))
 
 		// CRITICAL: Shield prerequisite lookup - teardown must not bypass deletion!
 		_, err := h.hmcClient.GetVirtualOpticalMedia(context.WithoutCancel(ctx), mapping.SystemName, mapping.VIOSName, mapping.MediaName, h.debug)
 
 		if err == nil {
-			// --- UPDATE THIS LINE AS WELL TO REFLECT THE DELETION WORK ---
 			h.logger.Info(fmt.Sprintf("Destroying optical payload: %s", mapping.MediaName))
 			// CRITICAL: Shield from cancellation - 1GB file deletion must complete to prevent VIOS filesystem corruption
 			delErr := h.hmcClient.DeleteVirtualOpticalMedia(
@@ -982,6 +1533,7 @@ func (h *HMCProvider) CleanupISOMappings(ctx context.Context) error {
 
 			if delErr != nil {
 				h.logger.Warn("Failed to delete optical media", "media", mapping.MediaName, "error", delErr)
+				errorCount++
 			} else {
 				h.logger.Info("Successfully deleted optical media", "media", mapping.MediaName)
 			}
@@ -1033,6 +1585,10 @@ func (h *HMCProvider) CleanupISOMappings(ctx context.Context) error {
 		} else {
 			h.logger.Info("Successfully removed mount directory", "mount_point", mapping.MountPoint)
 		}
+	}
+
+	if errorCount > 0 {
+		return fmt.Errorf("cleanup completed with %d errors. Some ISOs or mappings remain on the VIOS", errorCount)
 	}
 
 	if h.stateManager != nil {
