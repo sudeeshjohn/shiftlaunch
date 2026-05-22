@@ -1,41 +1,60 @@
 # ShiftLaunch - OpenShift Deployer for IBM Power Systems
 
-A comprehensive Go-based tool for deploying OpenShift clusters (SNO or Multi-Node) on IBM Power Systems using the User-Provisioned Infrastructure (UPI) method with **full automation**—from starter configuration generation to cluster ready state.
+A comprehensive Go-based tool for deploying OpenShift clusters (SNO or
+Multi-Node) on IBM Power Systems using the User-Provisioned Infrastructure
+(UPI) method with **full automation**—from starter configuration generation to
+cluster ready state.
 
-🎉 **Batteries Included:** ShiftLaunch now ships as a completely standalone binary that dynamically generates its own starter configurations, eliminating the need to bundle sample YAML files. Moving from a "binary plus a folder of sample configs" to a single, self-contained, zero-dependency executable is the hallmark of a mature, enterprise-grade CLI tool.
+🎉 **Batteries Included:** ShiftLaunch now ships as a completely standalone
+binary that dynamically generates its own starter configurations, eliminating
+the need to bundle sample YAML files. Moving from a "binary plus a folder of
+sample configs" to a single, self-contained, zero-dependency executable is the
+hallmark of a mature, enterprise-grade CLI tool.
 
 ## Overview
 
-ShiftLaunch provides **end-to-end automation** for OpenShift deployment on IBM Power Systems with support for two distinct boot methods:
+ShiftLaunch provides **end-to-end automation** for OpenShift deployment on IBM
+Power Systems with support for two distinct boot methods:
 
 ### 🎯 Boot Methods
 
 #### 1. Agent ISO Boot (Recommended for Production)
 
 - ✅ **Simplified Deployment**: Single ISO contains all installation artifacts.
-- ✅ **No DHCP/PXE Required**: Eliminates network boot complexity (uses static IPs via NMState).
+- ✅ **No DHCP/PXE Required**: Eliminates network boot complexity (uses static
+  IPs via NMState).
 - ✅ **NFS-Based**: ISO served via NFS from the controller directly to the VIOS.
-- ✅ **Unified Installation**: Bootstrap and installation combined into a single phase.
+- ✅ **Unified Installation**: Bootstrap and installation combined into a
+  single phase.
 - ✅ **Better for Disconnected**: All artifacts can be embedded in the ISO.
-- ✅ **Automatic Cleanup**: ISO mappings and NFS exports are removed after installation.
+- ✅ **Automatic Cleanup**: ISO mappings and NFS exports are removed after
+  installation.
 
 #### 2. Network Boot (PXE/Netboot)
 
 - ✅ **Traditional UPI**: Standard PXE boot workflow.
-- ✅ **HMC REST API**: Automated netboot using IBM's Hardware Management Console.
+- ✅ **HMC REST API**: Automated netboot using IBM's Hardware Management
+  Console.
 - ✅ **DHCP/TFTP/HTTP**: Full network boot stack managed locally.
 - ✅ **MAC-Based Config**: Automated, per-node GRUB configurations.
 - ✅ **Flexible**: Supports custom kernel boot parameters.
 
 ### 🚀 Core Features
 
-- ✅ **Bring Your Own Infrastructure (BYOI)**: Use existing DNS/DHCP/PXE/LoadBalancers or let ShiftLaunch manage them locally.
-- ✅ **Smart Configuration Generator**: Interactive, dynamic template generation that adapts to your chosen topology and boot method.
-- ✅ **Installation Monitoring**: Automated monitoring with `openshift-install wait-for` commands.
-- ✅ **Single VIP Architecture**: One IP per cluster via port-based routing (50% IP savings).
-- ✅ **Resume Functionality**: Safely resume failed deployments from the last completed phase.
-- ✅ **State Management**: Tracks deployment progress with isolated JSON state files.
-- ✅ **Enhanced Status Display**: Instantly view cluster nodes, IPs, endpoints, and credentials without SSH.
+- ✅ **Bring Your Own Infrastructure (BYOI)**: Use existing
+  DNS/DHCP/PXE/LoadBalancers or let ShiftLaunch manage them locally.
+- ✅ **Smart Configuration Generator**: Interactive, dynamic template
+  generation that adapts to your chosen topology and boot method.
+- ✅ **Installation Monitoring**: Automated monitoring with
+  `openshift-install wait-for` commands.
+- ✅ **Single VIP Architecture**: One IP per cluster via port-based routing
+  (50% IP savings).
+- ✅ **Resume Functionality**: Safely resume failed deployments from the last
+  completed phase.
+- ✅ **State Management**: Tracks deployment progress with isolated JSON state
+  files.
+- ✅ **Enhanced Status Display**: Instantly view cluster nodes, IPs,
+  endpoints, and credentials without SSH.
 
 ---
 
@@ -44,20 +63,29 @@ ShiftLaunch provides **end-to-end automation** for OpenShift deployment on IBM P
 ### Single VIP Architecture
 
 - **One IP per Cluster**: Replaces the traditional dual VIP (API + Ingress) approach.
-- **Port-Based Routing**: HAProxy routes traffic via Layer 4 TCP based strictly on ports (6443 for API, 22623 for Machine Config, 80/443 for Ingress).
-- **Simplified DNS**: All DNS records (api, api-int, *.apps) point to a single VIP.
+- **Port-Based Routing**: HAProxy routes traffic via Layer 4 TCP based
+  strictly on ports (6443 for API, 22623 for Machine Config, 80/443 for
+  Ingress).
+- **Simplified DNS**: All DNS records (api, api-int, *.apps) point to a single
+  VIP.
 
 ### Multi-Cluster Support
 
-- **IP Aliasing**: Each cluster gets a dedicated VIP aliased to the controller's physical interface.
-- **Workspace Isolation**: Separate directories, configs, and service instances located at `/opt/shiftlaunch/clusters/<cluster-name>/`.
-- **HTTP Directory Structure**: Isolated `/var/www/html/<cluster-name>/` paths for hosting ignition and RHCOS payloads.
+- **IP Aliasing**: Each cluster gets a dedicated VIP aliased to the
+  controller's physical interface.
+- **Workspace Isolation**: Separate directories, configs, and service
+  instances located at `/opt/shiftlaunch/clusters/<cluster-name>/`.
+- **HTTP Directory Structure**: Isolated `/var/www/html/<cluster-name>/` paths
+  for hosting ignition and RHCOS payloads.
 
 ---
 
 ## Usage
 
-> **⚠️ Important:** ShiftLaunch must be run from the controller node (bastion host) running **RHEL 9/10** or **CentOS 9/10**. The controller node orchestrates all deployment activities including HMC interactions, service management, and cluster provisioning.
+> **⚠️ Important:** ShiftLaunch must be run from the controller node (bastion
+> host) running **RHEL 9/10** or **CentOS 9/10**. The controller node
+> orchestrates all deployment activities including HMC interactions, service
+> management, and cluster provisioning.
 
 ### Quick Start
 
@@ -74,7 +102,8 @@ vi my-sno.yaml
 # 4. Deploy the cluster
 ./shiftlaunch create -config my-sno.yaml
 
-# 5. Check status (shows nodes, IPs, endpoints, and kubeadmin credentials)
+# 5. Check status (shows nodes, IPs, endpoints, and kubeadmin
+# credentials)
 ./shiftlaunch status -cluster my-sno
 ```
 
@@ -82,7 +111,10 @@ vi my-sno.yaml
 
 #### Generate Configuration Template
 
-Create a highly-documented configuration template tailored exactly to your topology and boot method. The generator is "smart"—it automatically omits the `bootstrap` node and `rhcos_images` URLs if you select ISO boot, and toggles the required managed services (like NFS vs PXE) accordingly.
+Create a highly-documented configuration template tailored exactly to your
+topology and boot method. The generator is "smart"—it automatically omits the
+`bootstrap` node and `rhcos_images` URLs if you select ISO boot, and toggles
+the required managed services (like NFS vs PXE) accordingly.
 
 ```bash
 # Generate SNO configuration with Agent ISO boot (recommended)
@@ -100,7 +132,8 @@ Create a highly-documented configuration template tailored exactly to your topol
 
 #### Validate Configuration
 
-Validate your YAML configuration, verify local controller disk space, check for VIP conflicts, and validate LPAR/Storage existence on the HMC:
+Validate your YAML configuration, verify local controller disk space, check for
+VIP conflicts, and validate LPAR/Storage existence on the HMC:
 
 ```bash
 ./shiftlaunch validate -config my-cluster.yaml
@@ -108,7 +141,9 @@ Validate your YAML configuration, verify local controller disk space, check for 
 
 #### Deploy Cluster
 
-Deploy a new OpenShift cluster. If a previous deployment failed, running this command again will automatically detect the `state.json` file and safely resume from the last completed phase.
+Deploy a new OpenShift cluster. If a previous deployment failed, running this
+command again will automatically detect the `state.json` file and safely resume
+from the last completed phase.
 
 ```bash
 ./shiftlaunch create -config my-cluster.yaml
@@ -132,9 +167,13 @@ View real-time cluster status, node assignments, and connection credentials:
 
 #### Delete Cluster
 
-Safely tear down a deployed cluster. 
+Safely tear down a deployed cluster.
 
-ShiftLaunch uses **Intelligent Partial Failure Handling**. It tracks exactly which resources (LPARs, Virtual Disks, Optical Media) fail to delete. If a deletion fails (e.g., a disk is locked), it preserves the failure in the state file. Re-running the delete command will safely retry *only* the failed resources, ensuring zero orphaned infrastructure.
+ShiftLaunch uses **Intelligent Partial Failure Handling**. It tracks exactly
+which resources (LPARs, Virtual Disks, Optical Media) fail to delete. If a
+deletion fails (e.g., a disk is locked), it preserves the failure in the state
+file. Re-running the delete command will safely retry *only* the failed
+resources, ensuring zero orphaned infrastructure.
 
 ```bash
 ./shiftlaunch delete -cluster my-cluster
@@ -142,7 +181,9 @@ ShiftLaunch uses **Intelligent Partial Failure Handling**. It tracks exactly whi
 
 #### Dump Configuration Requirements
 
-If you opt to use external, unmanaged services (BYOI mode), generate the exact DNS, DHCP, and Load Balancer rules you need to hand off to your network administrators:
+If you opt to use external, unmanaged services (BYOI mode), generate the exact
+DNS, DHCP, and Load Balancer rules you need to hand off to your network
+administrators:
 
 ```bash
 ./shiftlaunch dump-config -config my-cluster.yaml
@@ -154,13 +195,16 @@ If you opt to use external, unmanaged services (BYOI mode), generate the exact D
 
 ### Bring Your Own Infrastructure (BYOI)
 
-ShiftLaunch supports flexible infrastructure management through the `managed_services` configuration block. You can choose to:
+ShiftLaunch supports flexible infrastructure management through the
+`managed_services` configuration block. You can choose to:
 
-1. **Fully Managed** - ShiftLaunch manages all services locally on the controller (DNS, DHCP, PXE, HAProxy, NFS).
+1. **Fully Managed** - ShiftLaunch manages all services locally on the
+   controller (DNS, DHCP, PXE, HAProxy, NFS).
 2. **Partially Managed** - Mix managed and external services.
-3. **BYOI Mode** - Use all external services; ShiftLaunch only handles HMC LPAR provisioning, Ignition generation, and installation monitoring.
+3. **BYOI Mode** - Use all external services; ShiftLaunch only handles HMC LPAR
+   provisioning, Ignition generation, and installation monitoring.
 
-**Example: Fully Managed (ISO Boot)**
+#### Example: Fully Managed (ISO Boot)
 
 ```yaml
 managed_services:
@@ -171,7 +215,7 @@ managed_services:
   nfs: true            # Required to host Agent ISOs to the VIOS
 ```
 
-**Example: BYOI Mode (Netboot)**
+#### Example: BYOI Mode (Netboot)
 
 ```yaml
 managed_services:
@@ -186,29 +230,39 @@ managed_services:
 
 ## Prerequisites
 
-ShiftLaunch requires specific environments and firmware levels to orchestrate OpenShift flawlessly across IBM Power Systems.
+ShiftLaunch requires specific environments and firmware levels to orchestrate
+OpenShift flawlessly across IBM Power Systems.
 
 ### Pull Secret
 
-You need a valid Red Hat pull secret (`pull-secret.json`) to proceed. Please ensure this file is placed in the same directory as the `shiftlaunch` executable.
+You need a valid Red Hat pull secret (`pull-secret.json`) to proceed. Please
+ensure this file is placed in the same directory as the `shiftlaunch`
+executable.
 
-You can obtain your pull secret from the [Red Hat Customer Portal](https://access.redhat.com/solutions/4844461).
+You can obtain your pull secret from the
+[Red Hat Customer Portal](https://access.redhat.com/solutions/4844461).
 
 ### Supported(Tested) Component Versions
 
 | Component | Supported Versions / Firmware |
 | :--- | :--- |
 | **Controller Node (OS)** | RHEL 9/10, CentOS 9/10 |
-| **Hardware Management Console (HMC)** | **V11R2** (Build Level: 2604091530, Service Pack: 1120)<br>**V11R1** (Build Level: 2502191030, Service Pack: 1110)<br>**V10R3 M1063** |
-| **IBM Power Systems (PowerFW)** | `RB1120_fw1120.00`<br>`ML1060_fw1060.51 (148)` |
-| **Virtual I/O Server (VIOS)** | `4.1.2.0`<br>`4.1.1.10` |
+| **Hardware Management Console (HMC)** | **V11R2** <br> (Build Level: 2604091530, <br> Service Pack: 1120) |
+| | **V11R1** (Build Level: 2502191030, Service Pack: 1110) |
+| | **V10R3 M1063** |
+| **IBM Power Systems (PowerFW)** | `RB1120_fw1120.00` |
+| | `ML1060_fw1060.51 (148)` |
+| **Virtual I/O Server (VIOS)** | `4.1.2.0` |
+| | `4.1.1.10` |
 
 ### Infrastructure Requirements
 
 1. **Controller Node (Bastion)**:
    - Root SSH access.
-   - Network routing to the Power Systems HMC and the target OpenShift subnets.
-   - Sufficient disk space for RHCOS images and ISO generation (~10GB per cluster).
+   - Network routing to the Power Systems HMC and the target OpenShift
+     subnets.
+   - Sufficient disk space for RHCOS images and ISO generation (~10GB per
+     cluster).
 
 2. **HMC (Hardware Management Console)**:
    - REST API enabled.
@@ -220,7 +274,8 @@ You can obtain your pull secret from the [Red Hat Customer Portal](https://acces
    - Virtual switches (`vswitch`) pre-configured.
 
 4. **Storage (VIOS)**:
-   - The VIOS must have an active Virtual Media Library with sufficient free space to host the Agent ISOs.
+   - The VIOS must have an active Virtual Media Library with sufficient free
+     space to host the Agent ISOs.
 
 ---
 
@@ -229,12 +284,16 @@ You can obtain your pull secret from the [Red Hat Customer Portal](https://acces
 ### Common Issues
 
 1. **"File 'config.yaml' already exists. Refusing to overwrite"**
-   - **Cause**: You are running `generate-config` but the target file already exists.
-   - **Solution**: Delete the existing file or specify a different output path using `-config new-name.yaml`.
+   - **Cause**: You are running `generate-config` but the target file already
+     exists.
+   - **Solution**: Delete the existing file or specify a different output path
+     using `-config new-name.yaml`.
 
 2. **"Cluster is already managed and fully deployed"**
-   - **Cause**: You attempted to run `create` on a cluster directory that contains a `.managed` marker (indicating a healthy, finished cluster).
-   - **Solution**: To redeploy, you must explicitly `delete` the cluster first to prevent accidental data loss.
+   - **Cause**: You attempted to run `create` on a cluster directory that
+     contains a `.managed` marker (indicating a healthy, finished cluster).
+   - **Solution**: To redeploy, you must explicitly `delete` the cluster first
+     to prevent accidental data loss.
 
 ---
 
@@ -244,4 +303,5 @@ You can obtain your pull secret from the [Red Hat Customer Portal](https://acces
 
 ## License
 
-This project is maintained under the `shiftlaunch` repository. See the LICENSE file for details.
+This project is maintained under the `shiftlaunch` repository. See the LICENSE
+file for details.

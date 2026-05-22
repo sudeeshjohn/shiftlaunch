@@ -1,0 +1,16 @@
+version: 2
+updates:
+  # Monitor root module for security updates
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "security"
+    # Enable security updates
+    allow:
+      - dependency-type: "all"
+
+# Made with Bob
