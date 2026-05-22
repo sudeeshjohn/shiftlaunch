@@ -1,0 +1,80 @@
+# =============================================================================
+# ShiftLaunch .gitignore - Prevent Sensitive Data Commits
+# =============================================================================
+
+# Sensitive Configuration Files
+# Only commit template files, not actual configs with real credentials
+config-*.yaml
+!config-sno.yaml
+!config-multi.yaml
+my-*.yaml
+prod-*.yaml
+*-prod.yaml
+*-production.yaml
+
+# Secrets and Credentials
+pull-secret.json
+*-secret.json
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+id_rsa*
+*.ssh
+
+# Cluster State and Runtime Data
+/clusters/
+*.state
+*.lock
+kubeconfig*
+!kubeconfig.example
+
+# Build Artifacts
+shiftlaunch
+*.exe
+*.dll
+*.so
+*.dylib
+dist/
+build/
+
+# Go Build Cache
+*.test
+*.out
+vendor/
+
+# IDE and Editor Files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs and Temporary Files
+*.log
+*.tmp
+/tmp/
+/temp/
+
+# Backup Files
+*.bak
+*.backup
+backup-*/
+
+# Downloaded Artifacts
+*.iso
+*.img
+*.tar.gz
+*.tgz
+rhcos-*
+openshift-client-*
+openshift-install-*
+
+# Local Development
+.env
+.env.local
+local-config.yaml
+
+# Made with Bob

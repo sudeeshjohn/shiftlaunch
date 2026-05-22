@@ -11,9 +11,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/sudeeshjohn/shiftlaunch/localexec"
-	"github.com/sudeeshjohn/shiftlaunch/logger"
-	"github.com/sudeeshjohn/shiftlaunch/types"
+	"github.ibm.com/sudeeshjohn/shiftlaunch/localexec"
+	"github.ibm.com/sudeeshjohn/shiftlaunch/logger"
+	"github.ibm.com/sudeeshjohn/shiftlaunch/types"
 	hmc "github.ibm.com/sudeeshjohn/infra-go-sdk/phmc"
 	"go.yaml.in/yaml/v3"
 )

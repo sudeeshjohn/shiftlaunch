@@ -6,9 +6,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/sudeeshjohn/shiftlaunch/orchestrator"
-	"github.com/sudeeshjohn/shiftlaunch/services"
-	"github.com/sudeeshjohn/shiftlaunch/types"
+	"github.ibm.com/sudeeshjohn/shiftlaunch/orchestrator"
+	"github.ibm.com/sudeeshjohn/shiftlaunch/services"
+	"github.ibm.com/sudeeshjohn/shiftlaunch/types"
 )
 
 var dumpConfigCmd = &cobra.Command{

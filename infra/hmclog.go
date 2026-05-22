@@ -4,7 +4,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/log"
-	"github.com/sudeeshjohn/shiftlaunch/logger"
+	"github.ibm.com/sudeeshjohn/shiftlaunch/logger"
 	hmc "github.ibm.com/sudeeshjohn/infra-go-sdk/phmc"
 )
 

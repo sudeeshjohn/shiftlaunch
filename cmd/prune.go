@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
-	"github.com/sudeeshjohn/shiftlaunch/config"
-	"github.com/sudeeshjohn/shiftlaunch/logger"
+	"github.ibm.com/sudeeshjohn/shiftlaunch/config"
+	"github.ibm.com/sudeeshjohn/shiftlaunch/logger"
 )
 
 var pruneCmd = &cobra.Command{

@@ -8,8 +8,8 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
-	"github.com/sudeeshjohn/shiftlaunch/config"
-	"github.com/sudeeshjohn/shiftlaunch/logger"
+	"github.ibm.com/sudeeshjohn/shiftlaunch/config"
+	"github.ibm.com/sudeeshjohn/shiftlaunch/logger"
 )
 
 var (

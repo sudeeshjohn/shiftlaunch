@@ -6,8 +6,8 @@ import (
 	"net"
 	"strings"
 
-	"github.com/sudeeshjohn/shiftlaunch/localexec"
-	"github.com/sudeeshjohn/shiftlaunch/logger"
+	"github.ibm.com/sudeeshjohn/shiftlaunch/localexec"
+	"github.ibm.com/sudeeshjohn/shiftlaunch/logger"
 )
 
 // ExtractCIDRPrefix extracts the prefix from a CIDR notation (e.g., "192.0.2.0/20" -> "20")

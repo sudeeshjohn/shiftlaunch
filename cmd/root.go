@@ -12,11 +12,11 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
-	"github.com/sudeeshjohn/shiftlaunch/config"
-	"github.com/sudeeshjohn/shiftlaunch/infra/controller"
-	"github.com/sudeeshjohn/shiftlaunch/logger"
-	"github.com/sudeeshjohn/shiftlaunch/orchestrator"
-	"github.com/sudeeshjohn/shiftlaunch/types"
+	"github.ibm.com/sudeeshjohn/shiftlaunch/config"
+	"github.ibm.com/sudeeshjohn/shiftlaunch/infra/controller"
+	"github.ibm.com/sudeeshjohn/shiftlaunch/logger"
+	"github.ibm.com/sudeeshjohn/shiftlaunch/orchestrator"
+	"github.ibm.com/sudeeshjohn/shiftlaunch/types"
 )
 
 const version = "0.3.0-byoi-agent"

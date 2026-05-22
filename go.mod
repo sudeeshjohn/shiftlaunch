@@ -1,7 +1,7 @@
-module github.com/sudeeshjohn/shiftlaunch
+module github.ibm.com/sudeeshjohn/shiftlaunch
 
 go 1.26.2
-replace github.ibm.com/sudeeshjohn/infra-go-sdk => ../../infra-go-sdk
+
 require (
 	golang.org/x/crypto v0.51.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1
@@ -10,7 +10,7 @@ require (
 require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
-	github.ibm.com/sudeeshjohn/infra-go-sdk v0.0.0-20260515041120-e9d11dec913a
+	github.ibm.com/sudeeshjohn/infra-go-sdk v0.0.0-20260522044418-e7b8cfed9a19
 	go.yaml.in/yaml/v3 v3.0.4
 )
 

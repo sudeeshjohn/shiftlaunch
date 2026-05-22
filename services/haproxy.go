@@ -7,8 +7,8 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/sudeeshjohn/shiftlaunch/localexec"
-	"github.com/sudeeshjohn/shiftlaunch/types"
+	"github.ibm.com/sudeeshjohn/shiftlaunch/localexec"
+	"github.ibm.com/sudeeshjohn/shiftlaunch/types"
 )
 
 const haproxyTemplate = `# ==========================================

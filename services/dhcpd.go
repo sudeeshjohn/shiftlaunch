@@ -7,7 +7,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/sudeeshjohn/shiftlaunch/types"
+	"github.ibm.com/sudeeshjohn/shiftlaunch/types"
 )
 
 // DHCPConfigData holds all variables needed to render the dhcpd.conf template
