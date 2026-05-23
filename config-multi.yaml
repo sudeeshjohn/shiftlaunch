@@ -9,7 +9,7 @@ managed_services:
   dhcp: true           # Setup local dhcp (Assigns IPs to LPARs)
   pxe: true            # Setup local TFTP (Boot files for Netboot)
   load_balancer: true  # Setup local HAProxy (Routes traffic for loadbalancer_ip)
-  nfs: true            # Setup local NFS server for ISO hosting
+  nfs: false            # Setup local NFS server for ISO hosting
 
 # --- 2. CONTROLLER (The "Where") ---
 controller:
@@ -66,7 +66,7 @@ openshift:
 
 # --- 6. NODE TARGETS (HMC / BYOI) ---
 nodes:
-  boot_method: "iso"        # boot_method can be either netboot or iso
+  boot_method: "netboot"        # boot_method can be either netboot or iso
   
   # -------------------------------------------------------------------------
   # SINGLE-NODE OPENSHIFT (SNO) EXAMPLE
@@ -81,11 +81,11 @@ nodes:
 
   # For Netboot it requires a bootstrap node as well
 
-  # bootstrap:
-  #   - name: "bootstrap"
-  #     ip: "192.0.2.110"
-  #     existing_lpar_name: "ocp-multi-1-bootstrap"
-  #     system_name: "YOUR_SYSTEM_NAME"
+  bootstrap:
+     - name: "bootstrap"
+       ip: "192.0.2.110"
+       existing_lpar_name: "ocp-multi-1-bootstrap"
+       system_name: "YOUR_SYSTEM_NAME"
 
   masters:
     - name: "master-0"

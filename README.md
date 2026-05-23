@@ -90,11 +90,15 @@ Power Systems with support for two distinct boot methods:
 ### Quick Start
 
 ```bash
-# 1. Generate a smart configuration template for an Agent ISO deployment
+# 1. Generate a smart configuration template
+# For Single Node OpenShift (SNO) with Agent ISO:
 ./shiftlaunch generate-config -type sno -boot iso -config my-sno.yaml
 
+# For Multi-Node cluster with Network Boot (PXE):
+./shiftlaunch generate-config -type multi -boot netboot -config my-multi.yaml
+
 # 2. Edit the generated configuration with your infrastructure details
-vi my-sno.yaml
+vi my-sno.yaml  # or my-multi.yaml
 
 # 3. Validate the configuration against the HMC and local controller
 ./shiftlaunch validate -config my-sno.yaml
