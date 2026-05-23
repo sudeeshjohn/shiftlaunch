@@ -5,12 +5,6 @@ Multi-Node) on IBM Power Systems using the User-Provisioned Infrastructure
 (UPI) method with **full automation**—from starter configuration generation to
 cluster ready state.
 
-🎉 **Batteries Included:** ShiftLaunch now ships as a completely standalone
-binary that dynamically generates its own starter configurations, eliminating
-the need to bundle sample YAML files. Moving from a "binary plus a folder of
-sample configs" to a single, self-contained, zero-dependency executable is the
-hallmark of a mature, enterprise-grade CLI tool.
-
 ## Overview
 
 ShiftLaunch provides **end-to-end automation** for OpenShift deployment on IBM
@@ -18,7 +12,7 @@ Power Systems with support for two distinct boot methods:
 
 ### 🎯 Boot Methods
 
-#### 1. Agent ISO Boot (Recommended for Production)
+#### 1. Agent-based Installer (Recommended for Production)
 
 - ✅ **Simplified Deployment**: Single ISO contains all installation artifacts.
 - ✅ **No DHCP/PXE Required**: Eliminates network boot complexity (uses static
@@ -30,9 +24,9 @@ Power Systems with support for two distinct boot methods:
 - ✅ **Automatic Cleanup**: ISO mappings and NFS exports are removed after
   installation.
 
-#### 2. Network Boot (PXE/Netboot)
+#### 2. User Provisioned Infrastructure (UPI / PXE Boot)
 
-- ✅ **Traditional UPI**: Standard PXE boot workflow.
+- ✅ **Standard PXE Workflow**: Traditional UPI boot method.
 - ✅ **HMC REST API**: Automated netboot using IBM's Hardware Management
   Console.
 - ✅ **DHCP/TFTP/HTTP**: Full network boot stack managed locally.
@@ -41,8 +35,7 @@ Power Systems with support for two distinct boot methods:
 
 ### 🚀 Core Features
 
-- ✅ **Bring Your Own Infrastructure (BYOI)**: Use existing
-  DNS/DHCP/PXE/LoadBalancers or let ShiftLaunch manage them locally.
+- ✅ **Bring Your Own Infrastructure (BYOI)**: Bring your own enterprise Load Balancers, DNS, DHCP, PXE, or NFS—or let ShiftLaunch manage them locally.
 - ✅ **Smart Configuration Generator**: Interactive, dynamic template
   generation that adapts to your chosen topology and boot method.
 - ✅ **Installation Monitoring**: Automated monitoring with
@@ -80,6 +73,68 @@ Power Systems with support for two distinct boot methods:
 
 ---
 
+## Bring Your Own Infrastructure (BYOI)
+
+ShiftLaunch supports flexible infrastructure management through the `managed_services` configuration block. If you already have enterprise infrastructure in place, you can bring your own Load Balancer (LB), DNS, DHCP, PXE, or NFS servers. You can choose to:
+
+1. **Fully Managed** - ShiftLaunch installs and manages all services locally on the controller (DNS, DHCP, PXE, HAProxy, NFS).
+2. **Partially Managed** - Mix and match locally managed services with your external enterprise services.
+3. **BYOI Mode** - Disable all local services. Use your external F5 Load Balancers, InfoBlox DNS, and enterprise DHCP. ShiftLaunch will act purely as an orchestrator for HMC LPAR provisioning, Ignition generation, and installation monitoring.
+
+#### Example: Fully Managed (ISO Boot)
+
+```yaml
+managed_services:
+  dns: true
+  dhcp: false          # Not required for NMState-driven ISO boot
+  pxe: false           # Not required for ISO boot
+  load_balancer: true
+  nfs: true            # Required to host Agent ISOs to the VIOS
+```
+
+#### Example: BYOI Mode (Netboot)
+
+```yaml
+managed_services:
+  dns: false           # Using enterprise InfoBlox
+  dhcp: false          # Using enterprise DHCP
+  pxe: false           # Using enterprise PXE server
+  load_balancer: false # Using enterprise F5 Big-IP
+  nfs: false
+```
+
+---
+
+## Prerequisites
+
+Before deploying OpenShift clusters with ShiftLaunch, ensure you have:
+
+### Infrastructure Requirements
+
+1. **Additional IP Address (VIP)**
+   - One dedicated IP address per cluster for the Load Balancer VIP
+   - This IP will be aliased to the controller's network interface
+   - Must be in the same subnet as your cluster nodes
+
+2. **IBM Power LPARs**
+
+   The number of LPARs required depends on your deployment type:
+
+   | Deployment Type | Boot Method | Minimum LPARs Required | Configuration |
+   | ---------------- | ------------- | ---------------------- | --------------- |
+   | **Single Node OpenShift (SNO)** | ISO or Netboot | **1** | 1 Master (combined control plane + worker) |
+   | **Multi-Node (Agent ISO)** | ISO | **5** | 3 Masters + 2 Workers |
+   | **Multi-Node (Network Boot)** | Netboot | **6** | 1 Bootstrap + 3 Masters + 2 Workers |
+
+   > **Note:** Network Boot requires an additional bootstrap node that is automatically removed after the cluster installation completes.
+
+3. **Controller Node**
+   - RHEL 9/10 or CentOS 9/10
+   - Network connectivity to HMC and cluster nodes
+   - Sufficient disk space for OpenShift artifacts (~10GB per cluster)
+
+---
+
 ## Usage
 
 > **⚠️ Important:** ShiftLaunch must be run from the controller node (bastion
@@ -91,10 +146,10 @@ Power Systems with support for two distinct boot methods:
 
 ```bash
 # 1. Generate a smart configuration template
-# For Single Node OpenShift (SNO) with Agent ISO:
+# For Single Node OpenShift (SNO) with Agent-based Installer (ISO):
 ./shiftlaunch generate-config -type sno -boot iso -config my-sno.yaml
 
-# For Multi-Node cluster with Network Boot (PXE):
+# For Multi-Node cluster with User Provisioned Infrastructure (Netboot):
 ./shiftlaunch generate-config -type multi -boot netboot -config my-multi.yaml
 
 # 2. Edit the generated configuration with your infrastructure details
@@ -106,8 +161,7 @@ vi my-sno.yaml  # or my-multi.yaml
 # 4. Deploy the cluster
 ./shiftlaunch create -config my-sno.yaml
 
-# 5. Check status (shows nodes, IPs, endpoints, and kubeadmin
-# credentials)
+# 5. Check status (shows nodes, IPs, endpoints, and kubeadmin credentials)
 ./shiftlaunch status -cluster my-sno
 ```
 
@@ -180,59 +234,22 @@ file. Re-running the delete command will safely retry *only* the failed
 resources, ensuring zero orphaned infrastructure.
 
 ```bash
-./shiftlaunch delete -cluster my-cluster
+# Delete using cluster name
+./shiftlaunch delete --cluster my-cluster
+
+# Or delete using config file
+./shiftlaunch delete --config my-cluster.yaml
 ```
 
-#### Dump Configuration Requirements
+#### Generate External Service Configurations
 
-If you opt to use external, unmanaged services (BYOI mode), generate the exact
-DNS, DHCP, and Load Balancer rules you need to hand off to your network
-administrators:
+If you opt to use external, unmanaged services (BYOI mode), generate the exact DNS, DHCP, and Load Balancer rules you need to hand off to your network administrators. You can safely output this to a text file for easy sharing.
 
 ```bash
-./shiftlaunch dump-config -config my-cluster.yaml
+./shiftlaunch service-configs --config my-cluster.yaml > network-requirements.txt
 ```
 
----
-
-## Configuration
-
-### Bring Your Own Infrastructure (BYOI)
-
-ShiftLaunch supports flexible infrastructure management through the
-`managed_services` configuration block. You can choose to:
-
-1. **Fully Managed** - ShiftLaunch manages all services locally on the
-   controller (DNS, DHCP, PXE, HAProxy, NFS).
-2. **Partially Managed** - Mix managed and external services.
-3. **BYOI Mode** - Use all external services; ShiftLaunch only handles HMC LPAR
-   provisioning, Ignition generation, and installation monitoring.
-
-#### Example: Fully Managed (ISO Boot)
-
-```yaml
-managed_services:
-  dns: true            
-  dhcp: false          # Not required for NMState-driven ISO boot
-  pxe: false           # Not required for ISO boot
-  load_balancer: true  
-  nfs: true            # Required to host Agent ISOs to the VIOS
-```
-
-#### Example: BYOI Mode (Netboot)
-
-```yaml
-managed_services:
-  dns: false           # Using enterprise InfoBlox
-  dhcp: false          # Using enterprise DHCP
-  pxe: false           # Using enterprise PXE server
-  load_balancer: false # Using enterprise F5 Big-IP
-  nfs: false           
-```
-
----
-
-## Prerequisites
+## Prerequisites Deep Dive
 
 ShiftLaunch requires specific environments and firmware levels to orchestrate
 OpenShift flawlessly across IBM Power Systems.
@@ -246,7 +263,7 @@ executable.
 You can obtain your pull secret from the
 [Red Hat Customer Portal](https://access.redhat.com/solutions/4844461).
 
-### Supported(Tested) Component Versions
+### Supported (Tested) Component Versions
 
 | Component | Supported Versions / Firmware |
 | :--- | :--- |
@@ -259,7 +276,7 @@ You can obtain your pull secret from the
 | **Virtual I/O Server (VIOS)** | `4.1.2.0` |
 | | `4.1.1.10` |
 
-### Infrastructure Requirements
+### IBM Hardware Requirements
 
 1. **Controller Node (Bastion)**:
    - Root SSH access.
