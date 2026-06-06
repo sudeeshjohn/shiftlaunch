@@ -1147,6 +1147,9 @@ func (h *HMCProvider) bootNodesWithISOBulk(ctx context.Context) error {
 	viosMediaCreated := make(map[string]string)
 	viosMediaUploaded := make(map[string]bool)
 
+	// --- THE FIX: Generate a unique batch hash so Day-2 scaling doesn't collide with Day-1 ISOs! ---
+	batchHash := fmt.Sprintf("%x", time.Now().Unix()%0xFFFFF)
+
 	// bulkMap Structure: map[sysUUID]map[viosUUID]map[lparUUID][]string
 	bulkMap := make(map[string]map[string]map[string][]string)
 
@@ -1200,13 +1203,13 @@ func (h *HMCProvider) bootNodesWithISOBulk(ctx context.Context) error {
 			}
 		}
 
-		// FIX: Use a single, shared ISO name for the entire cluster
+		// --- THE FIX: Apply the unique batch hash to the ISO name ---
 		if mediaName == "" {
 			if existingMedia, ok := viosMediaCreated[viosUUID]; ok {
 				mediaName = existingMedia
 			} else {
 				// Ensure name is safe for VIOS (max 37 chars, alphanumeric, dashes)
-				mediaName = fmt.Sprintf("%s-iso", h.cfg.OpenShift.ClusterName)
+				mediaName = fmt.Sprintf("%s-%s", h.cfg.OpenShift.ClusterName, batchHash)
 				mediaName = strings.ReplaceAll(mediaName, "_", "-")
 				if len(mediaName) > 30 {
 					mediaName = mediaName[:30]
@@ -1324,6 +1327,47 @@ func (h *HMCProvider) bootNodesWithISOBulk(ctx context.Context) error {
 	state.VIOSAdminPassword = viosPassword
 	state.VIOSAdminCreated = viosUserCreated
 	_ = h.stateManager.SaveState(state)
+	// ========================================================================
+	// 2.5 IMMEDIATELY UNMOUNT NFS (Since ISOs are now safely inside VIOS)
+	// ========================================================================
+	h.logger.Info("Cleaning up temporary NFS mounts from VIOS...")
+	mountsCleaned := make(map[string]bool)
+
+	for i := range h.isoMappings {
+		mp := h.isoMappings[i].MountPoint
+		if mp == "" || mountsCleaned[mp] {
+			continue
+		}
+
+		h.logger.Info("Unmounting NFS from VIOS", "vios", h.isoMappings[i].VIOSName, "mount", mp)
+		// CRITICAL: Shield from cancellation so we don't leave the VIOS hanging!
+		_, err := hmc.UnmountNFS(context.WithoutCancel(ctx), h.hmcClient, h.isoMappings[i].SystemName, h.isoMappings[i].VIOSName, mp, h.debug)
+		
+		if err != nil && !strings.Contains(err.Error(), "Could not find anything to unmount") && !strings.Contains(err.Error(), "not mounted") {
+			h.logger.Warn("Failed to cleanly unmount NFS (will retry during teardown)", "error", err)
+			continue
+		}
+
+		h.logger.Info("Removing mount directory from VIOS", "mount", mp)
+		rmdirCmd := fmt.Sprintf(`viosvrcmd -m %s -p %s -c "rmdir %s" --admin`, h.isoMappings[i].SystemName, h.isoMappings[i].VIOSName, mp)
+		_, _ = hmc.CliRunnerViaSSH(h.cfg.HMC.IP, viosUsername, viosPassword, rmdirCmd, h.debug)
+		
+		mountsCleaned[mp] = true
+	}
+
+	// Update state to reflect unmounted status so Teardown ignores them later
+	for i := range state.ISOMappings {
+		if mountsCleaned[state.ISOMappings[i].MountPoint] {
+			state.ISOMappings[i].MountPoint = ""
+		}
+	}
+	for i := range h.isoMappings {
+		if mountsCleaned[h.isoMappings[i].MountPoint] {
+			h.isoMappings[i].MountPoint = ""
+		}
+	}
+	_ = h.stateManager.SaveState(state)
+
 
 	// 3. Save Profiles and Power On (PARALLELIZED)
 	h.logger.Info("Saving profiles and powering on all LPARs concurrently...")

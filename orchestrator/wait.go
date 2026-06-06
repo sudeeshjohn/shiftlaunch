@@ -85,7 +85,7 @@ func (o *Orchestrator) waitForInstallComplete(cancelCtx context.Context) error {
 
 	// Start the background CSR approver for Multi-Node clusters
 	if !o.cfg.IsSNO() {
-		go o.autoApproveCSRs(timeoutCtx)
+		go o.AutoApproveCSRs(timeoutCtx)
 	}
 
 	installerPath := filepath.Join(o.workspaceDir, "tools", "openshift-install")
@@ -133,7 +133,7 @@ func (o *Orchestrator) waitForAgentInstall(cancelCtx context.Context) error {
 	defer cancel()
 
 	if !o.cfg.IsSNO() {
-		go o.autoApproveCSRs(timeoutCtx)
+		go o.AutoApproveCSRs(timeoutCtx)
 	}
 
 	installerPath := filepath.Join(o.workspaceDir, "tools", "openshift-install")
@@ -163,8 +163,8 @@ func (o *Orchestrator) waitForAgentInstall(cancelCtx context.Context) error {
 	return nil
 }
 
-// autoApproveCSRs runs in the background and automatically approves worker CSRs locally
-func (o *Orchestrator) autoApproveCSRs(ctx context.Context) {
+// AutoApproveCSRs runs in the background and automatically approves worker CSRs locally
+func (o *Orchestrator) AutoApproveCSRs(ctx context.Context) {
 	o.logger.Debug("  [CSR Auto-Approver] Background thread started...")
 
 	ticker := time.NewTicker(30 * time.Second)

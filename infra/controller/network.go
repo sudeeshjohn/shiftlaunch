@@ -216,7 +216,7 @@ func GetInterfaceIPv4(ifaceName string) (string, error) {
 // AddHostsEntry appends the cluster API endpoints to the controller's /etc/hosts file
 // so the local openshift-install binary can resolve them without modifying the system DNS.
 func (nm *NetworkManager) AddHostsEntry(ctx context.Context, clusterName, baseDomain, vip string) error {
-	nm.logger.Info("Appending cluster API endpoints to local /etc/hosts")
+	nm.logger.Debug("Appending cluster API endpoints to local /etc/hosts")
 
 	domain := fmt.Sprintf("%s.%s", clusterName, baseDomain)
 	
