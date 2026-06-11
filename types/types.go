@@ -29,7 +29,6 @@ type ManagedServicesConfig struct {
 // DisconnectedConfig holds configuration for disconnected/airgapped deployments
 type DisconnectedConfig struct {
 	Enabled          bool   `yaml:"enabled"`
-	ReleaseType      string `yaml:"release_type,omitempty"` // "official" (default) or "ci"
 	RegistryImage    string `yaml:"registry_image"`
 	RegistryHostname string `yaml:"registry_hostname,omitempty"`
 	RegistryUsername string `yaml:"registry_username"`

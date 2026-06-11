@@ -424,19 +424,40 @@ func (v *Validator) validateSNONode() {
 
 // validateMultiNodeCluster validates multi-node cluster configuration
 func (v *Validator) validateMultiNodeCluster() {
-	if len(v.cfg.Nodes.Masters) == 0 {
-		v.errors = append(v.errors, "nodes.masters is required for multi-node deployment")
-		return
-	}
-
 	masterCount := len(v.cfg.Nodes.Masters)
-	if masterCount < 3 {
-		v.errors = append(v.errors, fmt.Sprintf("minimum 3 master nodes required, got %d", masterCount))
-	}
-	if masterCount%2 == 0 {
-		v.errors = append(v.errors, fmt.Sprintf("master count must be odd for quorum, got %d", masterCount))
+	workerCount := len(v.cfg.Nodes.Workers)
+	bootstrapCount := len(v.cfg.Nodes.Bootstrap)
+
+	// ========================================================================
+	// TOPOLOGY ENFORCEMENT: Boot Method Constraints
+	// ========================================================================
+	if v.cfg.Nodes.BootMethod == "netboot" {
+		if bootstrapCount != 1 {
+			v.errors = append(v.errors, fmt.Sprintf("netboot deployment requires exactly 1 bootstrap node, got %d. Please define the 'bootstrap' block in your config.yaml", bootstrapCount))
+		}
+		if masterCount != 3 {
+			v.errors = append(v.errors, fmt.Sprintf("netboot deployment requires exactly 3 master nodes, got %d", masterCount))
+		}
+		if workerCount < 2 {
+			v.errors = append(v.errors, fmt.Sprintf("netboot deployment requires a minimum of 2 worker nodes, got %d", workerCount))
+		}
+	} else if v.cfg.Nodes.BootMethod == "agent" {
+		// Agent-based installer dynamically handles bootstrap within a master node.
+		// Defining an explicit bootstrap node here is a user error.
+		if bootstrapCount > 0 {
+			v.errors = append(v.errors, fmt.Sprintf("agent boot method does not use a standalone bootstrap node, but %d were defined. Please remove the 'bootstrap' block from your config.yaml", bootstrapCount))
+		}
+		// Standard Quorum Checks for Agent
+		if masterCount < 3 {
+			v.errors = append(v.errors, fmt.Sprintf("minimum 3 master nodes required for highly available agent deployment, got %d", masterCount))
+		} else if masterCount%2 == 0 {
+			v.errors = append(v.errors, fmt.Sprintf("master count must be odd for quorum, got %d", masterCount))
+		}
 	}
 
+	// ========================================================================
+	// PARAMETER VALIDATION: Masters
+	// ========================================================================
 	for i, master := range v.cfg.Nodes.Masters {
 		if master.Hostname == "" {
 			v.errors = append(v.errors, fmt.Sprintf("nodes.masters[%d].name is required", i))
@@ -454,7 +475,10 @@ func (v *Validator) validateMultiNodeCluster() {
 		}
 	}
 
-	if len(v.cfg.Nodes.Bootstrap) > 0 {
+	// ========================================================================
+	// PARAMETER VALIDATION: Bootstrap
+	// ========================================================================
+	if bootstrapCount > 0 {
 		for i, bootstrap := range v.cfg.Nodes.Bootstrap {
 			if bootstrap.Hostname == "" {
 				v.errors = append(v.errors, fmt.Sprintf("nodes.bootstrap[%d].name is required", i))
@@ -471,7 +495,10 @@ func (v *Validator) validateMultiNodeCluster() {
 		}
 	}
 
-	if len(v.cfg.Nodes.Workers) > 0 {
+	// ========================================================================
+	// PARAMETER VALIDATION: Workers
+	// ========================================================================
+	if workerCount > 0 {
 		for i, worker := range v.cfg.Nodes.Workers {
 			if worker.Hostname == "" {
 				v.errors = append(v.errors, fmt.Sprintf("nodes.workers[%d].name is required", i))

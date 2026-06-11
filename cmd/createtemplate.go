@@ -17,6 +17,7 @@ var (
 	genOutputPath   string
 	genDisconnected bool
 	genProxy        bool
+	genReleaseType  string
 )
 
 var generateConfigCmd = &cobra.Command{
@@ -46,6 +47,7 @@ func init() {
 	// Network Architecture Flags
 	generateConfigCmd.Flags().BoolVarP(&genDisconnected, "disconnected", "a", false, "Generate a template for a disconnected/airgapped environment")
 	generateConfigCmd.Flags().BoolVarP(&genProxy, "proxy", "p", false, "Enable local or corporate proxy management in the template")
+  generateConfigCmd.Flags().StringVarP(&genReleaseType, "release-type", "r", "official", "Payload type: 'official' or 'ci'")
 }
 
 func runGenerateConfig(cmd *cobra.Command, args []string) error {
@@ -117,6 +119,7 @@ network:
 openshift:
   cluster_name: "<Cluster Name>"
   version: "4.21"
+  release_type: "{{.ReleaseType}}" # "official" (oc-mirror v2 IDMS) or "ci" (oc adm flat mirror)
   base_domain: "example.local"
   cluster_network_cidr: "10.128.0.0/14"
   cluster_network_host_prefix: 23
@@ -139,7 +142,6 @@ openshift:
 # -----------------------------------------------------------------------------
 disconnected:
   enabled: true
-  release_type: "official" # "official" (oc-mirror v2 IDMS) or "ci" (oc adm flat mirror)
   
   # If bringing your own registry instead of using ShiftLaunch's managed registry:
   # registry_hostname: "harbor.mycompany.com" 
@@ -199,6 +201,7 @@ type TemplateData struct {
 	BootMethod   string
 	Disconnected bool
 	UseProxy     bool
+	ReleaseType  string
 }
 // GenerateConfig generates the config file for the agent
 func GenerateConfig(configType, bootMethod, outputPath string, disconnected, proxy bool) error {
@@ -221,6 +224,7 @@ func GenerateConfig(configType, bootMethod, outputPath string, disconnected, pro
 		BootMethod:   bootMethod,
 		Disconnected: disconnected,
 		UseProxy:     proxy,
+		ReleaseType:  genReleaseType,
 	}
 
 	tmpl, err := template.New("configGen").Parse(configTemplate)

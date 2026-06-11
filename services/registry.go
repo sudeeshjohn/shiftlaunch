@@ -257,7 +257,7 @@ func (r *RegistryManager) Setup(ctx context.Context, workspaceDir string) error 
 
 // mirrorImages acts as a smart router based on the payload type
 func (r *RegistryManager) mirrorImages(ctx context.Context, workspaceDir, registryURL, pullSecretPath string) error {
-	releaseType := r.cfg.DisconnectedConfig.ReleaseType
+	releaseType := r.cfg.OpenShift.ReleaseType // <--- UPDATED PATH
 
 	r.logger.Info("Starting image mirror process", "release_type", releaseType, "version", r.cfg.OpenShift.Version)
 
@@ -280,9 +280,25 @@ func (r *RegistryManager) mirrorViaOcAdm(ctx context.Context, workspaceDir, regi
 
 	r.logger.Debug("Executing oc adm mirror command", "cmd", mirrorCmd)
 	output, err := r.executor.Execute(ctx, mirrorCmd)
-	os.WriteFile(filepath.Join(workspaceDir, "registry-mirror-info.txt"), []byte(output), 0644)
+	
+	logFile := filepath.Join(workspaceDir, "registry-mirror-info.txt")
+	os.WriteFile(logFile, []byte(output), 0644)
+	
 	if err != nil {
-		return fmt.Errorf("oc adm release mirror failed: %w", err)
+		// Parse the output for known issues to provide a clean UX
+		lowerOut := strings.ToLower(output)
+		if strings.Contains(lowerOut, "not found") || strings.Contains(lowerOut, "manifest unknown") {
+			return fmt.Errorf("release image '%s' could not be found upstream. Check your version and release image URL", releaseTag)
+		}
+		if strings.Contains(lowerOut, "unauthorized") || strings.Contains(lowerOut, "invalid credentials") {
+			return fmt.Errorf("authentication failed: your pull-secret is invalid or lacks access to the upstream registry")
+		}
+		if strings.Contains(lowerOut, "no space left on device") {
+			return fmt.Errorf("mirroring failed: the local registry partition ran out of disk space")
+		}
+
+		// Generic fallback error pointing to the log
+		return fmt.Errorf("oc adm release mirror failed. See detailed logs at: %s", logFile)
 	}
 	return nil
 }
@@ -323,9 +339,25 @@ mirror:
 
 	r.logger.Debug("Executing oc-mirror v2 command", "cmd", mirrorCmd)
 	output, err := r.executor.Execute(ctx, mirrorCmd)
-	os.WriteFile(filepath.Join(workspaceDir, "registry-mirror-info.txt"), []byte(output), 0644)
+	
+	logFile := filepath.Join(workspaceDir, "registry-mirror-info.txt")
+	os.WriteFile(logFile, []byte(output), 0644)
+	
 	if err != nil {
-		return fmt.Errorf("oc-mirror v2 failed: %w", err)
+		// Parse the output for known issues to provide a clean UX
+		lowerOut := strings.ToLower(output)
+		if strings.Contains(lowerOut, "no release found") {
+			return fmt.Errorf("OpenShift version %s is not available in the '%s' channel. Verify the version is correct", version, channel)
+		}
+		if strings.Contains(lowerOut, "unauthorized") || strings.Contains(lowerOut, "invalid credentials") {
+			return fmt.Errorf("authentication failed: your pull-secret is invalid or lacks access to mirror these images")
+		}
+		if strings.Contains(lowerOut, "no space left on device") {
+			return fmt.Errorf("mirroring failed: the local registry partition ran out of disk space")
+		}
+
+		// Generic fallback error pointing to the log
+		return fmt.Errorf("oc-mirror failed to sync the payload. See detailed logs at: %s", logFile)
 	}
 	return nil
 }

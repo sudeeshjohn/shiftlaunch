@@ -183,6 +183,11 @@ func loadConfig(requireConfig bool) (*types.AgentConfig, *config.AgentDaemonConf
 	// ========================================================================
 	// UX OPTIMIZATION: Auto-fill Disconnected settings if empty
 	// ========================================================================
+	// Default to official releases globally (applies to all deployments)
+	if cfg.OpenShift.ReleaseType == "" {
+		cfg.OpenShift.ReleaseType = "official"
+	}
+
 	if cfg.ManagedServices.Registry {
 		cfg.DisconnectedConfig.Enabled = true
 		cfg.DisconnectedConfig.AutoMirror = true // Force mirror if managing registry
@@ -198,10 +203,6 @@ func loadConfig(requireConfig bool) (*types.AgentConfig, *config.AgentDaemonConf
 		}
 		if cfg.DisconnectedConfig.LocalRepo == "" {
 			cfg.DisconnectedConfig.LocalRepo = "ocp4/openshift4"
-		}
-		// Default to official releases (uses oc-mirror v2)
-		if cfg.DisconnectedConfig.ReleaseType == "" {
-			cfg.DisconnectedConfig.ReleaseType = "official"
 		}
 		
 		// Auto-generate the release_image based purely on the openshift.version field

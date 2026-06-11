@@ -170,12 +170,15 @@ func generateNetbootIgnition(ctx context.Context, cfg *types.AgentConfig, exec *
 		return fmt.Errorf("failed to create manifests: %w", err)
 	}
 
-	// 3. Inject Insecure Policy to bypass Signature Validation ONLY for CI/Nightly builds
-	if cfg.DisconnectedConfig.Enabled && cfg.DisconnectedConfig.ReleaseType == "ci" {
-		if err := injectInsecurePolicy(targetDir); err != nil {
-			return fmt.Errorf("failed to inject insecure policy: %w", err)
-		}
-	}
+	// ========================================================================
+	// CI / NIGHTLY INJECTION (Connected OR Disconnected)
+	// Inject the Insecure Policy to bypass Signature Validation for raw CI builds
+	// ========================================================================
+if cfg.OpenShift.ReleaseType == "ci" {
+    if err := injectInsecurePolicy(targetDir); err != nil {
+        return fmt.Errorf("failed to inject insecure policy: %w", err)
+    }
+}
 
 	// 4. Create Ignition Configs
 	var cmd string
@@ -246,7 +249,7 @@ func generateInstallConfigYAML(cfg *types.AgentConfig, workspaceDir string) (str
 		PullSecret:               strings.TrimSpace(string(pullSecret)),
 		SSHKey:                   strings.TrimSpace(string(sshKey)),
 		UseLocalRegistry:         cfg.DisconnectedConfig.Enabled,
-		ReleaseType:              cfg.DisconnectedConfig.ReleaseType,
+		ReleaseType:              cfg.OpenShift.ReleaseType,
 		UseProxy:                 cfg.ManagedServices.Proxy,
 	}
 
@@ -370,10 +373,10 @@ func generateAgentISO(ctx context.Context, cfg *types.AgentConfig, exec *localex
 	// ========================================================================
 
 	// ========================================================================
-	// CI / NIGHTLY DISCONNECTED INJECTION
+	// CI / NIGHTLY INJECTION (Connected OR Disconnected)
 	// Inject the Insecure Policy to bypass Signature Validation for raw CI builds
 	// ========================================================================
-	if cfg.DisconnectedConfig.Enabled && cfg.DisconnectedConfig.ReleaseType == "ci" {
+	if cfg.OpenShift.ReleaseType == "ci" { // <--- UPDATED PATH
 		if err := injectInsecurePolicy(targetDir); err != nil {
 			return fmt.Errorf("failed to inject insecure policy into Agent ISO: %w", err)
 		}
