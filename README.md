@@ -135,6 +135,23 @@ Before deploying OpenShift clusters with ShiftLaunch, ensure you have:
 
 ---
 
+## Disconnected & Airgapped Deployments
+
+ShiftLaunch natively supports disconnected OpenShift deployments by spinning up a local Podman container registry and a Squid proxy gateway directly on the controller node.
+
+You can mix and match the `--disconnected` and `--proxy` flags during template generation to fit your security requirements:
+
+| Architecture | Flags | Behavior | Best For |
+|--------------|-------|----------|----------|
+| **Standard** | *(None)* | Directly pulls from `quay.io`. No local registry or proxy. | Datacenters with open internet access. |
+| **Corp Proxy** | `--proxy` | Routes `quay.io` pulls through a local Squid proxy. | Environments requiring strict egress filtering. |
+| **Strict Airgap** | `--disconnected` | Creates local registry. Scrubs all host proxy variables. Nodes have **zero** outbound routing. | Dark sites, defense, or highly secure financial environments. |
+| **Soft Airgap** | `--disconnected`<br>`--proxy` | Creates local registry **and** local proxy. | Environments that use local payloads but still need to reach external NTP, LDAP, or third-party operators. |
+
+> **Note on CI Builds:** If you set `disconnected.release_type: "ci"` in your configuration, ShiftLaunch will automatically inject a custom `MachineConfig` to bypass cryptographic signature validation, allowing you to boot raw nightly payloads.
+
+---
+
 ## Usage
 
 > **⚠️ Important:** ShiftLaunch must be run from the controller node (bastion

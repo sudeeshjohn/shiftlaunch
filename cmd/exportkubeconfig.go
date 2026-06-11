@@ -63,17 +63,18 @@ type KubeconfigStructure struct {
 	CurrentContext string              `yaml:"current-context"`
 	Users          []KubeconfigUser    `yaml:"users"`
 }
-
+// KubeconfigCluster represents the kubeconfig YAML cluster structure
 type KubeconfigCluster struct {
 	Name    string                 `yaml:"name"`
 	Cluster map[string]interface{} `yaml:"cluster"`
 }
-
+// KubeconfigContext represents the kubeconfig YAML context structure
 type KubeconfigContext struct {
 	Name    string                 `yaml:"name"`
 	Context map[string]interface{} `yaml:"context"`
 }
 
+// KubeconfigUser represents the kubeconfig YAML user structure
 type KubeconfigUser struct {
 	Name string                 `yaml:"name"`
 	User map[string]interface{} `yaml:"user"`

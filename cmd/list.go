@@ -17,7 +17,7 @@ import (
 )
 
 var listQuiet bool
-var listJson bool
+var listJSON bool
 
 var listCmd = &cobra.Command{
 	Use:     "list",
@@ -36,13 +36,13 @@ The list command displays:
 - Last updated timestamp`,
 	RunE: runList,
 }
-
+// initialize list command flags
 func init() {
 	rootCmd.AddCommand(listCmd)
 	listCmd.Flags().BoolVarP(&listQuiet, "quiet", "q", false, "Only display cluster names")
-	listCmd.Flags().BoolVar(&listJson, "json", false, "Output cluster list in pure JSON format")
+	listCmd.Flags().BoolVar(&listJSON, "json", false, "Output cluster list in pure JSON format")
 }
-
+// runList runs the list command
 func runList(cmd *cobra.Command, args []string) error {
 	// Load daemon config to get workspace directory
 	daemonCfg, err := config.Load()
@@ -74,9 +74,9 @@ func printClusterList(workspaceBase string) error {
 
 	entries, err := os.ReadDir(workspaceBase)
 	if err != nil {
-		if !listQuiet && !listJson {
+		if !listQuiet && !listJSON {
 			log.Info("No clusters found or workspace directory does not exist.")
-		} else if listJson {
+		} else if listJSON {
 			fmt.Println("[]") // Output empty array for valid JSON parsing
 		}
 		return nil
@@ -224,7 +224,7 @@ func printClusterList(workspaceBase string) error {
 	}
 
 	// Output logic based on flags
-	if listJson {
+	if listJSON {
 		// Output pure JSON array
 		if jsonOutput == nil {
 			fmt.Println("[]")
@@ -236,7 +236,7 @@ func printClusterList(workspaceBase string) error {
 	}
 
 	if visibleCount == 0 {
-		if !listQuiet && !listJson {
+		if !listQuiet && !listJSON {
 			log.Info("No active clusters found.")
 			log.Info("Deleted workspaces are hidden. Use 'shiftlaunch prune' to reclaim disk space.")
 		}

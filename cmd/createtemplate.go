@@ -12,28 +12,27 @@ import (
 )
 
 var (
-	genConfigType string
-	genBootMethod string
-	genOutputPath string
+	genConfigType   string
+	genBootMethod   string
+	genOutputPath   string
+	genDisconnected bool
+	genProxy        bool
 )
 
 var generateConfigCmd = &cobra.Command{
-	Use:   "create-template",
-	Short: "Create a starter config.yaml template",
+	Use:     "create-template",
+	Short:   "Create a starter config.yaml template",
 	GroupID: "utils",
-	Long: `Creates a starter configuration template based on topology and boot method.
-
+	Long: `Creates a starter configuration template based on topology, boot method, and network environment.
 The create-template command creates:
 - A cluster configuration file (config.yaml)
 - An agent daemon configuration file (agent.yaml) if it doesn't exist
 
-Supported topologies:
-- sno: Single Node OpenShift
-- multi: Multi-node cluster (3 masters + workers)
-
-Supported boot methods:
-- agent: Agent-based installer
-- netboot: Network boot (PXE/TFTP)`,
+Supported network environments:
+- Standard Connected: No extra flags
+- Corporate Proxy:    --proxy
+- Strict Airgap:      --disconnected
+- Soft Airgap:        --disconnected --proxy`,
 	RunE: runGenerateConfig,
 }
 
@@ -43,22 +42,21 @@ func init() {
 	generateConfigCmd.Flags().StringVarP(&genConfigType, "type", "t", "sno", "Cluster topology: 'sno' or 'multi'")
 	generateConfigCmd.Flags().StringVarP(&genBootMethod, "boot", "b", "agent", "Boot method: 'agent' or 'netboot'")
 	generateConfigCmd.Flags().StringVarP(&genOutputPath, "output", "o", "config.yaml", "Path to save the generated file")
+	
+	// Network Architecture Flags
+	generateConfigCmd.Flags().BoolVarP(&genDisconnected, "disconnected", "a", false, "Generate a template for a disconnected/airgapped environment")
+	generateConfigCmd.Flags().BoolVarP(&genProxy, "proxy", "p", false, "Enable local or corporate proxy management in the template")
 }
 
 func runGenerateConfig(cmd *cobra.Command, args []string) error {
-	return GenerateConfig(genConfigType, genBootMethod, genOutputPath)
+	return GenerateConfig(genConfigType, genBootMethod, genOutputPath, genDisconnected, genProxy)
 }
 
 const configTemplate = `# =============================================================================
 # ShiftLaunch Agent Configuration Template
 # Topology: {{if .IsSNO}}SNO (Single Node OpenShift){{else}}Multi-Node Cluster{{end}}
 # Boot Method: {{if eq .BootMethod "agent"}}Agent Installer{{else}}Network Boot (PXE){{end}}
-# =============================================================================
-# INSTRUCTIONS:
-# 1. Review and modify the values below to match your infrastructure.
-# 2. Ensure the controller node has the specified 'network_interface' active.
-# 3. Ensure the LPARs specified under 'existing_lpar_name' are already 
-#    created on the HMC.
+# Environment: {{if and .Disconnected .UseProxy}}Soft Airgap (Disconnected + Proxy){{else if .Disconnected}}Strict Airgap (Disconnected, No Outbound){{else if .UseProxy}}Connected with Proxy{{else}}Standard Connected{{end}}
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -81,12 +79,16 @@ managed_services:
   # Setup local NFS server to host Agent images to the VIOS (Required for Agent boot)
   nfs: {{if eq .BootMethod "agent"}}true{{else}}false{{end}}
 
+  # Setup local Squid proxy for controlled outbound or internet routing
+  proxy: {{if .UseProxy}}true{{else}}false{{end}}
+  
+  # Setup local Podman container registry for airgapped mirroring
+  registry: {{if .Disconnected}}true{{else}}false{{end}}
+
 # -----------------------------------------------------------------------------
 # 2. CONTROLLER NODE (The "Where")
 # -----------------------------------------------------------------------------
 controller:
-  # The physical network interface on this machine where the VIP will be bound
-  # Example: "eth0", "enP1p1s0f0", "env2"
   network_interface: "eth0"
 
 # -----------------------------------------------------------------------------
@@ -101,21 +103,10 @@ hmc:
 # 4. NETWORK CONFIGURATION
 # -----------------------------------------------------------------------------
 network:
-  # The Virtual IP (VIP) for the cluster. If managed_services.load_balancer is
-  # true, ShiftLaunch will automatically alias this IP to the controller interface.
   loadbalancer_ip: "10.20.x.y"
-  
-  # The subnet where the OpenShift nodes reside
   machine_network_cidr: "10.20.x.0/24" 
-  
-  # The gateway for the machine network
   gateway: "10.20.x.1"
-  
-  # Upstream DNS server. Leave empty ("") if managed_services.dns is true,
-  # as ShiftLaunch will act as the primary nameserver.
   nameserver: ""
-  
-  # External DNS servers for resolving public domains (e.g., quay.io)
   dns_forwarders:
     - "198.51.100.1"
     - "198.51.100.2"
@@ -125,39 +116,41 @@ network:
 # -----------------------------------------------------------------------------
 openshift:
   cluster_name: "<Cluster Name>"
-  version: "<Cluster Version>"
-  
-  # The base domain for the cluster.
-  # The cluster will be accessible at: https://api.<cluster_name>.<base_domain>:6443
+  version: "4.21"
   base_domain: "example.local"
-  
-  # SDN Configuration (OVNKubernetes default)
   cluster_network_cidr: "10.128.0.0/14"
   cluster_network_host_prefix: 23
   service_network: "172.30.0.0/16"
-  
-  # Path to your Red Hat pull secret (download from console.redhat.com)
   pull_secret_file: "./pull-secret.json"
-  
-  # Path to the SSH public key injected into the nodes (for 'core' user access)
   ssh_public_key_file: "~/.ssh/id_rsa.pub"
 {{if eq .BootMethod "netboot"}}
-  # RHCOS Images used for building the payloads (Required for Netboot/PXE)
   rhcos_images:
     kernel_url: "<URL>/rhcos-live-kernel.ppc64le"
     initramfs_url: "<URL>/rhcos-live-initramfs.ppc64le.img"
     rootfs_url: "<URL>/rhcos-live-rootfs.ppc64le.img"
 {{end}}
-  # OpenShift Install binaries
   ocp_client_config:
     ocp_client: "<URL>/openshift-client-linux.tar.gz"
     ocp_installer: "<URL>/openshift-install-linux.tar.gz"
 
+{{if .Disconnected}}
 # -----------------------------------------------------------------------------
-# 6. NODE TOPOLOGY (HMC Target LPARs)
+# 6. DISCONNECTED / AIRGAP CONFIGURATION
+# -----------------------------------------------------------------------------
+disconnected:
+  enabled: true
+  release_type: "official" # "official" (oc-mirror v2 IDMS) or "ci" (oc adm flat mirror)
+  
+  # If bringing your own registry instead of using ShiftLaunch's managed registry:
+  # registry_hostname: "harbor.mycompany.com" 
+  # local_repo: "openshift4/ocp4"
+  # registry_ca_file: "/path/to/harbor-ca.crt"
+{{end}}
+
+# -----------------------------------------------------------------------------
+# {{if .Disconnected}}7{{else}}6{{end}}. NODE TOPOLOGY (HMC Target LPARs)
 # -----------------------------------------------------------------------------
 nodes:
-  # Boot method: "agent" (Agent Installer) or "netboot" (Standard PXE UPI)
   boot_method: "{{.BootMethod}}"
 
 {{if .IsSNO}}
@@ -168,15 +161,12 @@ nodes:
       system_name: "SYSTEM-NAME"
 {{else}}
 {{- if eq .BootMethod "netboot"}}
-  # Netboot requires a dedicated bootstrap node to initialize the control plane
   bootstrap:
     - name: "bootstrap"
       ip: "10.20.x.11"
       existing_lpar_name: "<BOOTSTRAP-LPARNAME>"
       system_name: "SYSTEM-NAME"
 {{- end}}
-  
-  # Master nodes run the control plane (API, etcd). Minimum 3 required for HA.
   masters:
     - name: "master-0"
       ip: "10.20.x.12"
@@ -191,7 +181,6 @@ nodes:
       existing_lpar_name: "<MASTER2-LPARNAME>"
       system_name: "SYSTEM-NAME"
 
-  # Worker nodes run the application workloads. Optional.
   workers:
     - name: "worker-0"
       ip: "10.20.x.15"
@@ -201,44 +190,21 @@ nodes:
       ip: "10.20.x.16"
       existing_lpar_name: "<WORKER1-LPARNAME>"
       system_name: "SYSTEM-NAME"
-  
 {{end}}`
 
-const agentConfigTemplate = `# =============================================================================
-# ShiftLaunch Internal Daemon Configuration (agent.yaml)
-# =============================================================================
-# ShiftLaunch uses sensible internal defaults. If you need to override timeouts,
-# ports, or paths, modify this file. The binary will automatically detect it
-# if it is placed in the same directory from where the command is run.
-# =============================================================================
-
-network:
-  http_port: 8080
-
-paths:
-  workspace_dir: "/opt/shiftlaunch/clusters"
-  dnsmasq_conf_dir: "/etc/dnsmasq.d"
-  haproxy_conf_dir: "/etc/haproxy/conf.d"
-  httpd_doc_root: "/var/www/html"
-  tftp_root: "/var/lib/tftpboot"
-  install_device: "/dev/sda"
-
-timeouts:
-  hmc_api_retries: 3
-  download_timeout_sec: 1800
-`
-
+const agentConfigTemplate = `network:\n  http_port: 8080\n\npaths:\n  workspace_dir: \"/opt/shiftlaunch/clusters\"\n  dnsmasq_conf_dir: \"/etc/dnsmasq.d\"\n  haproxy_conf_dir: \"/etc/haproxy/conf.d\"\n  httpd_doc_root: \"/var/www/html\"\n  tftp_root: \"/var/lib/tftpboot\"\n  install_device: \"/dev/sda\"\n\ntimeouts:\n  hmc_api_retries: 3\n  download_timeout_sec: 1800\n`
+//TemplateData struct is used to pass data to the template
 type TemplateData struct {
-	IsSNO      bool
-	BootMethod string
+	IsSNO        bool
+	BootMethod   string
+	Disconnected bool
+	UseProxy     bool
 }
-
-// GenerateConfig writes a dynamically generated starter config.yaml based on the user's topology and boot preferences
-func GenerateConfig(configType, bootMethod, outputPath string) error {
+// GenerateConfig generates the config file for the agent
+func GenerateConfig(configType, bootMethod, outputPath string, disconnected, proxy bool) error {
 	configType = strings.ToLower(configType)
 	bootMethod = strings.ToLower(bootMethod)
 
-	// Validate inputs
 	if configType != "sno" && configType != "multi" {
 		return fmt.Errorf("invalid config type: '%s'. Must be 'sno' or 'multi'", configType)
 	}
@@ -246,17 +212,17 @@ func GenerateConfig(configType, bootMethod, outputPath string) error {
 		return fmt.Errorf("invalid boot method: '%s'. Must be 'agent' or 'netboot'", bootMethod)
 	}
 
-	// Safety check: Don't accidentally overwrite an existing cluster config
 	if _, err := os.Stat(outputPath); err == nil {
 		return fmt.Errorf("file '%s' already exists. Refusing to overwrite", outputPath)
 	}
 
 	data := TemplateData{
-		IsSNO:      configType == "sno",
-		BootMethod: bootMethod,
+		IsSNO:        configType == "sno",
+		BootMethod:   bootMethod,
+		Disconnected: disconnected,
+		UseProxy:     proxy,
 	}
 
-	// 1. Generate the Cluster Config (config.yaml)
 	tmpl, err := template.New("configGen").Parse(configTemplate)
 	if err != nil {
 		return fmt.Errorf("failed to parse config template: %w", err)
@@ -271,23 +237,18 @@ func GenerateConfig(configType, bootMethod, outputPath string) error {
 		return fmt.Errorf("failed to write configuration file: %w", err)
 	}
 
-	// Initialize console-only logger
 	log, _ := logger.New(false, "")
+	log.Info("Successfully generated cluster template", 
+		"topology", configType, 
+		"boot_method", bootMethod, 
+		"disconnected", disconnected, 
+		"proxy", proxy, 
+		"path", outputPath)
 
-	log.Info("Successfully generated cluster template", "topology", configType, "boot_method", bootMethod, "path", outputPath)
-
-	// 2. Generate the Daemon Config (agent.yaml) if it doesn't already exist
 	agentPath := "agent.yaml"
 	if _, err := os.Stat(agentPath); os.IsNotExist(err) {
-		if err := os.WriteFile(agentPath, []byte(agentConfigTemplate), 0644); err != nil {
-			log.Warn("Failed to generate agent.yaml", "error", err)
-		} else {
-			log.Info("Successfully generated internal daemon config template", "path", agentPath)
-		}
-	} else {
-		log.Info("Found existing agent.yaml in current directory, skipping generation")
+		_ = os.WriteFile(agentPath, []byte(agentConfigTemplate), 0644)
 	}
 
-	log.Info("Please edit these files with your specific infrastructure details before running the 'create' command.")
 	return nil
 }

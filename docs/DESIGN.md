@@ -13,7 +13,7 @@ ShiftLaunch is an end-to-end, stateful Go-based orchestration engine designed to
 The tool supports deploying both Single-Node OpenShift (SNO) and highly-available Multi-Node clusters. It dynamically provisions required network services (DNS, DHCP, PXE, NFS, HTTP, HAProxy) on a local controller node and handles infrastructure signaling (Power-On, Virtual Media Mapping, Netboot) directly via HMC REST APIs.
 
 ### Key CLI Capabilities
-- **`generate-config`**: Uses a native Go `text/template` engine to dynamically generate a well-documented starter YAML based on topology (`sno`/`multi`) and boot method (`iso`/`netboot`), automatically toggling required services.
+- **`generate-config`**: Uses a native Go `text/template` engine to dynamically generate a well-documented starter YAML based on topology (`sno`/`multi`) and boot method (`agent`/`netboot`), automatically toggling required services.
 - **`create`**: Executes the idempotent deployment state machine.
 - **`delete`**: Safely tears down a cluster with Intelligent Partial Failure tracking.
 - **`status`**: Displays credentials, endpoints, and `/etc/hosts` entries directly from the local workspace.
@@ -34,7 +34,7 @@ Instead of requiring separate VIPs for the Kubernetes API and Ingress, ShiftLaun
 *Impact:* Cuts required IP allocations by 50% and simplifies DNS records.
 
 ### B. Workspace Isolation & Credential Caching
-Every cluster is assigned an isolated directory at `/opt/shiftlaunch/clusters/<cluster-name>/`.
+Every cluster is assigned an agentlated directory at `/opt/shiftlaunch/clusters/<cluster-name>/`.
 This directory serves as the single source of truth for the cluster, storing:
 - The `config.yaml` used to deploy it.
 - The runtime state (`state.json`).
@@ -55,8 +55,8 @@ The orchestrator tracks its progression in `state.json`.
 
 ShiftLaunch supports two distinct provisioning mechanisms, toggleable via the `boot_method` configuration parameter.
 
-### A. Agent ISO Boot (`boot_method: "iso"`)
-The modern, network-isolated OpenShift Agent workflow. Highly recommended for production and disconnected environments.
+### A. Agent ISO Boot (`boot_method: "agent"`)
+The modern, network-agentlated OpenShift Agent workflow. Highly recommended for production and disconnected environments.
 1. **Payload Generation:** The Orchestrator builds an `agent-config.yaml` using static MAC-to-IP bindings (via NMState) and generates a self-contained OpenShift Agent ISO.
 2. **NFS Hosting:** A local NFS server is configured to export the ISO directory.
 3. **Virtual Media Mapping (LBYL):** ShiftLaunch mounts the NFS share to the IBM VIOS, registers the ISO as a Virtual Optical Media device, maps it to the target LPAR, and powers the LPAR on in standard `norm` boot mode.
@@ -80,7 +80,7 @@ The core logic lives in `orchestrator.go` and executes linearly, saving state af
 * **Phase 3: Managed Services:** Installs required Linux packages and opens firewall ports. Splits `dnsmasq` setup into highly granular `setup_dns`, `setup_dhcp`, and `setup_pxe` functions to ensure deterministic load ordering.
 * **Phase 4: Ignition Generation:** Uses `openshift-install` to create either standard Ignition files or an Agent ISO.
 * **Phase 5: Boot:** Iterates through all nodes and executes the HMC API sequence to power them on. 
-* **Phase 6: Wait:** Wraps `openshift-install wait-for` commands. **Crucially, this phase forcefully isolates the installer's stdout/stderr into memory buffers** to completely suppress terminal spam while cleanly passing the logs to the background deployment log file.
+* **Phase 6: Wait:** Wraps `openshift-install wait-for` commands. **Crucially, this phase forcefully agentlates the installer's stdout/stderr into memory buffers** to completely suppress terminal spam while cleanly passing the logs to the background deployment log file.
 * **Phase 7: Post-Install Cleanup:** *(ISO Only)* Detaches Virtual Optical Media from LPARs, deletes the ISO from the VIOS, unmounts the VIOS NFS share, and removes the local NFS export from the controller.
 
 ---
@@ -106,7 +106,7 @@ flowchart TD
     Start(["Start Deployment: shiftlaunch create"]) --> P0["Phase 0: Validation"]
     
     P0 --> P0_Check{"Boot Method?"}
-    P0_Check -- "iso" --> P0_ISO["Validate MACs\nSkip RHCOS URL checks"]
+    P0_Check -- "agent" --> P0_ISO["Validate MACs\nSkip RHCOS URL checks"]
     P0_Check -- "netboot" --> P0_Net["Validate RHCOS URLs"]
     
     P0_ISO --> P1["Phase 1: Pre-Flight & HMC Discovery"]
@@ -116,7 +116,7 @@ flowchart TD
 
     %% Phase 2
     P2 --> P2_Check{"Boot Method?"}
-    P2_Check -- "iso" --> P2_ISO["Skip RHCOS Image Downloads\nDownload OpenShift Tools only"]
+    P2_Check -- "agent" --> P2_ISO["Skip RHCOS Image Downloads\nDownload OpenShift Tools only"]
     P2_Check -- "netboot" --> P2_Net["Download RHCOS Kernel/Initramfs/Rootfs\nDownload OpenShift Tools"]
 
     P2_ISO --> P3["Phase 3: Managed Infrastructure Services"]
@@ -124,7 +124,7 @@ flowchart TD
 
     %% Phase 3
     P3 --> P3_Check{"Boot Method?"}
-    P3_Check -- "iso" --> P3_ISO["Install nfs-utils & nmstate\nOpen NFS Firewall Ports\nSkip DHCP/PXE Setup"]
+    P3_Check -- "agent" --> P3_ISO["Install nfs-utils & nmstate\nOpen NFS Firewall Ports\nSkip DHCP/PXE Setup"]
     P3_Check -- "netboot" --> P3_Net["Install httpd & tftp-server\nConfigure Granular DHCP & TFTP/PXE Service"]
 
     P3_ISO --> P4["Phase 4: Ignition Generation"]
@@ -132,7 +132,7 @@ flowchart TD
 
     %% Phase 4
     P4 --> P4_Check{"Boot Method?"}
-    P4_Check -- "iso" --> P4_ISO["Generate install-config.yaml & agent-config.yaml\nRun 'agent create image'\nSetup Local NFS Server"]
+    P4_Check -- "agent" --> P4_ISO["Generate install-config.yaml & agent-config.yaml\nRun 'agent create image'\nSetup Local NFS Server"]
     P4_Check -- "netboot" --> P4_Net["Generate install-config.yaml\nRun 'create ignition-configs'\nSetup HTTP Server & Stage Files"]
 
     P4_ISO --> P5["Phase 5: Initiating Cluster Boot"]
@@ -140,7 +140,7 @@ flowchart TD
 
     %% Phase 5
     P5 --> P5_Check{"Boot Method?"}
-    P5_Check -- "iso" --> P5_ISO["Mount Controller NFS on VIOS\nCreate Virtual Optical Media (ISO)\nMap ISO to LPAR\nPower On LPAR (BootMode: norm)"]
+    P5_Check -- "agent" --> P5_ISO["Mount Controller NFS on VIOS\nCreate Virtual Optical Media (ISO)\nMap ISO to LPAR\nPower On LPAR (BootMode: norm)"]
     P5_Check -- "netboot" --> P5_Net["Power Cycle LPAR to Open Firmware\nDiscover Base Location Code\nTry -T0 Suffix (Fallback to -T1)\nPower On LPAR (BootMode: netboot)"]
 
     P5_ISO --> P6["Phase 6: Waiting for Installation"]
@@ -148,7 +148,7 @@ flowchart TD
 
     %% Phase 6
     P6 --> P6_Check{"Boot Method?"}
-    P6_Check -- "iso" --> P6_ISO["Skip WaitForBootstrap\nRun 'agent wait-for install-complete' (Terminal output buffered)"]
+    P6_Check -- "agent" --> P6_ISO["Skip WaitForBootstrap\nRun 'agent wait-for install-complete' (Terminal output buffered)"]
     P6_Check -- "netboot" --> P6_Net["Run 'wait-for bootstrap-complete' (Terminal output buffered)\nRun 'wait-for install-complete' (Terminal output buffered)"]
 
     P6_ISO --> P7["Phase 7: Post-Install Cleanup & Caching"]

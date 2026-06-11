@@ -20,50 +20,51 @@ import (
 	"github.ibm.com/sudeeshjohn/shiftlaunch/types"
 )
 
+// Day2NodesConfig represents the configuration for Day 2 nodes
 type Day2NodesConfig struct {
 	Hosts []Day2Host `yaml:"hosts"`
 }
-
+// Day2Host represents the configuration for a Day 2 host
 type Day2Host struct {
 	Hostname        string            `yaml:"hostname"`
 	RootDeviceHints Day2DeviceHints   `yaml:"rootDeviceHints"`
 	Interfaces      []Day2Interface   `yaml:"interfaces"`
 	NetworkConfig   Day2NetworkConfig `yaml:"networkConfig"`
 }
-
+// Day2DeviceHints represents the hints for the root device
 type Day2DeviceHints struct {
 	DeviceName string `yaml:"deviceName"`
 }
-
+// Day2Interface represents the configuration for a Day 2 network interface
 type Day2Interface struct {
 	MacAddress string `yaml:"macAddress"`
 	Name       string `yaml:"name"`
 }
-
+// Day2NetworkConfig represents the configuration for Day 2 network
 type Day2NetworkConfig struct {
 	Interfaces  []Day2NetInterface `yaml:"interfaces"`
 	DNSResolver *Day2DNSResolver   `yaml:"dns-resolver,omitempty"`
 	Routes      *Day2Routes        `yaml:"routes,omitempty"`
 }
-
+// Day2DNSResolver represents the configuration for Day 2 DNS resolver
 type Day2DNSResolver struct {
 	Config Day2DNSConfig `yaml:"config"`
 }
-
+// Day2DNSConfig represents the configuration for Day 2 DNS
 type Day2DNSConfig struct {
 	Server []string `yaml:"server"`
 }
-
+// Day2Routes represents the configuration for Day 2 routes
 type Day2Routes struct {
 	Config []Day2RouteConfig `yaml:"config"`
 }
-
+// Day2RouteConfig represents the configuration for Day 2 routes
 type Day2RouteConfig struct {
 	Destination      string `yaml:"destination"`
 	NextHopAddress   string `yaml:"next-hop-address"`
 	NextHopInterface string `yaml:"next-hop-interface"`
 }
-
+// Day2NetInterface represents the configuration for Day 2 network interface
 type Day2NetInterface struct {
 	Name       string   `yaml:"name"`
 	Type       string   `yaml:"type"`
@@ -72,17 +73,17 @@ type Day2NetInterface struct {
 	Ipv4       Day2Ipv4 `yaml:"ipv4"`
 	Ipv6       Day2Ipv6 `yaml:"ipv6"`
 }
-
+// Day2Ipv6 represents the configuration for Day 2 IPv6
 type Day2Ipv6 struct {
 	Enabled bool `yaml:"enabled"`
 }
-
+// Day2Ipv4 represents the configuration for Day 2 IPv4
 type Day2Ipv4 struct {
 	Enabled bool       `yaml:"enabled"`
 	Address []Day2Addr `yaml:"address"`
 	Dhcp    bool       `yaml:"dhcp"`
 }
-
+// Day2Addr represents the configuration for Day 2 address
 type Day2Addr struct {
 	IP           string `yaml:"ip"`
 	PrefixLength int    `yaml:"prefix-length"`
@@ -94,11 +95,11 @@ var scaleCmd = &cobra.Command{
 	GroupID: "core",
 	RunE:    runScale,
 }
-
+// init scales the cluster by adding new worker nodes to the cluster.
 func init() {
 	rootCmd.AddCommand(scaleCmd)
 }
-
+// runScale scales the cluster by adding new worker nodes to the cluster.
 func runScale(cmd *cobra.Command, args []string) error {
 	// 1. Load active cluster configuration
 	cfg, daemonCfg, orch, err := loadConfig(true)
@@ -372,7 +373,7 @@ func runScale(cmd *cobra.Command, args []string) error {
 
 		if out, err := isoCmd.CombinedOutput(); err != nil {
 			log.EndPhase(false, "OpenShift node image compilation threw an unexpected exception")
-			return fmt.Errorf("node image compilation failed: %w\nOutput: %s\n\n[!] CRITICAL HINT: The initial KUBECONFIG created during deployment expires after 24 hours. If your cluster is older than a day, you must replace '%s' with a fresh cluster-admin kubeconfig to scale!", err, string(out), kubeconfigPath)
+			return fmt.Errorf("node image compilation failed: %w\noutput: %s\n\ncritical hint: the initial KUBECONFIG created during deployment expires after 24 hours; if your cluster is older than a day, you must replace '%s' with a fresh cluster-admin kubeconfig to scale", err, string(out), kubeconfigPath)
 		}
 		
 		generatedIso := filepath.Join(installDir, "node.ppc64le.iso")
@@ -449,7 +450,7 @@ func runScale(cmd *cobra.Command, args []string) error {
 	log.Info("=== Scale Operation Completed Successfully ===")
 	return nil
 }
-
+// contains function is for search a string in a slice of strings
 func contains(slice []string, item string) bool {
 	for _, s := range slice {
 		if s == item {

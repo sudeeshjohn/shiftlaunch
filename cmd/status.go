@@ -11,7 +11,7 @@ import (
 	"github.ibm.com/sudeeshjohn/shiftlaunch/types"
 )
 
-var infoJson bool
+var infoJSON bool
 
 var infoCmd = &cobra.Command{
 	Use:     "info",
@@ -27,12 +27,12 @@ The info command shows:
 - Credentials and access information`,
 	RunE: runInfo,
 }
-
+// init function is for initializing the command
 func init() {
 	rootCmd.AddCommand(infoCmd)
-	infoCmd.Flags().BoolVar(&infoJson, "json", false, "Output curated cluster info in JSON format")
+	infoCmd.Flags().BoolVar(&infoJSON, "json", false, "Output curated cluster info in JSON format")
 }
-
+// runInfo function is for running the info command
 func runInfo(cmd *cobra.Command, args []string) error {
 	// Grab daemonCfg so we can accurately resolve the workspace directory for the credentials
 	cfg, daemonCfg, orch, err := loadConfig(true)
@@ -45,7 +45,7 @@ func runInfo(cmd *cobra.Command, args []string) error {
 	log := orch.GetLogger()
 
 	// INTERCEPT: If --json is passed, construct a curated API-style JSON object
-	if infoJson {
+	if infoJSON {
 		stateManager := types.NewStateManager(cfg.OpenShift.ClusterName)
 		state, err := stateManager.LoadState()
 		if err != nil {
