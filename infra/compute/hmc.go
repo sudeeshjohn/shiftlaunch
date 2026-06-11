@@ -1329,8 +1329,19 @@ func (h *HMCProvider) bootNodesWithISOBulk(ctx context.Context) error {
 		h.logger.Info("✅ Bulk ISO mapping completed successfully")
 	}
 
-	// Persist ISO configurations to State
-	state.ISOMappings = h.isoMappings
+	// Persist ISO configurations to State (Safely append without overwriting Day-1)
+	for _, newMapping := range h.isoMappings {
+		exists := false
+		for _, existingMapping := range state.ISOMappings {
+			if existingMapping.NodeName == newMapping.NodeName {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			state.ISOMappings = append(state.ISOMappings, newMapping)
+		}
+	}
 	state.VIOSAdminUsername = viosUsername
 	state.VIOSAdminPassword = viosPassword
 	state.VIOSAdminCreated = viosUserCreated
