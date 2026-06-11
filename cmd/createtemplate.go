@@ -12,12 +12,15 @@ import (
 )
 
 var (
-	genConfigType   string
-	genBootMethod   string
-	genOutputPath   string
-	genDisconnected bool
-	genProxy        bool
-	genReleaseType  string
+	genConfigType       string
+	genBootMethod       string
+	genOutputPath       string
+	genDisconnected     bool
+	genReleaseType      string
+	genProxy            bool
+	genExternalProxy    bool
+	genRegistry         bool // Standalone managed registry flag
+	genExternalRegistry bool
 )
 
 var generateConfigCmd = &cobra.Command{
@@ -25,15 +28,18 @@ var generateConfigCmd = &cobra.Command{
 	Short:   "Create a starter config.yaml template",
 	GroupID: "utils",
 	Long: `Creates a starter configuration template based on topology, boot method, and network environment.
-The create-template command creates:
-- A cluster configuration file (config.yaml)
-- An agent daemon configuration file (agent.yaml) if it doesn't exist
 
-Supported network environments:
-- Standard Connected: No extra flags
-- Corporate Proxy:    --proxy
-- Strict Airgap:      --disconnected
-- Soft Airgap:        --disconnected --proxy`,
+NETWORK ARCHITECTURE MATRIX:
+  Standard Connected:   (No flags)
+  Strict Airgap:        --disconnected (Auto-enables managed registry)
+  
+PROXY CONTROLS:
+  Managed Squid Proxy:  --proxy
+  External Corp Proxy:  --external-proxy
+
+REGISTRY CONTROLS:
+  Managed Registry:     --registry (Useful for connected caching)
+  External Registry:    --external-registry`,
 	RunE: runGenerateConfig,
 }
 
@@ -43,49 +49,114 @@ func init() {
 	generateConfigCmd.Flags().StringVarP(&genConfigType, "type", "t", "sno", "Cluster topology: 'sno' or 'multi'")
 	generateConfigCmd.Flags().StringVarP(&genBootMethod, "boot", "b", "agent", "Boot method: 'agent' or 'netboot'")
 	generateConfigCmd.Flags().StringVarP(&genOutputPath, "output", "o", "config.yaml", "Path to save the generated file")
+	generateConfigCmd.Flags().StringVar(&genReleaseType, "release-type", "official", "Payload type: 'official' or 'ci'")
+
+	// Network Boundary
+	generateConfigCmd.Flags().BoolVarP(&genDisconnected, "disconnected", "a", false, "Generate a template for a strictly disconnected/airgapped environment")
 	
-	// Network Architecture Flags
-	generateConfigCmd.Flags().BoolVarP(&genDisconnected, "disconnected", "a", false, "Generate a template for a disconnected/airgapped environment")
-	generateConfigCmd.Flags().BoolVarP(&genProxy, "proxy", "p", false, "Enable local or corporate proxy management in the template")
-  generateConfigCmd.Flags().StringVarP(&genReleaseType, "release-type", "r", "official", "Payload type: 'official' or 'ci'")
+	// Proxy Toggles
+	generateConfigCmd.Flags().BoolVarP(&genProxy, "proxy", "p", false, "Enable local managed Squid proxy")
+	generateConfigCmd.Flags().BoolVar(&genExternalProxy, "external-proxy", false, "Use an external corporate proxy")
+
+	// Registry Toggles
+	generateConfigCmd.Flags().BoolVar(&genRegistry, "registry", false, "Enable local managed Podman registry")
+	generateConfigCmd.Flags().BoolVar(&genExternalRegistry, "external-registry", false, "Use an external enterprise registry")
 }
 
 func runGenerateConfig(cmd *cobra.Command, args []string) error {
-	return GenerateConfig(genConfigType, genBootMethod, genOutputPath, genDisconnected, genProxy)
+	configType := strings.ToLower(genConfigType)
+	bootMethod := strings.ToLower(genBootMethod)
+
+	if configType != "sno" && configType != "multi" {
+		return fmt.Errorf("invalid config type: '%s'. Must be 'sno' or 'multi'", configType)
+	}
+	if bootMethod != "agent" && bootMethod != "netboot" {
+		return fmt.Errorf("invalid boot method: '%s'. Must be 'agent' or 'netboot'", bootMethod)
+	}
+
+	if _, err := os.Stat(genOutputPath); err == nil {
+		return fmt.Errorf("file '%s' already exists. Refusing to overwrite", genOutputPath)
+	}
+
+	// FAIL FAST: Prevent Proxy contradictions
+	if genProxy && genExternalProxy {
+		return fmt.Errorf("cannot specify both --proxy (managed) and --external-proxy. Choose one")
+	}
+
+	// FAIL FAST: Prevent Registry contradictions
+	if genRegistry && genExternalRegistry {
+		return fmt.Errorf("cannot specify both --registry (managed) and --external-registry. Choose one")
+	}
+
+	// SMART DEFAULTS: 
+	// If disconnected is passed, auto-enable the managed registry UNLESS they brought their own
+	manageRegistry := genRegistry || (genDisconnected && !genExternalRegistry)
+
+	data := TemplateData{
+		IsSNO:          configType == "sno",
+		BootMethod:     bootMethod,
+		Disconnected:   genDisconnected,
+		ManageProxy:    genProxy,
+		ExtProxy:       genExternalProxy,
+		ManageRegistry: manageRegistry,
+		ExtRegistry:    genExternalRegistry,
+		ReleaseType:    genReleaseType,
+	}
+
+	tmpl, err := template.New("configGen").Parse(configTemplate)
+	if err != nil {
+		return fmt.Errorf("failed to parse config template: %w", err)
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return fmt.Errorf("failed to generate template output: %w", err)
+	}
+
+	if err := os.WriteFile(genOutputPath, buf.Bytes(), 0644); err != nil {
+		return fmt.Errorf("failed to write configuration file: %w", err)
+	}
+
+	log, _ := logger.New(false, "")
+	log.Info("Successfully generated cluster template", "path", genOutputPath)
+
+	agentPath := "agent.yaml"
+	if _, err := os.Stat(agentPath); os.IsNotExist(err) {
+		_ = os.WriteFile(agentPath, []byte(agentConfigTemplate), 0644)
+	}
+	return nil
+}
+// TemplateData is a struct that holds the data used to generate the configuration template.
+type TemplateData struct {
+	IsSNO          bool
+	BootMethod     string
+	Disconnected   bool
+	ManageProxy    bool
+	ExtProxy       bool
+	ManageRegistry bool
+	ExtRegistry    bool
+	ReleaseType    string
 }
 
 const configTemplate = `# =============================================================================
 # ShiftLaunch Agent Configuration Template
 # Topology: {{if .IsSNO}}SNO (Single Node OpenShift){{else}}Multi-Node Cluster{{end}}
 # Boot Method: {{if eq .BootMethod "agent"}}Agent Installer{{else}}Network Boot (PXE){{end}}
-# Environment: {{if and .Disconnected .UseProxy}}Soft Airgap (Disconnected + Proxy){{else if .Disconnected}}Strict Airgap (Disconnected, No Outbound){{else if .UseProxy}}Connected with Proxy{{else}}Standard Connected{{end}}
 # =============================================================================
 
 # -----------------------------------------------------------------------------
 # 1. MANAGED SERVICES (The "Who")
-# Tell the Agent which services to install and manage locally on this machine.
 # -----------------------------------------------------------------------------
 managed_services:
-  # Setup local dnsmasq to answer for the cluster domain (api, *.apps, etc.)
   dns: true
-  
-  # Setup local DHCP to assign static IPs to LPARs based on MAC addresses
   dhcp: {{if eq .BootMethod "agent"}}false{{else}}true{{end}}
-  
-  # Setup local TFTP server (Required for Netboot, ignored for Agent boot)
   pxe: {{if eq .BootMethod "netboot"}}true{{else}}false{{end}}
-  
-  # Setup local HAProxy to route traffic for the loadbalancer_ip (VIP)
   load_balancer: true
-  
-  # Setup local NFS server to host Agent images to the VIOS (Required for Agent boot)
   nfs: {{if eq .BootMethod "agent"}}true{{else}}false{{end}}
 
-  # Setup local Squid proxy for controlled outbound or internet routing
-  proxy: {{if .UseProxy}}true{{else}}false{{end}}
-  
-  # Setup local Podman container registry for airgapped mirroring
-  registry: {{if .Disconnected}}true{{else}}false{{end}}
+  # Network Boundary Controls
+  proxy: {{if .ManageProxy}}true{{else}}false{{end}}
+  registry: {{if .ManageRegistry}}true{{else}}false{{end}}
 
 # -----------------------------------------------------------------------------
 # 2. CONTROLLER NODE (The "Where")
@@ -111,7 +182,6 @@ network:
   nameserver: ""
   dns_forwarders:
     - "198.51.100.1"
-    - "198.51.100.2"
 
 # -----------------------------------------------------------------------------
 # 5. OPENSHIFT CLUSTER SETTINGS
@@ -119,7 +189,7 @@ network:
 openshift:
   cluster_name: "<Cluster Name>"
   version: "4.21"
-  release_type: "{{.ReleaseType}}" # "official" (oc-mirror v2 IDMS) or "ci" (oc adm flat mirror)
+  release_type: "{{.ReleaseType}}" # "official" or "ci"
   base_domain: "example.local"
   cluster_network_cidr: "10.128.0.0/14"
   cluster_network_host_prefix: 23
@@ -135,26 +205,48 @@ openshift:
   ocp_client_config:
     ocp_client: "<URL>/openshift-client-linux.tar.gz"
     ocp_installer: "<URL>/openshift-install-linux.tar.gz"
+{{- if and .ManageRegistry (eq .ReleaseType "official")}}
+    ocp_mirror_client: "<URL>/oc-mirror.tar.gz"
+{{- end}}
 
 {{if .Disconnected}}
 # -----------------------------------------------------------------------------
-# 6. DISCONNECTED / AIRGAP CONFIGURATION
+# DISCONNECTED / AIRGAP CONFIGURATION
 # -----------------------------------------------------------------------------
 disconnected:
   enabled: true
+{{- if .ExtRegistry}}
   
+  # EXTERNAL REGISTRY ENABLED: Provide your enterprise registry details below:
+  registry_hostname: "harbor.mycompany.com" 
+  local_repo: "openshift4/ocp4"
+  # registry_ca_file: "/path/to/harbor-ca.crt" # Uncomment if using a self-signed CA
+{{- else}}
+
   # If bringing your own registry instead of using ShiftLaunch's managed registry:
   # registry_hostname: "harbor.mycompany.com" 
   # local_repo: "openshift4/ocp4"
   # registry_ca_file: "/path/to/harbor-ca.crt"
+{{- end}}
+{{end}}
+
+{{if .ExtProxy}}
+# -----------------------------------------------------------------------------
+# EXTERNAL PROXY CONFIGURATION
+# -----------------------------------------------------------------------------
+external_proxy:
+  # Provide your corporate proxy details below:
+  http_proxy: "http://proxy.mycompany.com:8080"
+  https_proxy: "http://proxy.mycompany.com:8080"
+  # Provide a comma-separated list of domains/IPs to bypass the proxy
+  no_proxy: "127.0.0.1,localhost,.example.local,10.20.x.0/24"
 {{end}}
 
 # -----------------------------------------------------------------------------
-# {{if .Disconnected}}7{{else}}6{{end}}. NODE TOPOLOGY (HMC Target LPARs)
+# NODE TOPOLOGY (HMC Target LPARs)
 # -----------------------------------------------------------------------------
 nodes:
   boot_method: "{{.BootMethod}}"
-
 {{if .IsSNO}}
   sno:
     - name: "sno-0"
@@ -182,77 +274,26 @@ nodes:
       ip: "10.20.x.14"
       existing_lpar_name: "<MASTER2-LPARNAME>"
       system_name: "SYSTEM-NAME"
-
   workers:
     - name: "worker-0"
       ip: "10.20.x.15"
       existing_lpar_name: "<WORKER0-LPARNAME>"
       system_name: "SYSTEM-NAME"
-    - name: "worker-1"
-      ip: "10.20.x.16"
-      existing_lpar_name: "<WORKER1-LPARNAME>"
-      system_name: "SYSTEM-NAME"
 {{end}}`
 
-const agentConfigTemplate = `network:\n  http_port: 8080\n\npaths:\n  workspace_dir: \"/opt/shiftlaunch/clusters\"\n  dnsmasq_conf_dir: \"/etc/dnsmasq.d\"\n  haproxy_conf_dir: \"/etc/haproxy/conf.d\"\n  httpd_doc_root: \"/var/www/html\"\n  tftp_root: \"/var/lib/tftpboot\"\n  install_device: \"/dev/sda\"\n\ntimeouts:\n  hmc_api_retries: 3\n  download_timeout_sec: 1800\n`
-//TemplateData struct is used to pass data to the template
-type TemplateData struct {
-	IsSNO        bool
-	BootMethod   string
-	Disconnected bool
-	UseProxy     bool
-	ReleaseType  string
-}
-// GenerateConfig generates the config file for the agent
-func GenerateConfig(configType, bootMethod, outputPath string, disconnected, proxy bool) error {
-	configType = strings.ToLower(configType)
-	bootMethod = strings.ToLower(bootMethod)
+const agentConfigTemplate = `network:
+  http_port: 8080
 
-	if configType != "sno" && configType != "multi" {
-		return fmt.Errorf("invalid config type: '%s'. Must be 'sno' or 'multi'", configType)
-	}
-	if bootMethod != "agent" && bootMethod != "netboot" {
-		return fmt.Errorf("invalid boot method: '%s'. Must be 'agent' or 'netboot'", bootMethod)
-	}
+paths:
+  workspace_dir: "/opt/shiftlaunch/clusters"
+  dnsmasq_conf_dir: "/etc/dnsmasq.d"
+  haproxy_conf_dir: "/etc/haproxy/conf.d"
+  httpd_doc_root: "/var/www/html"
+  tftp_root: "/var/lib/tftpboot"
+  install_device: "/dev/sda"
 
-	if _, err := os.Stat(outputPath); err == nil {
-		return fmt.Errorf("file '%s' already exists. Refusing to overwrite", outputPath)
-	}
+timeouts:
+  hmc_api_retries: 3
+  download_timeout_sec: 1800
+`
 
-	data := TemplateData{
-		IsSNO:        configType == "sno",
-		BootMethod:   bootMethod,
-		Disconnected: disconnected,
-		UseProxy:     proxy,
-		ReleaseType:  genReleaseType,
-	}
-
-	tmpl, err := template.New("configGen").Parse(configTemplate)
-	if err != nil {
-		return fmt.Errorf("failed to parse config template: %w", err)
-	}
-
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
-		return fmt.Errorf("failed to generate template output: %w", err)
-	}
-
-	if err := os.WriteFile(outputPath, buf.Bytes(), 0644); err != nil {
-		return fmt.Errorf("failed to write configuration file: %w", err)
-	}
-
-	log, _ := logger.New(false, "")
-	log.Info("Successfully generated cluster template", 
-		"topology", configType, 
-		"boot_method", bootMethod, 
-		"disconnected", disconnected, 
-		"proxy", proxy, 
-		"path", outputPath)
-
-	agentPath := "agent.yaml"
-	if _, err := os.Stat(agentPath); os.IsNotExist(err) {
-		_ = os.WriteFile(agentPath, []byte(agentConfigTemplate), 0644)
-	}
-
-	return nil
-}

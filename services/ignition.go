@@ -309,14 +309,19 @@ func generateInstallConfigYAML(cfg *types.AgentConfig, workspaceDir string) (str
 	}
 
 	// Add proxy configuration if enabled
-	if data.UseProxy {
-		data.ProxyURL = fmt.Sprintf("http://%s:3128", cfg.Controller.IP)
-		// THE FIX: Add the specific wildcards to ensure the nodes never route internal cluster lookups through Squid
-		data.NoProxy = fmt.Sprintf("127.0.0.1,localhost,%s,%s,.%s,%s",
-			cfg.Network.MachineCIDR,
-			cfg.Controller.IP,
-			cfg.OpenShift.BaseDomain,
-			cfg.Network.LoadBalancerIP)
+	if cfg.ManagedServices.Proxy || cfg.ExternalProxy.HTTPProxy != "" {
+		data.UseProxy = true
+		if cfg.ManagedServices.Proxy {
+			data.ProxyURL = fmt.Sprintf("http://%s:3128", cfg.Controller.IP)
+			data.NoProxy = fmt.Sprintf("127.0.0.1,localhost,%s,%s,.%s,%s",
+				cfg.Network.MachineCIDR,
+				cfg.Controller.IP,
+				cfg.OpenShift.BaseDomain,
+				cfg.Network.LoadBalancerIP)
+		} else {
+			data.ProxyURL = cfg.ExternalProxy.HTTPProxy
+			data.NoProxy = cfg.ExternalProxy.NoProxy
+		}
 	}
 
 	var buf bytes.Buffer
@@ -389,10 +394,16 @@ func generateAgentISO(ctx context.Context, cfg *types.AgentConfig, exec *localex
 	
 	cmdStr := fmt.Sprintf("cd %s && %s agent create image --dir=. --log-level=info", targetDir, installerPath)
 	
-	if cfg.ManagedServices.Proxy {
-		proxyURL := fmt.Sprintf("http://%s:3128", cfg.Controller.IP)
-		noProxy := fmt.Sprintf("localhost,127.0.0.1,%s,%s,.%s.%s",
-			cfg.Network.MachineCIDR, cfg.Controller.IP, cfg.OpenShift.ClusterName, cfg.OpenShift.BaseDomain)
+	if cfg.ManagedServices.Proxy || cfg.ExternalProxy.HTTPProxy != "" {
+		var proxyURL, noProxy string
+		if cfg.ManagedServices.Proxy {
+			proxyURL = fmt.Sprintf("http://%s:3128", cfg.Controller.IP)
+			noProxy = fmt.Sprintf("localhost,127.0.0.1,%s,%s,.%s.%s",
+				cfg.Network.MachineCIDR, cfg.Controller.IP, cfg.OpenShift.ClusterName, cfg.OpenShift.BaseDomain)
+		} else {
+			proxyURL = cfg.ExternalProxy.HTTPProxy
+			noProxy = cfg.ExternalProxy.NoProxy
+		}
 		cmdStr = fmt.Sprintf("export HTTP_PROXY=%s HTTPS_PROXY=%s NO_PROXY='%s' && ", proxyURL, proxyURL, noProxy) + cmdStr
 	}
 	

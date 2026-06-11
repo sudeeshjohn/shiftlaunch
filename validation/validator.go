@@ -79,6 +79,7 @@ func (v *Validator) Validate(ctx context.Context) error {
 	v.validateHMC()
 	v.validateNetwork(ctx)
 	v.validateOpenShift()
+	v.validateDisconnected()
 	v.validateNodes()
 
 	v.log.EndPhase(true, "[Check 1/4] Configuration valid")
@@ -186,6 +187,26 @@ func (v *Validator) validateNetwork(ctx context.Context) {
 		v.errors = append(v.errors, "network.machine_network_cidr is required")
 	} else if !v.isValidCIDR(n.MachineCIDR) {
 		v.errors = append(v.errors, fmt.Sprintf("network.machine_network_cidr '%s' is not a valid CIDR", n.MachineCIDR))
+	}
+
+	// Parse CIDR for subnet validation
+	_, ipNet, err := net.ParseCIDR(n.MachineCIDR)
+	if err == nil {
+		// Validate gateway is within machine CIDR
+		if n.Gateway != "" {
+			gwIP := net.ParseIP(n.Gateway)
+			if gwIP == nil || !ipNet.Contains(gwIP) {
+				v.errors = append(v.errors, fmt.Sprintf("network.gateway '%s' is not within the machine_network_cidr '%s'", n.Gateway, n.MachineCIDR))
+			}
+		}
+		
+		// Validate VIP is within machine CIDR
+		if n.LoadBalancerIP != "" {
+			vipIP := net.ParseIP(n.LoadBalancerIP)
+			if vipIP == nil || !ipNet.Contains(vipIP) {
+				v.errors = append(v.errors, fmt.Sprintf("network.loadbalancer_ip '%s' is not within the machine_network_cidr '%s'", n.LoadBalancerIP, n.MachineCIDR))
+			}
+		}
 	}
 
 	if n.Gateway == "" {
@@ -309,6 +330,11 @@ func (v *Validator) validateOpenShift() {
 		v.errors = append(v.errors, "openshift.version is required")
 	}
 
+	// Validate strict enum for Release Type
+	if o.ReleaseType != "official" && o.ReleaseType != "ci" {
+		v.errors = append(v.errors, fmt.Sprintf("openshift.release_type must be either 'official' or 'ci', got '%s'", o.ReleaseType))
+	}
+
 	if o.PullSecretFile == "" {
 		v.errors = append(v.errors, "openshift.pull_secret_file is required")
 	} else {
@@ -384,11 +410,62 @@ func (v *Validator) validateChecksum(checksum, fieldName string) {
 	}
 }
 
+// validateDisconnected ensures airgap properties are logically sound
+func (v *Validator) validateDisconnected() {
+	if !v.cfg.DisconnectedConfig.Enabled {
+		return
+	}
+
+	// If they are disconnected, they MUST either let ShiftLaunch manage the registry/proxy,
+	// OR they must explicitly provide an external registry.
+	if !v.cfg.ManagedServices.Registry {
+		if v.cfg.DisconnectedConfig.RegistryHostname == "" {
+			v.errors = append(v.errors, "disconnected mode is enabled, but managed_services.registry is false. You must provide an external disconnected.registry_hostname")
+		}
+		if v.cfg.DisconnectedConfig.LocalRepo == "" {
+			v.errors = append(v.errors, "disconnected mode is enabled, but managed_services.registry is false. You must provide an external disconnected.local_repo")
+		}
+	}
+}
+
 // validateNodes validates node configuration
 func (v *Validator) validateNodes() {
 	// 🛡️ FIX: Enforce NFS requirement for Agent boot
 	if v.cfg.Nodes.BootMethod == "agent" && !v.cfg.ManagedServices.NFS {
 		v.errors = append(v.errors, "managed_services.nfs MUST be true when using boot_method: 'agent'. ShiftLaunch requires local NFS to transfer the generated Agent ISO to the VIOS.")
+	}
+
+	// Track uniqueness to prevent copy-paste errors
+	seenIPs := make(map[string]string)
+	seenHosts := make(map[string]string)
+	seenLPARs := make(map[string]string)
+
+	_, ipNet, _ := net.ParseCIDR(v.cfg.Network.MachineCIDR)
+
+	for _, node := range v.cfg.GetAllNodes() {
+		// 1. Uniqueness Checks
+		if existing, ok := seenIPs[node.IP]; ok {
+			v.errors = append(v.errors, fmt.Sprintf("duplicate IP detected: '%s' is used by both '%s' and '%s'", node.IP, existing, node.Hostname))
+		}
+		seenIPs[node.IP] = node.Hostname
+
+		if _, ok := seenHosts[node.Hostname]; ok {
+			v.errors = append(v.errors, fmt.Sprintf("duplicate hostname detected: '%s' is defined multiple times", node.Hostname))
+		}
+		seenHosts[node.Hostname] = node.Hostname
+
+		if existing, ok := seenLPARs[node.ExistingLPARName]; ok {
+			v.errors = append(v.errors, fmt.Sprintf("duplicate LPAR target detected: '%s' is targeted by both '%s' and '%s'", node.ExistingLPARName, existing, node.Hostname))
+		}
+		seenLPARs[node.ExistingLPARName] = node.Hostname
+
+		// 2. Subnet Verification
+		if ipNet != nil {
+			nodeIP := net.ParseIP(node.IP)
+			if nodeIP != nil && !ipNet.Contains(nodeIP) {
+				v.errors = append(v.errors, fmt.Sprintf("node IP '%s' (%s) is outside the defined machine_network_cidr '%s'", node.IP, node.Hostname, v.cfg.Network.MachineCIDR))
+			}
+		}
 	}
 
 	if v.cfg.IsSNO() {
@@ -521,6 +598,15 @@ func (v *Validator) validateMultiNodeCluster() {
 // ============================================================================
 
 func (v *Validator) validateLocalEnvironment(ctx context.Context) {
+	// NEW: Validate the physical interface actually exists on this host
+	iface := v.cfg.Controller.NetworkInterface
+	if iface != "" {
+		checkCmd := fmt.Sprintf("ip link show %s >/dev/null 2>&1 && echo 'exists' || echo 'missing'", iface)
+		if out, err := v.exec.Execute(ctx, checkCmd); err == nil && strings.TrimSpace(out) == "missing" {
+			v.errors = append(v.errors, fmt.Sprintf("FATAL: controller.network_interface '%s' does not exist on this machine. Run 'ip a' to find the correct interface", iface))
+		}
+	}
+
 	// Check for sufficient disk space locally (must have at least 10GB free)
 	v.validateLocalDiskSpace(ctx)
 

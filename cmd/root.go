@@ -165,17 +165,26 @@ func loadConfig(requireConfig bool) (*types.AgentConfig, *config.AgentDaemonConf
 	}
 
 	// ========================================================================
-	// STRICT AIRGAP ENFORCEMENT
-	// If the user disabled the proxy, actively sanitize the Go runtime environment
-	// to prevent terminal ghost variables from breaking child processes.
+	// STRICT AIRGAP ENFORCEMENT & EXTERNAL PROXY INJECTION
 	// ========================================================================
-	if !cfg.ManagedServices.Proxy {
+	if !cfg.ManagedServices.Proxy && cfg.ExternalProxy.HTTPProxy == "" {
+		// Strict Airgap: Scrub environment to prevent terminal ghost variables
 		proxyVars := []string{
 			"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
 			"ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy",
 		}
 		for _, envVar := range proxyVars {
 			os.Unsetenv(envVar)
+		}
+	} else if cfg.ExternalProxy.HTTPProxy != "" {
+		// Apply external proxy to the ShiftLaunch process so tools like oc-mirror can use it
+		os.Setenv("HTTP_PROXY", cfg.ExternalProxy.HTTPProxy)
+		os.Setenv("HTTPS_PROXY", cfg.ExternalProxy.HTTPSProxy)
+		os.Setenv("http_proxy", cfg.ExternalProxy.HTTPProxy)
+		os.Setenv("https_proxy", cfg.ExternalProxy.HTTPSProxy)
+		if cfg.ExternalProxy.NoProxy != "" {
+			os.Setenv("NO_PROXY", cfg.ExternalProxy.NoProxy)
+			os.Setenv("no_proxy", cfg.ExternalProxy.NoProxy)
 		}
 	}
 	// ========================================================================

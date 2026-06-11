@@ -4,6 +4,13 @@ import (
 	"fmt"
 )
 
+// ProxyConfig defines an external corporate proxy
+type ProxyConfig struct {
+	HTTPProxy  string `yaml:"http_proxy,omitempty"`
+	HTTPSProxy string `yaml:"https_proxy,omitempty"`
+	NoProxy    string `yaml:"no_proxy,omitempty"`
+}
+
 // AgentConfig represents the root of the shiftlaunch config.yaml
 type AgentConfig struct {
 	ManagedServices    ManagedServicesConfig    `yaml:"managed_services"`
@@ -13,6 +20,7 @@ type AgentConfig struct {
 	OpenShift          OpenShiftConfig          `yaml:"openshift"`
 	Nodes              ClusterNodesConfig       `yaml:"nodes"`
 	DisconnectedConfig DisconnectedConfig       `yaml:"disconnected,omitempty"`
+	ExternalProxy      ProxyConfig              `yaml:"external_proxy,omitempty"`
 }
 
 // ManagedServicesConfig defines which infrastructure services are managed locally by ShiftLaunch
