@@ -369,6 +369,17 @@ func generateAgentISO(ctx context.Context, cfg *types.AgentConfig, exec *localex
 	}
 	// ========================================================================
 
+	// ========================================================================
+	// CI / NIGHTLY DISCONNECTED INJECTION
+	// Inject the Insecure Policy to bypass Signature Validation for raw CI builds
+	// ========================================================================
+	if cfg.DisconnectedConfig.Enabled && cfg.DisconnectedConfig.ReleaseType == "ci" {
+		if err := injectInsecurePolicy(targetDir); err != nil {
+			return fmt.Errorf("failed to inject insecure policy into Agent ISO: %w", err)
+		}
+	}
+	// ========================================================================
+
 	// 3. Run openshift-install agent create image
 	toolsDir := filepath.Join(workspaceDir, "tools")
 	installerPath := filepath.Join(toolsDir, "openshift-install")
