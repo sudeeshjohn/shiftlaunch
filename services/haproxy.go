@@ -78,14 +78,11 @@ listen {{.ClusterName}}-ingress-http
 {{- if .IsSNO}}
     server {{.SNONode.Hostname}}-http {{.SNONode.IP}}:80 check
 {{- else}}
-{{- if .Workers}}
-{{- range .Workers}}
-    server {{.Hostname}}-http-router0 {{.IP}}:80 check
-{{- end}}
-{{- else}}
 {{- range .Masters}}
     server {{.Hostname}}-http-router0 {{.IP}}:80 check
 {{- end}}
+{{- range .Workers}}
+    server {{.Hostname}}-http-router0 {{.IP}}:80 check
 {{- end}}
 {{- end}}
 
@@ -98,14 +95,11 @@ listen {{.ClusterName}}-ingress-https
 {{- if .IsSNO}}
     server {{.SNONode.Hostname}}-https {{.SNONode.IP}}:443 check
 {{- else}}
-{{- if .Workers}}
-{{- range .Workers}}
-    server {{.Hostname}}-https-router0 {{.IP}}:443 check
-{{- end}}
-{{- else}}
 {{- range .Masters}}
     server {{.Hostname}}-https-router0 {{.IP}}:443 check
 {{- end}}
+{{- range .Workers}}
+    server {{.Hostname}}-https-router0 {{.IP}}:443 check
 {{- end}}
 {{- end}}
 `
