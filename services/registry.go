@@ -87,11 +87,11 @@ func (r *RegistryManager) Setup(ctx context.Context, workspaceDir string) error 
 	r.logger.Debug("Checking for existing SSL certificates...")
 	if _, err := r.executor.Execute(shieldedCtx, "test -f /opt/registry/certs/domain.crt"); err != nil {
 		r.logger.Debug("Generating all-inclusive multi-SAN SSL certificates...")
-		
+
 		// Dynamically assemble all possible identity aliases the cluster components will use
 		sanDNS := fmt.Sprintf("DNS:%s", registryHost)
-		sanIP := fmt.Sprintf("IP:%s,IP:127.0.0.1", r.cfg.Controller.IP)
-		
+		sanIP := fmt.Sprintf("IP:%s,IP:127.0.0.1", r.cfg.Network.ControllerIP)
+
 		// Fallback alias for cluster-scoped routing strings
 		if r.cfg.OpenShift.ClusterName != "" && r.cfg.OpenShift.BaseDomain != "" {
 			clusterFQDN := fmt.Sprintf("registry.%s.%s", r.cfg.OpenShift.ClusterName, r.cfg.OpenShift.BaseDomain)
@@ -121,9 +121,9 @@ func (r *RegistryManager) Setup(ctx context.Context, workspaceDir string) error 
 
 	// 3. Create or update htpasswd authentication
 	r.logger.Debug("Configuring registry authentication...")
-	username := r.cfg.DisconnectedConfig.RegistryUsername
-	password := r.cfg.DisconnectedConfig.RegistryPassword
-	
+	username := r.cfg.Services.Registry.Username
+	password := r.cfg.Services.Registry.Password
+
 	//  Use -c to create only if the file doesn't exist. Otherwise, just append/update!
 	authFlag := "-bBc"
 	if _, err := r.executor.Execute(shieldedCtx, "test -f /opt/registry/auth/htpasswd"); err == nil {
@@ -160,17 +160,17 @@ func (r *RegistryManager) Setup(ctx context.Context, workspaceDir string) error 
 		r.logger.Info("Local registry is already active. Reusing existing container.")
 	} else {
 		r.logger.Debug("Starting fresh local registry service...")
-		
+
 		//  Only write the systemd file if we are actually creating the registry!
 		tmpl, err := template.New("registry-service").Parse(registryServiceTemplate)
 		if err == nil {
 			var buf bytes.Buffer
-			_ = tmpl.Execute(&buf, struct{ RegistryImage string }{RegistryImage: r.cfg.DisconnectedConfig.RegistryImage})
+			_ = tmpl.Execute(&buf, struct{ RegistryImage string }{RegistryImage: r.cfg.Services.Registry.RegistryImage})
 			_ = r.executor.WriteFile(shieldedCtx, "/etc/systemd/system/local-registry.service", buf.Bytes(), 0644)
 		}
 
 		r.executor.Execute(shieldedCtx, "sudo podman rm -f local-registry 2>/dev/null || true")
-		
+
 		if _, err := r.executor.Execute(shieldedCtx, "sudo systemctl daemon-reload"); err != nil {
 			return fmt.Errorf("failed to reload systemd: %w", err)
 		}
@@ -184,21 +184,21 @@ func (r *RegistryManager) Setup(ctx context.Context, workspaceDir string) error 
 
 	// 7. Ensure the Controller can resolve the registry hostname locally
 	r.logger.Debug("Injecting registry hostname into local /etc/hosts for resolution...")
-	
+
 	// ---  Use a strict, cluster-specific marker to prevent wiping out the Controller IP ---
 	marker := fmt.Sprintf("# ShiftLaunch-Registry: %s", r.cfg.OpenShift.ClusterName)
-	hostsEntry := fmt.Sprintf("%s %s %s", r.cfg.Controller.IP, registryHost, marker)
-	
+	hostsEntry := fmt.Sprintf("%s %s %s", r.cfg.Network.ControllerIP, registryHost, marker)
+
 	// Clean up any stale entries first (using the precise marker), then append
 	r.executor.Execute(shieldedCtx, fmt.Sprintf("sudo sed -i '/%s/d' /etc/hosts", marker))
 	r.executor.Execute(shieldedCtx, fmt.Sprintf("echo '%s' | sudo tee -a /etc/hosts > /dev/null", hostsEntry))
 
 	// 8. Wait for registry to be ready
 	r.logger.Debug("Waiting for registry to be ready...")
-	
+
 	//  Explicitly target 127.0.0.1 (IPv4), strip all proxies, and add strict timeouts to prevent network namespace settling delays
 	checkCmd := fmt.Sprintf("env HTTP_PROXY='' HTTPS_PROXY='' http_proxy='' https_proxy='' curl --connect-timeout 5 --max-time 10 -u %s:%s -k https://127.0.0.1:5000/v2/_catalog", username, password)
-	
+
 	var lastErr error
 	for i := 0; i < 10; i++ {
 		if _, err := r.executor.Execute(shieldedCtx, checkCmd); err == nil {
@@ -216,27 +216,27 @@ func (r *RegistryManager) Setup(ctx context.Context, workspaceDir string) error 
 
 	// 9. Update pull secret with local registry credentials
 	r.logger.Info("Updating pull secret with local registry authentication...")
-	
+
 	//  Use the actual source file from the config!
 	pullSecretPath := os.ExpandEnv(strings.ReplaceAll(r.cfg.OpenShift.PullSecretFile, "~", "$HOME"))
 	updatedSecretPath := filepath.Join(workspaceDir, "pull-secret-updated.json")
-	
+
 	/*updateSecretCmd := fmt.Sprintf(`registry_token=$(echo -n "%s:%s" | base64 -w0) && \
-		jq '.auths += {"%s": {"auth": "'$registry_token'","email": "noemail@localhost"}}' \
-		< %s > %s`,
-		username, password, registryURL, pullSecretPath, updatedSecretPath)*/
+	jq '.auths += {"%s": {"auth": "'$registry_token'","email": "noemail@localhost"}}' \
+	< %s > %s`,
+	username, password, registryURL, pullSecretPath, updatedSecretPath)*/
 	updateSecretCmd := fmt.Sprintf(`registry_token=$(echo -n "%s:%s" | base64 -w0) && \
 	jq -c '.auths += {"%s": {"auth": "'$registry_token'","email": "noemail@localhost"}}' \
 	< %s > %s`,
-	username, password, registryURL, pullSecretPath, updatedSecretPath)
+		username, password, registryURL, pullSecretPath, updatedSecretPath)
 	if _, err := r.executor.Execute(shieldedCtx, updateSecretCmd); err != nil {
 		return fmt.Errorf("failed to update pull secret: %w", err)
 	}
 
 	// 10. Mirror OpenShift release images (with idempotency to prevent re-runs on resume)
-	if r.cfg.DisconnectedConfig.AutoMirror {
+	if r.cfg.Services.Registry.AutoMirror {
 		mirrorEventID := fmt.Sprintf("mirror_release_%s", r.cfg.OpenShift.Version)
-		
+
 		// Check if mirroring was already completed
 		if r.state != nil && contains(r.state.CompletedEvents, mirrorEventID) {
 			r.logger.Info("Image mirroring already completed, skipping...")
@@ -245,7 +245,7 @@ func (r *RegistryManager) Setup(ctx context.Context, workspaceDir string) error 
 			if err := r.mirrorImages(shieldedCtx, workspaceDir, registryURL, updatedSecretPath); err != nil {
 				return fmt.Errorf("failed to mirror images: %w", err)
 			}
-			
+
 			// Mark mirroring as completed
 			if r.state != nil && r.stateManager != nil {
 				r.state.CompletedEvents = append(r.state.CompletedEvents, mirrorEventID)
@@ -274,8 +274,8 @@ func (r *RegistryManager) mirrorImages(ctx context.Context, workspaceDir, regist
 // mirrorViaOcAdm blindly copies raw payloads without checking the graph (Best for CI/Nightly/Dev builds)
 func (r *RegistryManager) mirrorViaOcAdm(ctx context.Context, workspaceDir, registryURL, pullSecretPath string) error {
 	ocPath := filepath.Join(workspaceDir, "tools", "oc")
-	releaseImage := r.cfg.DisconnectedConfig.ReleaseImage
-	localRepo := r.cfg.DisconnectedConfig.LocalRepo
+	releaseImage := r.cfg.Services.Registry.ReleaseImage
+	localRepo := r.cfg.Services.Registry.LocalRepo
 	releaseTag := r.cfg.OpenShift.Version
 
 	mirrorCmd := fmt.Sprintf(`%s adm release mirror -a %s --from=%s --to=%s/%s --to-release-image=%s/%s:%s --insecure=true`,
@@ -283,10 +283,10 @@ func (r *RegistryManager) mirrorViaOcAdm(ctx context.Context, workspaceDir, regi
 
 	r.logger.Debug("Executing oc adm mirror command", "cmd", mirrorCmd)
 	output, err := r.executor.Execute(ctx, mirrorCmd)
-	
+
 	logFile := filepath.Join(workspaceDir, "registry-mirror-info.txt")
 	os.WriteFile(logFile, []byte(output), 0644)
-	
+
 	if err != nil {
 		// Parse the output for known issues to provide a clean UX
 		lowerOut := strings.ToLower(output)
@@ -310,8 +310,8 @@ func (r *RegistryManager) mirrorViaOcAdm(ctx context.Context, workspaceDir, regi
 func (r *RegistryManager) mirrorViaOcMirrorV2(ctx context.Context, workspaceDir, registryURL, pullSecretPath string) error {
 	ocMirrorPath := filepath.Join(workspaceDir, "tools", "oc-mirror")
 	version := r.cfg.OpenShift.Version
-	localRepo := r.cfg.DisconnectedConfig.LocalRepo
-	
+	localRepo := r.cfg.Services.Registry.LocalRepo
+
 	// Extract channel (e.g. "4.21.14" -> "stable-4.21")
 	parts := strings.Split(version, ".")
 	channel := "stable-" + version
@@ -337,7 +337,7 @@ mirror:
 	os.WriteFile(imageSetPath, []byte(imageSetYaml), 0644)
 
 	// --- THE MULTI-TENANT FIX ---
-	
+
 	// 1. The Scalpel: Only kill zombie processes tied to THIS specific cluster's workspace
 	r.logger.Debug("Sweeping for orphaned oc-mirror processes tied to this cluster...")
 	targetKillCmd := fmt.Sprintf("sudo pkill -9 -f 'oc-mirror.*%s' 2>/dev/null || true", r.cfg.OpenShift.ClusterName)
@@ -363,10 +363,10 @@ mirror:
 
 	r.logger.Debug("Executing oc-mirror v2 command", "cmd", mirrorCmd)
 	output, err := r.executor.Execute(ctx, mirrorCmd)
-	
+
 	logFile := filepath.Join(workspaceDir, "registry-mirror-info.txt")
 	os.WriteFile(logFile, []byte(output), 0644)
-	
+
 	if err != nil {
 		// Parse the output for known issues to provide a clean UX
 		lowerOut := strings.ToLower(output)
@@ -390,20 +390,29 @@ mirror:
 func (r *RegistryManager) getRegistryHost() string {
 	//  For locally managed shared registries, the IP is the safest multi-tenant
 	// identifier because it is permanently baked into the shared certificate's SAN!
-	if r.cfg.ManagedServices.Registry {
-		return r.cfg.Controller.IP
+	if r.cfg.Services.Registry.Enabled {
+		return r.cfg.Network.ControllerIP
 	}
 
 	// Fallback for external user-managed registries
-	if r.cfg.DisconnectedConfig.RegistryHostname != "" {
-		return r.cfg.DisconnectedConfig.RegistryHostname
+	if r.cfg.Services.Registry.ExternalHostname != "" {
+		return r.cfg.Services.Registry.ExternalHostname
 	}
 	return fmt.Sprintf("registry.%s.%s", r.cfg.OpenShift.ClusterName, r.cfg.OpenShift.BaseDomain)
 }
 
 // GetRegistryURL returns the full registry URL for use in install-config
 func (r *RegistryManager) GetRegistryURL() string {
-	return fmt.Sprintf("%s:5000", r.getRegistryHost())
+	host := r.getRegistryHost()
+
+	// If we are managing it locally, we know it's locked to 5000
+	if r.cfg.Services.Registry.Enabled {
+		return fmt.Sprintf("%s:5000", host)
+	}
+
+	// If it's an external enterprise registry, trust the user's string entirely.
+	// If they omitted a port, standard tools default to 443 safely.
+	return host
 }
 
 // GetCertificatePath returns the path to the registry certificate
@@ -442,7 +451,7 @@ func (r *RegistryManager) Cleanup(ctx context.Context) error {
 func (r *RegistryManager) isRegistryShared() bool {
 	//  Use the dynamic workspace directory instead of hardcoding /opt/shiftlaunch
 	workspaceParent := filepath.Dir(r.workspaceDir)
-	
+
 	entries, err := os.ReadDir(workspaceParent)
 	if err != nil {
 		return false
@@ -453,7 +462,7 @@ func (r *RegistryManager) isRegistryShared() bool {
 		if !entry.IsDir() {
 			continue
 		}
-		
+
 		clusterName := entry.Name()
 		if clusterName == r.cfg.OpenShift.ClusterName {
 			continue // Skip our own cluster
@@ -476,7 +485,7 @@ func (r *RegistryManager) isRegistryShared() bool {
 		if err := yaml.Unmarshal(data, &tmpCfg); err == nil {
 			//  Look exclusively at the Registry service toggle to prevent
 			// unoptimized config files from being skipped!
-			if tmpCfg.ManagedServices.Registry {
+			if tmpCfg.Services.Registry.Enabled {
 				activeCount++
 			}
 		}

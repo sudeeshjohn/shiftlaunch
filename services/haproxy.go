@@ -129,11 +129,11 @@ func (h *HAProxyGenerator) Generate() (string, error) {
 
 	// Ensure SNO node hostname is populated (fallback to cluster name if empty)
 	var snoNode *types.NodeConfig
-	
+
 	// SAFE BOUNDS CHECK: Explicitly verify the slice has elements before accessing index 0
-	if len(cfg.Nodes.SNO) > 0 {
+	if cfg.IsSNO() && len(cfg.Nodes.Masters) > 0 {
 		// ---  Use a pointer so the modification persists globally ---
-		snoNode = &cfg.Nodes.SNO[0]
+		snoNode = &cfg.Nodes.Masters[0]
 		if snoNode.Hostname == "" {
 			snoNode.Hostname = cfg.OpenShift.ClusterName
 		}
@@ -161,7 +161,7 @@ func (h *HAProxyGenerator) Generate() (string, error) {
 		ClusterName: cfg.OpenShift.ClusterName,
 		Type:        clusterType,
 		OCPVersion:  cfg.OpenShift.Version,
-		VIP:         cfg.Network.LoadBalancerIP,
+		VIP:         cfg.Services.LoadBalancer.VIP,
 		Timestamp:   time.Now().Format(time.RFC3339),
 		IsSNO:       cfg.IsSNO(),
 		IsISO:       cfg.Nodes.BootMethod == "agent",
@@ -195,29 +195,29 @@ func (h *HAProxyGenerator) GetConfigPath(ctx context.Context) string {
 }
 
 // SetupHAProxy connects the generator to local execution for the Orchestrator
-func SetupHAProxy(ctx context.Context,cfg *types.AgentConfig, exec *localexec.LocalClient) error {
+func SetupHAProxy(ctx context.Context, cfg *types.AgentConfig, exec *localexec.LocalClient) error {
 	gen := NewHAProxyGenerator(cfg, false)
-	
+
 	configContent, err := gen.Generate()
 	if err != nil {
 		return err
 	}
 
 	configPath := gen.GetConfigPath(ctx)
-	
+
 	//Ensure the HAProxy conf.d directory actually exists before moving files
-	exec.Execute(ctx,"sudo mkdir -p /etc/haproxy/conf.d")
-	
+	exec.Execute(ctx, "sudo mkdir -p /etc/haproxy/conf.d")
+
 	//  Nuke the default boilerplate frontend/backends that hog port 5000
 	exec.Execute(ctx, "sudo sed -i '/frontend main/,$d' /etc/haproxy/haproxy.cfg")
-	
+
 	// Write HAProxy configuration locally
 	if err := exec.WriteFile(ctx, configPath, []byte(configContent), 0644); err != nil {
 		return fmt.Errorf("failed to write HAProxy config to %s: %w", configPath, err)
 	}
 
 	// Reload/Restart HAProxy service
-	if err := exec.SystemctlRestart(ctx,"haproxy"); err != nil {
+	if err := exec.SystemctlRestart(ctx, "haproxy"); err != nil {
 		return fmt.Errorf("failed to restart HAProxy: %w", err)
 	}
 

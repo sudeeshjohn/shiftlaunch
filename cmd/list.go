@@ -36,12 +36,14 @@ The list command displays:
 - Last updated timestamp`,
 	RunE: runList,
 }
+
 // initialize list command flags
 func init() {
 	rootCmd.AddCommand(listCmd)
 	listCmd.Flags().BoolVarP(&listQuiet, "quiet", "q", false, "Only display cluster names")
 	listCmd.Flags().BoolVar(&listJSON, "json", false, "Output cluster list in pure JSON format")
 }
+
 // runList runs the list command
 func runList(cmd *cobra.Command, args []string) error {
 	// Load daemon config to get workspace directory
@@ -89,7 +91,7 @@ func printClusterList(workspaceBase string) error {
 
 	visibleCount := 0
 	clusterNames := []string{} // For quiet mode
-	
+
 	// Create a slice of maps for JSON output
 	var jsonOutput []map[string]string
 
@@ -118,7 +120,7 @@ func printClusterList(workspaceBase string) error {
 				tableData = append(tableData, []string{
 					clusterName, "unknown", "N/A", "N/A", "N/A", "N/A", "N/A",
 				})
-				
+
 				// Append corrupted state to JSON as well
 				jsonOutput = append(jsonOutput, map[string]string{
 					"name":   clusterName,
@@ -138,17 +140,18 @@ func printClusterList(workspaceBase string) error {
 		if err == nil {
 			var cfg types.AgentConfig
 			if err := yaml.Unmarshal(data, &cfg); err == nil {
-				
-				// ---Evaluate Network Boundary Profile ---
+
+				// --- Evaluate Network Boundary Profile ---
 				networkProfile = "Connected"
-				if cfg.DisconnectedConfig.Enabled {
+				if cfg.Network.IsolationLevel == "fully-disconnected" {
 					networkProfile = "Fully Disconnected"
-				} else if cfg.ManagedServices.Proxy || cfg.ExternalProxy.HTTPProxy != "" {
+				} else if cfg.Network.IsolationLevel == "soft-disconnected" {
 					networkProfile = "Soft Disconnected"
 				}
-				// ---  Extract the LoadBalancerIP (VIP) ---
-				if cfg.Network.LoadBalancerIP != "" {
-					clusterIP = cfg.Network.LoadBalancerIP
+
+				// --- Extract the LoadBalancer VIP ---
+				if cfg.Services.LoadBalancer.VIP != "" {
+					clusterIP = cfg.Services.LoadBalancer.VIP
 				}
 
 				// Determine deployment type (SNO vs Multi-node)
@@ -217,7 +220,7 @@ func printClusterList(workspaceBase string) error {
 				duration,
 				timestamp,
 			})
-			
+
 			// Append valid row to JSON array
 			jsonOutput = append(jsonOutput, map[string]string{
 				"name":         clusterName,
@@ -266,7 +269,7 @@ func printClusterList(workspaceBase string) error {
 			WithHeaderStyle(pterm.NewStyle(pterm.FgCyan, pterm.Bold)).
 			WithData(tableData).
 			Render()
-		
+
 		log.Info("Managed clusters on this controller", "count", visibleCount)
 	}
 

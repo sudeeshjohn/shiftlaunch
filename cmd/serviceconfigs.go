@@ -12,8 +12,8 @@ import (
 )
 
 var dumpConfigCmd = &cobra.Command{
-	Use:   "service-configs",
-	Short: "Generate configuration files for unmanaged external services",
+	Use:     "service-configs",
+	Short:   "Generate configuration files for unmanaged external services",
 	GroupID: "utils",
 	Long: `Generates DNS/DHCP/HAProxy configuration files for network administrators if you
 disabled managed_services in YAML.
@@ -35,7 +35,7 @@ func runDumpConfig(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	
+
 	// Ensure logger file descriptor is closed when command completes
 	defer orch.GetLogger().Close()
 
@@ -45,18 +45,18 @@ func runDumpConfig(cmd *cobra.Command, args []string) error {
 // dumpConfig dumps the required external service configurations for a cluster
 func dumpConfig(orch *orchestrator.Orchestrator, cfg *types.AgentConfig) error {
 	clusterName := cfg.OpenShift.ClusterName
-	vip := cfg.Network.LoadBalancerIP
+	vip := cfg.Services.LoadBalancer.VIP
 
-	// Check if any external services are configured (Inverted logic for new ManagedServices block)
+	// Check if any external services are configured (Inverted logic for new Services block)
 	// Boot method aware: DHCP/PXE only matter for netboot, NFS only matters for Agent ISO
-	hasExternalServices := !cfg.ManagedServices.DNS || !cfg.ManagedServices.LoadBalancer
-	
+	hasExternalServices := !cfg.Services.DNS.Enabled || !cfg.Services.LoadBalancer.Enabled
+
 	// Add boot-method-specific checks
 	if cfg.Nodes.BootMethod != "agent" {
-		hasExternalServices = hasExternalServices || !cfg.ManagedServices.DHCP || !cfg.ManagedServices.PXE
+		hasExternalServices = hasExternalServices || !cfg.Services.DHCP.Enabled || !cfg.Services.PXE.Enabled
 	}
 	if cfg.Nodes.BootMethod == "agent" {
-		hasExternalServices = hasExternalServices || !cfg.ManagedServices.NFS
+		hasExternalServices = hasExternalServices || !cfg.Services.NFS.Enabled
 	}
 
 	if !hasExternalServices {
@@ -76,26 +76,26 @@ func dumpConfig(orch *orchestrator.Orchestrator, cfg *types.AgentConfig) error {
 	nodes := cfg.GetAllNodes()
 
 	// Dump DNS configuration
-	if !cfg.ManagedServices.DNS {
+	if !cfg.Services.DNS.Enabled {
 		dumpDNSConfig(cfg)
 	}
 
 	// Dump DHCP configuration (only relevant for netboot)
-	if !cfg.ManagedServices.DHCP && cfg.Nodes.BootMethod != "agent" {
+	if !cfg.Services.DHCP.Enabled && cfg.Nodes.BootMethod != "agent" {
 		if err := dumpDHCPConfig(cfg); err != nil {
 			return fmt.Errorf("failed to generate DHCP config: %w", err)
 		}
 	}
 
 	// Dump PXE configuration using template (only relevant for netboot)
-	if !cfg.ManagedServices.PXE && cfg.Nodes.BootMethod != "agent" {
-		if err := dumpPXEConfigFromTemplate(clusterName, cfg, nodes, cfg.Controller.IP); err != nil {
+	if !cfg.Services.PXE.Enabled && cfg.Nodes.BootMethod != "agent" {
+		if err := dumpPXEConfigFromTemplate(clusterName, cfg, nodes, cfg.Network.ControllerIP); err != nil {
 			return fmt.Errorf("failed to generate PXE config: %w", err)
 		}
 	}
-	
+
 	// Dump NFS configuration (only relevant for Agent boot)
-	if !cfg.ManagedServices.NFS && cfg.Nodes.BootMethod == "agent" {
+	if !cfg.Services.NFS.Enabled && cfg.Nodes.BootMethod == "agent" {
 		fmt.Println("--------------------------------------------------------------------------------")
 		fmt.Println("NFS Server Configuration (Required for Agent ISO)")
 		fmt.Println("--------------------------------------------------------------------------------")
@@ -105,7 +105,7 @@ func dumpConfig(orch *orchestrator.Orchestrator, cfg *types.AgentConfig) error {
 	}
 
 	// Dump Load Balancer configuration
-	if !cfg.ManagedServices.LoadBalancer {
+	if !cfg.Services.LoadBalancer.Enabled {
 		dumpLoadBalancerConfig(clusterName, vip, cfg)
 	}
 
@@ -122,9 +122,9 @@ func dumpDNSConfig(cfg *types.AgentConfig) {
 
 	fmt.Println("Required DNS A Records:")
 	fmt.Println("-----------------------")
-	fmt.Printf("api.%s.%s             IN A %s\n", cfg.OpenShift.ClusterName, cfg.OpenShift.BaseDomain, cfg.Network.LoadBalancerIP)
-	fmt.Printf("api-int.%s.%s         IN A %s\n", cfg.OpenShift.ClusterName, cfg.OpenShift.BaseDomain, cfg.Network.LoadBalancerIP)
-	fmt.Printf("*.apps.%s.%s          IN A %s\n", cfg.OpenShift.ClusterName, cfg.OpenShift.BaseDomain, cfg.Network.LoadBalancerIP)
+	fmt.Printf("api.%s.%s             IN A %s\n", cfg.OpenShift.ClusterName, cfg.OpenShift.BaseDomain, cfg.Services.LoadBalancer.VIP)
+	fmt.Printf("api-int.%s.%s         IN A %s\n", cfg.OpenShift.ClusterName, cfg.OpenShift.BaseDomain, cfg.Services.LoadBalancer.VIP)
+	fmt.Printf("*.apps.%s.%s          IN A %s\n", cfg.OpenShift.ClusterName, cfg.OpenShift.BaseDomain, cfg.Services.LoadBalancer.VIP)
 	fmt.Println()
 
 	fmt.Println("Node A Records:")
@@ -235,7 +235,7 @@ func dumpLoadBalancerConfig(clusterName, vip string, cfg *types.AgentConfig) {
 	workers := cfg.Nodes.Workers
 
 	if cfg.IsSNO() {
-		masters = cfg.Nodes.SNO
+		masters = cfg.Nodes.Masters
 	}
 
 	// Kubernetes API (Port 6443)

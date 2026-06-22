@@ -19,12 +19,12 @@ var (
 	genReleaseType      string
 	genProxy            bool
 	genExternalProxy    bool
-	genRegistry         bool // Standalone managed registry flag
+	genRegistry         bool
 	genExternalRegistry bool
 )
 
 var generateConfigCmd = &cobra.Command{
-	Use:     "create-template",
+	Use:     "generate-config",
 	Short:   "Create a starter config.yaml template",
 	GroupID: "utils",
 	Long: `Creates a starter configuration template based on topology, boot method, and network environment.
@@ -53,7 +53,7 @@ func init() {
 
 	// Network Boundary
 	generateConfigCmd.Flags().BoolVarP(&genDisconnected, "disconnected", "a", false, "Generate a template for a strictly disconnected/airgapped environment")
-	
+
 	// Proxy Toggles
 	generateConfigCmd.Flags().BoolVarP(&genProxy, "proxy", "p", false, "Enable local managed Squid proxy")
 	generateConfigCmd.Flags().BoolVar(&genExternalProxy, "external-proxy", false, "Use an external corporate proxy")
@@ -73,32 +73,31 @@ func runGenerateConfig(cmd *cobra.Command, args []string) error {
 	if bootMethod != "agent" && bootMethod != "netboot" {
 		return fmt.Errorf("invalid boot method: '%s'. Must be 'agent' or 'netboot'", bootMethod)
 	}
-
 	if _, err := os.Stat(genOutputPath); err == nil {
 		return fmt.Errorf("file '%s' already exists. Refusing to overwrite", genOutputPath)
 	}
 
-	// FAIL FAST: Prevent Proxy contradictions
 	if genProxy && genExternalProxy {
 		return fmt.Errorf("cannot specify both --proxy (managed) and --external-proxy. Choose one")
 	}
-
-	// FAIL FAST: Prevent Registry contradictions
 	if genRegistry && genExternalRegistry {
 		return fmt.Errorf("cannot specify both --registry (managed) and --external-registry. Choose one")
 	}
 
-	// SMART DEFAULTS: 
-	// If disconnected is passed, auto-enable the managed registry UNLESS they brought their own
-	manageRegistry := genRegistry || (genDisconnected && !genExternalRegistry)
+	isolationMode := "connected"
+	if genDisconnected {
+		isolationMode = "fully-disconnected"
+	} else if genProxy || genExternalProxy {
+		isolationMode = "soft-disconnected"
+	}
 
 	data := TemplateData{
 		IsSNO:          configType == "sno",
 		BootMethod:     bootMethod,
-		Disconnected:   genDisconnected,
+		IsolationLevel: isolationMode,
 		ManageProxy:    genProxy,
 		ExtProxy:       genExternalProxy,
-		ManageRegistry: manageRegistry,
+		ManageRegistry: genRegistry || (genDisconnected && !genExternalRegistry),
 		ExtRegistry:    genExternalRegistry,
 		ReleaseType:    genReleaseType,
 	}
@@ -120,17 +119,13 @@ func runGenerateConfig(cmd *cobra.Command, args []string) error {
 	log, _ := logger.New(false, "")
 	log.Info("Successfully generated cluster template", "path", genOutputPath)
 
-	agentPath := "agent.yaml"
-	if _, err := os.Stat(agentPath); os.IsNotExist(err) {
-		_ = os.WriteFile(agentPath, []byte(agentConfigTemplate), 0644)
-	}
 	return nil
 }
-// TemplateData is a struct that holds the data used to generate the configuration template.
+
 type TemplateData struct {
 	IsSNO          bool
 	BootMethod     string
-	Disconnected   bool
+	IsolationLevel string
 	ManageProxy    bool
 	ExtProxy       bool
 	ManageRegistry bool
@@ -139,161 +134,126 @@ type TemplateData struct {
 }
 
 const configTemplate = `# =============================================================================
-# ShiftLaunch Agent Configuration Template
+# ShiftLaunch Configuration Reference
 # Topology: {{if .IsSNO}}SNO (Single Node OpenShift){{else}}Multi-Node Cluster{{end}}
 # Boot Method: {{if eq .BootMethod "agent"}}Agent Installer{{else}}Network Boot (PXE){{end}}
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# 1. MANAGED SERVICES (The "Who")
+# 1. INFRASTRUCTURE SERVICES
+# Define who manages each network service locally on the controller node.
 # -----------------------------------------------------------------------------
-managed_services:
-  dns: true
-  dhcp: {{if eq .BootMethod "agent"}}false{{else}}true{{end}}
-  pxe: {{if eq .BootMethod "netboot"}}true{{else}}false{{end}}
-  load_balancer: true
-  nfs: {{if eq .BootMethod "agent"}}true{{else}}false{{end}}
+services:
+  dns:
+    enabled: true
+    external_nameserver: "192.168.100.5" # Used if enabled: false
+    dns_forwarders:                # Used if enabled: true
+      - "8.8.8.8"
+      - "1.1.1.1"
 
-  # Network Boundary Controls
-  proxy: {{if .ManageProxy}}true{{else}}false{{end}}
-  registry: {{if .ManageRegistry}}true{{else}}false{{end}}
+  dhcp:
+    enabled: {{if eq .BootMethod "agent"}}false{{else}}true{{end}}                       # Required for netboot. Ignored for agent boot.
+    external_dhcp_server: "192.168.100.1"      
+  pxe:
+    enabled: {{if eq .BootMethod "netboot"}}true{{else}}false{{end}}                       # Required for netboot. Ignored for agent boot.
+    external_pxe_server: "192.168.100.1"       
+  load_balancer:
+    enabled: true                       
+    vip: "192.168.100.50"                # Required entry-point IP for the cluster API / Ingress.
+  nfs:
+    enabled: {{if eq .BootMethod "agent"}}true{{else}}false{{end}}                       # Required for agent boot to transfer the ISO to the VIOS.
+    external_nfs_server: "192.168.100.1"       
+
+  # --- BOUNDARY SERVICES ---
+  proxy:
+    enabled: {{if .ManageProxy}}true{{else}}false{{end}}                       # true = ShiftLaunch builds a local Squid proxy.
+    external_http_proxy: {{if .ExtProxy}}"http://proxy.mycompany.com:8080"{{else}}""{{end}}
+    external_https_proxy: {{if .ExtProxy}}"http://proxy.mycompany.com:8080"{{else}}""{{end}}
+    no_proxy: "127.0.0.1,localhost,.example.local,192.168.100.0/24"
+
+  registry:
+    enabled: {{if .ManageRegistry}}true{{else}}false{{end}}                       # true = ShiftLaunch builds a local Podman registry.
+    external_reqistry_server: {{if .ExtRegistry}}"registry.mycompany.com"{{else}}""{{end}} 
+    username: "admin"                    
+    password: "admin"                    
+    ca_cert_file: "/path/ca.crt"         
 
 # -----------------------------------------------------------------------------
-# 2. CONTROLLER NODE (The "Where")
-# -----------------------------------------------------------------------------
-controller:
-  network_interface: "eth0"
-
-# -----------------------------------------------------------------------------
-# 3. HMC CREDENTIALS
-# -----------------------------------------------------------------------------
-hmc:
-  ip: "10.20.x.x"
-  username: "YOUR_HMC_USERNAME"
-  password: "password"
-
-# -----------------------------------------------------------------------------
-# 4. NETWORK CONFIGURATION
+# 2. CORE NETWORK & ARCHITECTURE MODE
 # -----------------------------------------------------------------------------
 network:
-  loadbalancer_ip: "10.20.x.y"
-  machine_network_cidr: "10.20.x.0/24" 
-  gateway: "10.20.x.1"
-  nameserver: ""
-  dns_forwarders:
-    - "198.51.100.1"
+  # ARCHITECTURE TARGETS:
+  #   "connected"         -> Nodes have direct outbound internet access. (Ignores proxy & registry fields)
+  #   "soft-disconnected" -> Nodes are isolated but can access the internet EXCLUSIVELY via a Proxy gateway.
+  #   "fully-disconnected"-> Nodes are strictly airgapped with ZERO internet path. Enforces local/external Registry data.
+  isolation_level: "{{.IsolationLevel}}"
+  
+  controller_interface: "eth0"           # Physical interface to bind the VIP and local services to.
+  machine_network_cidr: "192.168.100.0/24" # The primary subnet the OpenShift nodes reside on.
+  gateway: "192.168.100.1"               # The default gateway for the cluster nodes.
 
 # -----------------------------------------------------------------------------
-# 5. OPENSHIFT CLUSTER SETTINGS
+# 3. OPENSHIFT CLUSTER SETTINGS
 # -----------------------------------------------------------------------------
 openshift:
-  cluster_name: "<Cluster Name>"
-  version: "4.21"
-  release_type: "{{.ReleaseType}}" # "official" or "ci"
+  cluster_name: "my-cluster"
+  version: "4.21.18"
+  release_type: "{{.ReleaseType}}"               
   base_domain: "example.local"
-  cluster_network_cidr: "10.128.0.0/14"
-  cluster_network_host_prefix: 23
-  service_network: "172.30.0.0/16"
   pull_secret_file: "./pull-secret.json"
   ssh_public_key_file: "~/.ssh/id_rsa.pub"
-{{if eq .BootMethod "netboot"}}
-  rhcos_images:
-    kernel_url: "<URL>/rhcos-live-kernel.ppc64le"
-    initramfs_url: "<URL>/rhcos-live-initramfs.ppc64le.img"
-    rootfs_url: "<URL>/rhcos-live-rootfs.ppc64le.img"
-{{end}}
-  ocp_client_config:
-    ocp_client: "<URL>/openshift-client-linux.tar.gz"
-    ocp_installer: "<URL>/openshift-install-linux.tar.gz"
-{{- if and .ManageRegistry (eq .ReleaseType "official")}}
-    ocp_mirror_client: "<URL>/oc-mirror.tar.gz"
-{{- end}}
-
-{{if .Disconnected}}
-# -----------------------------------------------------------------------------
-# DISCONNECTED / AIRGAP CONFIGURATION
-# -----------------------------------------------------------------------------
-disconnected:
-  enabled: true
-{{- if .ExtRegistry}}
-  
-  # EXTERNAL REGISTRY ENABLED: Provide your enterprise registry details below:
-  registry_hostname: "harbor.mycompany.com" 
-  local_repo: "openshift4/ocp4"
-  # registry_ca_file: "/path/to/harbor-ca.crt" # Uncomment if using a self-signed CA
-{{- else}}
-
-  # If bringing your own registry instead of using ShiftLaunch's managed registry:
-  # registry_hostname: "harbor.mycompany.com" 
-  # local_repo: "openshift4/ocp4"
-  # registry_ca_file: "/path/to/harbor-ca.crt"
-{{- end}}
-{{end}}
-
-{{if .ExtProxy}}
-# -----------------------------------------------------------------------------
-# EXTERNAL PROXY CONFIGURATION
-# -----------------------------------------------------------------------------
-external_proxy:
-  # Provide your corporate proxy details below:
-  http_proxy: "http://proxy.mycompany.com:8080"
-  https_proxy: "http://proxy.mycompany.com:8080"
-  # Provide a comma-separated list of domains/IPs to bypass the proxy
-  no_proxy: "127.0.0.1,localhost,.example.local,10.20.x.0/24"
-{{end}}
+  force_ocp_download: false              
 
 # -----------------------------------------------------------------------------
-# NODE TOPOLOGY (HMC Target LPARs)
+# 4. HMC CREDENTIALS
+# -----------------------------------------------------------------------------
+hmc:
+  ip: "192.168.100.10"
+  username: "hscroot"
+  password: "YOUR_HMC_PASSWORD"
+
+# -----------------------------------------------------------------------------
+# 5. NODE TOPOLOGY (HMC Target LPARs)
 # -----------------------------------------------------------------------------
 nodes:
   boot_method: "{{.BootMethod}}"
 {{if .IsSNO}}
-  sno:
+  masters:
     - name: "sno-0"
-      ip: "10.20.x.10"
-      existing_lpar_name: "<SNO-LPARNAME>"
+      ip: "192.168.100.12"
+      existing_lpar_name: "my-sno-lpar"
       system_name: "SYSTEM-NAME"
 {{else}}
 {{- if eq .BootMethod "netboot"}}
   bootstrap:
     - name: "bootstrap"
-      ip: "10.20.x.11"
-      existing_lpar_name: "<BOOTSTRAP-LPARNAME>"
+      ip: "192.168.100.11"
+      existing_lpar_name: "my-bootstrap-lpar"
       system_name: "SYSTEM-NAME"
 {{- end}}
   masters:
     - name: "master-0"
-      ip: "10.20.x.12"
-      existing_lpar_name: "<MASTER0-LPARNAME>"
+      ip: "192.168.100.12"
+      existing_lpar_name: "my-master-0"
       system_name: "SYSTEM-NAME"
     - name: "master-1"
-      ip: "10.20.x.13"
-      existing_lpar_name: "<MASTER1-LPARNAME>"
+      ip: "192.168.100.13"
+      existing_lpar_name: "my-master-1"
       system_name: "SYSTEM-NAME"
     - name: "master-2"
-      ip: "10.20.x.14"
-      existing_lpar_name: "<MASTER2-LPARNAME>"
+      ip: "192.168.100.14"
+      existing_lpar_name: "my-master-2"
       system_name: "SYSTEM-NAME"
+
   workers:
     - name: "worker-0"
-      ip: "10.20.x.15"
-      existing_lpar_name: "<WORKER0-LPARNAME>"
+      ip: "192.168.100.15"
+      existing_lpar_name: "my-worker-0"
+      system_name: "SYSTEM-NAME"
+    - name: "worker-1"
+      ip: "192.168.100.16"
+      existing_lpar_name: "my-worker-1"
       system_name: "SYSTEM-NAME"
 {{end}}`
 
-const agentConfigTemplate = `network:
-  http_port: 8080
-
-paths:
-  workspace_dir: "/opt/shiftlaunch/clusters"
-  dnsmasq_conf_dir: "/etc/dnsmasq.d"
-  haproxy_conf_dir: "/etc/haproxy/conf.d"
-  httpd_doc_root: "/var/www/html"
-  tftp_root: "/var/lib/tftpboot"
-  install_device: "/dev/sda"
-
-timeouts:
-  hmc_api_retries: 3
-  download_timeout_sec: 1800
-`
-
+// Made with Bob

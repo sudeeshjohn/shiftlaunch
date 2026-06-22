@@ -23,11 +23,11 @@ var (
 )
 
 var createCmd = &cobra.Command{
-	Use:   "create",
-	Aliases: []string{"deploy", "dep"},
-	Short: "Execute cluster deployment pipeline",
-	GroupID: "core",
-	SilenceUsage: true,
+	Use:           "create",
+	Aliases:       []string{"deploy", "dep"},
+	Short:         "Execute cluster deployment pipeline",
+	GroupID:       "core",
+	SilenceUsage:  true,
 	SilenceErrors: true,
 	Long: `Execute the cluster deployment pipeline. Automatically resumes if a partial
 deployment is detected.
@@ -51,7 +51,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	
+
 	// Ensure logger file descriptor is closed when command completes
 	defer orch.GetLogger().Close()
 
@@ -96,7 +96,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		log.Debug("Cluster was previously deleted. Wiping directory for a fresh deployment...", "cluster", cfg.OpenShift.ClusterName)
 		os.RemoveAll(workspaceDir)
 		os.MkdirAll(workspaceDir, 0755)
-		
+
 		// Recreate logger after workspace cleanup to ensure deployment.log is created
 		logFilePath := filepath.Join(workspaceDir, "deployment.log")
 		newLogger, err := logger.New(debug, logFilePath)
@@ -130,7 +130,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		log.Info("  - Delete the cluster: shiftlaunch delete --cluster " + cfg.OpenShift.ClusterName)
 		log.Info("  - Deploy a new cluster: First delete the existing one, then create again")
 		log.Error("Refusing to overwrite managed cluster to prevent data loss")
-		
+
 		// Return a short error so main.go still exits with status code 1
 		return fmt.Errorf("cluster already managed")
 	} else {
@@ -144,7 +144,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 				log.Debug("Backed up existing config", "path", configBackupPath)
 			}
 		}
-		
+
 		// ---  Use yaml.Marshal to ensure CLI overrides are safely persisted to the workspace! ---
 		data, err := yaml.Marshal(cfg)
 		if err == nil {
@@ -158,10 +158,10 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	if !autoResume {
 		// Print validation banner
 		log.Info(fmt.Sprintf("=== Starting Validation: %s ===", cfg.OpenShift.ClusterName))
-		
+
 		// Change from Info to StartPhase to spin up the UI
 		log.StartPhase("Running pre-flight validation checks...")
-		
+
 		exec := localexec.NewLocalClient(log)
 		validator := validation.NewValidator(cfg, exec, debug)
 		validator.SetLogger(log)
@@ -179,8 +179,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		log.EndPhase(true, "Validation prerequisites initialized")
 
 		if valErr := validator.Validate(ctx); valErr != nil {
-			log.Error("Pre-flight validation failed", "error", valErr)
-			return fmt.Errorf("validation failed")
+			return fmt.Errorf("validation failed for cluster %s: %w", cfg.OpenShift.ClusterName, valErr)
 		}
 	}
 	// ========================================================================

@@ -85,7 +85,7 @@ test_http() {
     
     local tests=(
         "ignition/bootstrap.ign:Bootstrap ignition"
-        "rhcos/rhcos-live-kernel-ppc64le:RHCOS kernel"
+        "rhcos/rhcos-live-kernel.ppc64le:RHCOS kernel"
         "rhcos/rhcos-live-initramfs.ppc64le.img:RHCOS initramfs"
         "rhcos/rhcos-live-rootfs.ppc64le.img:RHCOS rootfs"
     )
@@ -137,7 +137,7 @@ show_urls() {
     echo "  Worker:    http://${HELPER_IP}:8080/${CLUSTER_NAME}/ignition/worker.ign"
     echo ""
     echo "RHCOS images:"
-    echo "  Kernel:    http://${HELPER_IP}:8080/${CLUSTER_NAME}/rhcos/rhcos-live-kernel-ppc64le"
+    echo "  Kernel:    http://${HELPER_IP}:8080/${CLUSTER_NAME}/rhcos/rhcos-live-kernel.ppc64le"
     echo "  Initramfs: http://${HELPER_IP}:8080/${CLUSTER_NAME}/rhcos/rhcos-live-initramfs.ppc64le.img"
     echo "  Rootfs:    http://${HELPER_IP}:8080/${CLUSTER_NAME}/rhcos/rhcos-live-rootfs.ppc64le.img"
 }
@@ -209,8 +209,8 @@ func GenerateHelperScript(cfg *types.AgentConfig, port int) string {
 		ClusterName: cfg.OpenShift.ClusterName,
 		BaseDomain:  cfg.OpenShift.BaseDomain,
 		HTTPDir:     fmt.Sprintf("/var/www/html/%s", cfg.OpenShift.ClusterName),
-		VIP:         cfg.Network.LoadBalancerIP,
-		HelperIP:    cfg.Controller.IP,
+		VIP:         cfg.Services.LoadBalancer.VIP,
+		HelperIP:    cfg.Network.ControllerIP,
 		HTTPPort:    port,
 	}
 
@@ -227,13 +227,13 @@ func GenerateHelperScript(cfg *types.AgentConfig, port int) string {
 // ============================================================================
 
 // ConfigureHTTPD globally configures Apache to serve /var/www/html idempotently
-func ConfigureHTTPD(ctx context.Context,exec *localexec.LocalClient, port int) error {
+func ConfigureHTTPD(ctx context.Context, exec *localexec.LocalClient, port int) error {
 	// 1. Check if httpd is already perfectly configured
 	checkCmd := fmt.Sprintf(`grep -q "^Listen %d" /etc/httpd/conf/httpd.conf && grep -q '^DocumentRoot "/var/www/html"' /etc/httpd/conf/httpd.conf`, port)
 
-	if _, err := exec.Execute(ctx,checkCmd); err == nil {
-		exec.SystemctlEnable(ctx,"httpd")
-		exec.Execute(ctx,"sudo systemctl start httpd")
+	if _, err := exec.Execute(ctx, checkCmd); err == nil {
+		exec.SystemctlEnable(ctx, "httpd")
+		exec.Execute(ctx, "sudo systemctl start httpd")
 		return nil
 	}
 

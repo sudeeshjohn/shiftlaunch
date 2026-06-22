@@ -88,7 +88,7 @@ func NewSquidManager(cfg *types.AgentConfig, exec *localexec.LocalClient, log *l
 // Setup installs, configures, and starts the Squid proxy securely
 func (s *SquidManager) Setup(ctx context.Context) error {
 	s.logger.Info("Setting up local Squid proxy server...")
-	
+
 	// Shield from cancellation to prevent broken RPM databases or half-written firewall rules
 	shieldedCtx := context.WithoutCancel(ctx)
 
@@ -112,7 +112,7 @@ func (s *SquidManager) Setup(ctx context.Context) error {
 	}{
 		ClusterName:  s.cfg.OpenShift.ClusterName,
 		MachineCIDR:  s.cfg.Network.MachineCIDR,
-		ControllerIP: s.cfg.Controller.IP, //  Map the IP to the template
+		ControllerIP: s.cfg.Network.ControllerIP,
 	}
 
 	var buf bytes.Buffer
@@ -135,7 +135,7 @@ func (s *SquidManager) Setup(ctx context.Context) error {
 
 	// 4. Configure Firewall & SELinux (Ansible: Add Squid to firewall)
 	s.logger.Debug("Configuring firewall and SELinux for Squid proxy...")
-	
+
 	if _, err := s.executor.Execute(shieldedCtx, "sudo firewall-cmd --permanent --add-service=squid"); err != nil {
 		return fmt.Errorf("failed to add firewall rule for squid: %w", err)
 	}
@@ -190,7 +190,7 @@ func (s *SquidManager) Cleanup(ctx context.Context) error {
 // isProxyShared checks if other managed clusters are currently using the local Squid proxy
 func (s *SquidManager) isProxyShared() bool {
 	workspaceParent := filepath.Dir(s.workspaceDir)
-	
+
 	entries, err := os.ReadDir(workspaceParent)
 	if err != nil {
 		return false
@@ -201,7 +201,7 @@ func (s *SquidManager) isProxyShared() bool {
 		if !entry.IsDir() {
 			continue
 		}
-		
+
 		clusterName := entry.Name()
 		if clusterName == s.cfg.OpenShift.ClusterName {
 			continue // Skip our own cluster
@@ -222,7 +222,7 @@ func (s *SquidManager) isProxyShared() bool {
 		// Parse the config to see if it relies on the managed proxy gateway
 		var tmpCfg types.AgentConfig
 		if err := yaml.Unmarshal(data, &tmpCfg); err == nil {
-			if tmpCfg.ManagedServices.Proxy {
+			if tmpCfg.Services.Proxy.Enabled {
 				activeCount++
 			}
 		}

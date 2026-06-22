@@ -110,14 +110,14 @@ func PrepareISCDHCPData(cfg *types.AgentConfig) DHCPConfigData {
 
 	// 3. Map new configuration fields to template variables
 	return DHCPConfigData{
-		ClusterName: cfg.OpenShift.ClusterName,        // [cite: 109]
-		NetworkAddr: networkAddr,                      // [cite: 117]
-		Netmask:     netmask,                          // Calculated from CIDR 
-		Gateway:     network.Gateway,                  // [cite: 117]
-		Nameserver:  network.Nameserver,               // [cite: 117]
-		Domain:      cfg.OpenShift.BaseDomain,         // [cite: 109]
-		HelperIP:    cfg.Controller.IP,                // Controller IP replaces Helper [cite: 107, 127]
-		ManagePXE:   cfg.ManagedServices.PXE,          // Toggle based on ManagedServices [cite: 108]
+		ClusterName: cfg.OpenShift.ClusterName, // [cite: 109]
+		NetworkAddr: networkAddr,               // [cite: 117]
+		Netmask:     netmask,                   // Calculated from CIDR
+		Gateway:     network.Gateway,           // [cite: 117]
+		Nameserver:  cfg.Services.DNS.ExternalNameserver,
+		Domain:      cfg.OpenShift.BaseDomain, // [cite: 109]
+		HelperIP:    cfg.Network.ControllerIP, // Controller IP replaces Helper
+		ManagePXE:   cfg.Services.PXE.Enabled, // Toggle based on Services
 		Nodes:       nodeData,
 	}
 }

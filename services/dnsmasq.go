@@ -259,17 +259,20 @@ func (m *DNSmasqManager) prepareTemplateData(ctx context.Context) map[string]int
 	}
 
 	// Logic for DNSServer: If unmanaged, use customer's nameserver. Else, use local controller.
-	dnsServer := m.cfg.Controller.IP
-	if !m.cfg.ManagedServices.DNS && netConfig.Nameserver != "" {
-		dnsServer = netConfig.Nameserver
+	dnsServer := m.cfg.Network.ControllerIP
+	if !m.cfg.Services.DNS.Enabled && m.cfg.Services.DNS.ExternalNameserver != "" {
+		dnsServer = m.cfg.Services.DNS.ExternalNameserver
 	}
 
 	// Logic for PXEServer: Default to controller IP.
-	// (If PXE is unmanaged but DHCP is managed, this should point to the customer's external PXE server).
-	pxeServer := m.cfg.Controller.IP
+	// If PXE is unmanaged but DHCP is managed, this MUST point to the external PXE server.
+	pxeServer := m.cfg.Network.ControllerIP
+	if !m.cfg.Services.PXE.Enabled && m.cfg.Services.PXE.PXEServerIP != "" {
+		pxeServer = m.cfg.Services.PXE.PXEServerIP
+	}
 
 	// Figure out the registry hostname (custom or auto-generated)
-	registryHost := m.cfg.DisconnectedConfig.RegistryHostname
+	registryHost := m.cfg.Services.Registry.ExternalHostname
 	if registryHost == "" {
 		registryHost = fmt.Sprintf("registry.%s.%s", m.cfg.OpenShift.ClusterName, m.cfg.OpenShift.BaseDomain)
 	}
@@ -279,26 +282,26 @@ func (m *DNSmasqManager) prepareTemplateData(ctx context.Context) map[string]int
 		"Type":             "UPI",
 		"OCPVersion":       m.cfg.OpenShift.Version,
 		"Timestamp":        time.Now().Format(time.RFC3339),
-		"Interface":        m.cfg.Controller.NetworkInterface,
+		"Interface":        m.cfg.Network.ControllerInterface,
 		"NetworkCIDR":      netConfig.MachineCIDR,
 		"NetworkAddr":      networkAddr,
 		"Netmask":          calculatedNetmask, // Common for Power network_cidr /20
 		"Gateway":          netConfig.Gateway,
-		"HelperIP":         m.cfg.Controller.IP,
+		"HelperIP":         m.cfg.Network.ControllerIP,
 		"DNSServer":        dnsServer, // <--- New Variable
 		"PXEServer":        pxeServer, // <--- New Variable
 		"BaseDomain":       m.cfg.OpenShift.BaseDomain,
-		"VIP":              netConfig.LoadBalancerIP,
+		"VIP":              m.cfg.Services.LoadBalancer.VIP,
 		"IsSNO":            isSno,
 		"Nodes":            m.cfg.GetAllNodes(),
-		"DNSForwarders":    netConfig.DNSForwarders,
-		"HasRegistry":      m.cfg.DisconnectedConfig.Enabled && m.cfg.ManagedServices.Registry,
+		"DNSForwarders":    m.cfg.Services.DNS.UpstreamNameservers,
+		"HasRegistry":      m.cfg.Network.IsolationLevel == "fully-disconnected" && m.cfg.Services.Registry.Enabled,
 		"RegistryHostname": registryHost,
 	}
 
 	// Topology specific population
-	if isSno && len(m.cfg.Nodes.SNO) > 0 {
-		data["IP"] = m.cfg.Nodes.SNO[0].IP
+	if isSno && len(m.cfg.Nodes.Masters) > 0 {
+		data["IP"] = m.cfg.Nodes.Masters[0].IP
 		data["Type"] = "SNO"
 	} else {
 		data["Masters"] = m.cfg.Nodes.Masters
@@ -310,7 +313,7 @@ func (m *DNSmasqManager) prepareTemplateData(ctx context.Context) map[string]int
 
 func (m *DNSmasqManager) prepareGrubData(ctx context.Context, node *types.NodeConfig) interface{} {
 	role := node.Role
-	ctrlIP := m.cfg.Controller.IP
+	ctrlIP := m.cfg.Network.ControllerIP
 	clusterName := m.cfg.OpenShift.ClusterName
 
 	label := "Install Master"

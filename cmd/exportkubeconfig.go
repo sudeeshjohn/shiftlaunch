@@ -43,7 +43,7 @@ func init() {
 
 	exportKubeconfigCmd.Flags().StringVar(&exportKubeconfig, "kubeconfig", "", "Destination kubeconfig path (default: $KUBECONFIG or $HOME/.kube/config)")
 	exportKubeconfigCmd.Flags().BoolVar(&exportStdout, "stdout", false, "Print kubeconfig to stdout instead of file")
-	
+
 	// Note: --cluster is inherited globally from root.go
 }
 
@@ -64,11 +64,13 @@ type KubeconfigStructure struct {
 	CurrentContext string              `yaml:"current-context"`
 	Users          []KubeconfigUser    `yaml:"users"`
 }
+
 // KubeconfigCluster represents the kubeconfig YAML cluster structure
 type KubeconfigCluster struct {
 	Name    string                 `yaml:"name"`
 	Cluster map[string]interface{} `yaml:"cluster"`
 }
+
 // KubeconfigContext represents the kubeconfig YAML context structure
 type KubeconfigContext struct {
 	Name    string                 `yaml:"name"`
@@ -205,7 +207,7 @@ func resolveDestinationPath(kubeconfigFlag string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to get home directory: %w", err)
 	}
-	
+
 	dest := filepath.Join(homeDir, ".kube", "config")
 
 	// Guardrail: Ensure we still never accidentally overwrite a workspace

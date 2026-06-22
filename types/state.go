@@ -15,19 +15,19 @@ import (
 
 // CommandExecution tracks details of each command run
 type CommandExecution struct {
-	Command     string            `json:"command"`      // create, delete, validate, status, etc.
-	StartTime   string            `json:"start_time"`
-	EndTime     string            `json:"end_time,omitempty"`
-	Duration    string            `json:"duration,omitempty"`
-	Status      string            `json:"status"`       // success, failed, in_progress
-	Error       string            `json:"error,omitempty"`
-	User        string            `json:"user"`
-	Hostname    string            `json:"hostname"`
-	PID         int               `json:"pid"`
-	ConfigFile  string            `json:"config_file,omitempty"`
-	Flags       map[string]string `json:"flags,omitempty"`
-	PhasesBefore []string         `json:"phases_before,omitempty"` // Phases completed before this command
-	PhasesAfter  []string         `json:"phases_after,omitempty"`  // Phases completed after this command
+	Command      string            `json:"command"` // create, delete, validate, status, etc.
+	StartTime    string            `json:"start_time"`
+	EndTime      string            `json:"end_time,omitempty"`
+	Duration     string            `json:"duration,omitempty"`
+	Status       string            `json:"status"` // success, failed, in_progress
+	Error        string            `json:"error,omitempty"`
+	User         string            `json:"user"`
+	Hostname     string            `json:"hostname"`
+	PID          int               `json:"pid"`
+	ConfigFile   string            `json:"config_file,omitempty"`
+	Flags        map[string]string `json:"flags,omitempty"`
+	PhasesBefore []string          `json:"phases_before,omitempty"` // Phases completed before this command
+	PhasesAfter  []string          `json:"phases_after,omitempty"`  // Phases completed after this command
 }
 
 // PhaseExecution tracks details of each phase execution
@@ -43,38 +43,38 @@ type PhaseExecution struct {
 
 // DownloadedArtifact tracks downloaded files during downloads phase
 type DownloadedArtifact struct {
-	Name         string `json:"name"`          // e.g., "openshift-install", "oc", "kernel", "initramfs"
-	Type         string `json:"type"`          // e.g., "tool", "rhcos", "iso"
-	URL          string `json:"url"`
-	Destination  string `json:"destination"`
-	Size         int64  `json:"size,omitempty"`         // File size in bytes
-	Checksum     string `json:"checksum,omitempty"`     // Expected checksum
-	Status       string `json:"status"`                 // "downloading", "completed", "failed", "skipped"
-	StartedAt    string `json:"started_at,omitempty"`
-	CompletedAt  string `json:"completed_at,omitempty"`
-	Duration     string `json:"duration,omitempty"`
-	Error        string `json:"error,omitempty"`
+	Name        string `json:"name"` // e.g., "openshift-install", "oc", "kernel", "initramfs"
+	Type        string `json:"type"` // e.g., "tool", "rhcos", "iso"
+	URL         string `json:"url"`
+	Destination string `json:"destination"`
+	Size        int64  `json:"size,omitempty"`     // File size in bytes
+	Checksum    string `json:"checksum,omitempty"` // Expected checksum
+	Status      string `json:"status"`             // "downloading", "completed", "failed", "skipped"
+	StartedAt   string `json:"started_at,omitempty"`
+	CompletedAt string `json:"completed_at,omitempty"`
+	Duration    string `json:"duration,omitempty"`
+	Error       string `json:"error,omitempty"`
 }
 
 // ConfiguredService tracks service configuration during services phase
 type ConfiguredService struct {
-	Name         string `json:"name"`          // e.g., "DNS", "DHCP", "PXE", "HAProxy", "NFS"
-	Type         string `json:"type"`          // e.g., "network", "storage", "loadbalancer"
-	Status       string `json:"status"`        // "configuring", "completed", "failed", "skipped"
-	Managed      bool   `json:"managed"`       // true if managed by shiftlaunch
-	ConfigFile   string `json:"config_file,omitempty"`   // Path to config file
-	ServiceName  string `json:"service_name,omitempty"`  // Systemd service name
-	StartedAt    string `json:"started_at,omitempty"`
-	CompletedAt  string `json:"completed_at,omitempty"`
-	Duration     string `json:"duration,omitempty"`
-	Error        string `json:"error,omitempty"`
-	Details      string `json:"details,omitempty"`       // Additional info
+	Name        string `json:"name"`                   // e.g., "DNS", "DHCP", "PXE", "HAProxy", "NFS"
+	Type        string `json:"type"`                   // e.g., "network", "storage", "loadbalancer"
+	Status      string `json:"status"`                 // "configuring", "completed", "failed", "skipped"
+	Managed     bool   `json:"managed"`                // true if managed by shiftlaunch
+	ConfigFile  string `json:"config_file,omitempty"`  // Path to config file
+	ServiceName string `json:"service_name,omitempty"` // Systemd service name
+	StartedAt   string `json:"started_at,omitempty"`
+	CompletedAt string `json:"completed_at,omitempty"`
+	Duration    string `json:"duration,omitempty"`
+	Error       string `json:"error,omitempty"`
+	Details     string `json:"details,omitempty"` // Additional info
 }
 
 // DiscoveredNode tracks node metadata discovered from HMC
 type DiscoveredNode struct {
 	Hostname     string `json:"hostname"`
-	Role         string `json:"role"`          // master, worker, bootstrap
+	Role         string `json:"role"` // master, worker, bootstrap
 	IP           string `json:"ip"`
 	MACAddress   string `json:"mac_address"`
 	UUID         string `json:"uuid"`
@@ -87,25 +87,25 @@ type DiscoveredNode struct {
 
 // NFSMount tracks NFS mount points on VIOS for cleanup
 type NFSMount struct {
-	VIOSUUID    string `json:"vios_uuid"`
-	VIOSName    string `json:"vios_name"`
-	SystemName  string `json:"system_name"`
-	MountPoint  string `json:"mount_point"`
-	NFSServer   string `json:"nfs_server"`
-	ExportPath  string `json:"export_path"`
-	MountedAt   string `json:"mounted_at"`  // Timestamp
+	VIOSUUID   string `json:"vios_uuid"`
+	VIOSName   string `json:"vios_name"`
+	SystemName string `json:"system_name"`
+	MountPoint string `json:"mount_point"`
+	NFSServer  string `json:"nfs_server"`
+	ExportPath string `json:"export_path"`
+	MountedAt  string `json:"mounted_at"` // Timestamp
 }
 
 // ISOMapping tracks ISO media mappings for cleanup
 type ISOMapping struct {
-	NodeName    string `json:"node_name"`
-	MediaName   string `json:"media_name"`
-	VIOSUUID    string `json:"vios_uuid"`
-	VIOSName    string `json:"vios_name"`
-	LparUUID    string `json:"lpar_uuid"`
-	SystemName  string `json:"system_name"`
-	MountPoint  string `json:"mount_point"`  // Reference to NFSMount
-	MappedAt    string `json:"mapped_at"`    // Timestamp
+	NodeName   string `json:"node_name"`
+	MediaName  string `json:"media_name"`
+	VIOSUUID   string `json:"vios_uuid"`
+	VIOSName   string `json:"vios_name"`
+	LparUUID   string `json:"lpar_uuid"`
+	SystemName string `json:"system_name"`
+	MountPoint string `json:"mount_point"` // Reference to NFSMount
+	MappedAt   string `json:"mapped_at"`   // Timestamp
 }
 
 // DownloadProgress tracks individual file download progress
@@ -161,44 +161,44 @@ type CleanupProgress struct {
 
 // DeploymentState tracks the progress of the local agent execution
 type DeploymentState struct {
-	StateVersion     int                 `json:"state_version"`  // Schema version for migration support
-	ClusterName      string              `json:"cluster_name"`
-	Status           string              `json:"status"` // e.g., "in_progress", "completed", "failed", "deleted"
-	CurrentPhase     string              `json:"current_phase"`
-	CompletedPhases  []string            `json:"completed_phases"`
-	StartTime        string              `json:"start_time"`
-	EndTime          string              `json:"end_time,omitempty"`
-	Error            string              `json:"error,omitempty"`
-	Locked           bool                `json:"locked"` // Indicates if deployment is currently running
-	LockTime         string              `json:"lock_time,omitempty"`
-	
+	StateVersion    int      `json:"state_version"` // Schema version for migration support
+	ClusterName     string   `json:"cluster_name"`
+	Status          string   `json:"status"` // e.g., "in_progress", "completed", "failed", "deleted"
+	CurrentPhase    string   `json:"current_phase"`
+	CompletedPhases []string `json:"completed_phases"`
+	StartTime       string   `json:"start_time"`
+	EndTime         string   `json:"end_time,omitempty"`
+	Error           string   `json:"error,omitempty"`
+	Locked          bool     `json:"locked"` // Indicates if deployment is currently running
+	LockTime        string   `json:"lock_time,omitempty"`
+
 	// Enhanced tracking
-	CommandHistory   []CommandExecution  `json:"command_history,omitempty"`
-	PhaseHistory     []PhaseExecution    `json:"phase_history,omitempty"`
-	ConfigBackups    []string            `json:"config_backups,omitempty"`    // List of config backup files
-	LastConfigUpdate string              `json:"last_config_update,omitempty"`
-	TotalDuration    string              `json:"total_duration,omitempty"`
-	ResumeCount         int                   `json:"resume_count,omitempty"`           // Number of times resumed
-	Version             string                `json:"version,omitempty"`                // ShiftLaunch version
-	DownloadedArtifacts []DownloadedArtifact  `json:"downloaded_artifacts,omitempty"`   // Downloaded files tracking
-	ConfiguredServices  []ConfiguredService   `json:"configured_services,omitempty"`    // Services configuration tracking
-	DiscoveredNodes     []DiscoveredNode      `json:"discovered_nodes,omitempty"`       // Nodes discovered from HMC
-	NFSMounts           []NFSMount            `json:"nfs_mounts,omitempty"`             // NFS mounts on VIOS for cleanup
-	ISOMappings         []ISOMapping          `json:"iso_mappings,omitempty"`           // ISO media mappings for cleanup
-	
+	CommandHistory      []CommandExecution   `json:"command_history,omitempty"`
+	PhaseHistory        []PhaseExecution     `json:"phase_history,omitempty"`
+	ConfigBackups       []string             `json:"config_backups,omitempty"` // List of config backup files
+	LastConfigUpdate    string               `json:"last_config_update,omitempty"`
+	TotalDuration       string               `json:"total_duration,omitempty"`
+	ResumeCount         int                  `json:"resume_count,omitempty"`         // Number of times resumed
+	Version             string               `json:"version,omitempty"`              // ShiftLaunch version
+	DownloadedArtifacts []DownloadedArtifact `json:"downloaded_artifacts,omitempty"` // Downloaded files tracking
+	ConfiguredServices  []ConfiguredService  `json:"configured_services,omitempty"`  // Services configuration tracking
+	DiscoveredNodes     []DiscoveredNode     `json:"discovered_nodes,omitempty"`     // Nodes discovered from HMC
+	NFSMounts           []NFSMount           `json:"nfs_mounts,omitempty"`           // NFS mounts on VIOS for cleanup
+	ISOMappings         []ISOMapping         `json:"iso_mappings,omitempty"`         // ISO media mappings for cleanup
+
 	// VIOS admin user management
-	VIOSAdminUsername string              `json:"vios_admin_username,omitempty"` // viosadmin username
-	VIOSAdminPassword string              `json:"vios_admin_password,omitempty"` // viosadmin password
-	VIOSAdminCreated  bool                `json:"vios_admin_created,omitempty"`  // true if we created the user, false if it already existed
-	VIOSAdminCheckedAt string            `json:"vios_admin_checked_at,omitempty"` // timestamp when user was checked/created
-	
+	VIOSAdminUsername  string `json:"vios_admin_username,omitempty"`   // viosadmin username
+	VIOSAdminPassword  string `json:"vios_admin_password,omitempty"`   // viosadmin password
+	VIOSAdminCreated   bool   `json:"vios_admin_created,omitempty"`    // true if we created the user, false if it already existed
+	VIOSAdminCheckedAt string `json:"vios_admin_checked_at,omitempty"` // timestamp when user was checked/created
+
 	// Granular event tracking (NEW)
-	CompletedEvents     []string                    `json:"completed_events,omitempty"`      // Individual operation markers
-	FailedEvents        []string                    `json:"failed_events,omitempty"`         // Failed operation records
-	DownloadProgress    map[string]DownloadProgress `json:"download_progress,omitempty"`     // Per-file download tracking
-	ServiceOperations   []ServiceOperation          `json:"service_operations,omitempty"`    // Per-operation service tracking
-	NodeBootStatus      map[string]NodeBootStatus   `json:"node_boot_status,omitempty"`      // Per-node boot tracking
-	CleanupProgress     *CleanupProgress            `json:"cleanup_progress,omitempty"`      // Teardown progress tracking
+	CompletedEvents   []string                    `json:"completed_events,omitempty"`   // Individual operation markers
+	FailedEvents      []string                    `json:"failed_events,omitempty"`      // Failed operation records
+	DownloadProgress  map[string]DownloadProgress `json:"download_progress,omitempty"`  // Per-file download tracking
+	ServiceOperations []ServiceOperation          `json:"service_operations,omitempty"` // Per-operation service tracking
+	NodeBootStatus    map[string]NodeBootStatus   `json:"node_boot_status,omitempty"`   // Per-node boot tracking
+	CleanupProgress   *CleanupProgress            `json:"cleanup_progress,omitempty"`   // Teardown progress tracking
 }
 
 // StateManager handles state file operations with locking and backup
@@ -257,17 +257,44 @@ func (sm *StateManager) AcquireLock() error {
 	}
 
 	lockPath := sm.GetLockPath()
-	
-	// Check if lock file exists and is stale
-	if info, err := os.Stat(lockPath); err == nil {
-		// Lock file exists, check if it's stale (older than 1 hour)
-		if time.Since(info.ModTime()) > time.Hour {
-			// Stale lock, remove it
-			os.Remove(lockPath)
+
+	// Check if lock file exists
+	if _, err := os.Stat(lockPath); err == nil {
+		// Read the PID from the lock file
+		lockData, readErr := os.ReadFile(lockPath)
+		if readErr == nil {
+			var lockedPID int
+			// Parse the PID from the format: "Locked at: <time>\nPID: <pid>\n"
+			lines := strings.Split(string(lockData), "\n")
+			for _, line := range lines {
+				if strings.HasPrefix(line, "PID: ") {
+					fmt.Sscanf(line, "PID: %d", &lockedPID)
+					break
+				}
+			}
+
+			// Active Process Check: Does this PID actually exist?
+			if lockedPID > 0 {
+				process, err := os.FindProcess(lockedPID)
+				if err == nil {
+					// Sending signal 0 checks if the process is alive without actually killing it
+					if sigErr := process.Signal(syscall.Signal(0)); sigErr != nil {
+						// Process is dead! The lock is a zombie.
+						sm.logger.Debug("Detected stale lock from a dead process. Pruning lock automatically.")
+						os.Remove(lockPath)
+					} else {
+						return fmt.Errorf("cluster '%s' is actively locked by a running process (PID: %d). Refusing to overwrite", sm.clusterName, lockedPID)
+					}
+				}
+			}
 		} else {
-			// Lock is fresh - another process is using it
-			return fmt.Errorf("cluster '%s' is locked by another process (lock acquired at %s). If you're sure no other deployment is running, remove %s manually",
-				sm.clusterName, info.ModTime().Format(time.RFC3339), lockPath)
+			// If we can't read it, fall back to the 1-hour safety limit
+			info, _ := os.Stat(lockPath)
+			if time.Since(info.ModTime()) > time.Hour {
+				os.Remove(lockPath)
+			} else {
+				return fmt.Errorf("cluster '%s' is locked. Remove %s manually if you are sure no deployment is running", sm.clusterName, lockPath)
+			}
 		}
 	}
 
@@ -280,8 +307,7 @@ func (sm *StateManager) AcquireLock() error {
 	// Apply file lock (advisory lock) - this will fail if another process holds it
 	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		lockFile.Close()
-		return fmt.Errorf("cluster '%s' is locked by another process. If you're sure no other deployment is running, remove %s manually",
-			sm.clusterName, lockPath)
+		return fmt.Errorf("cluster '%s' is actively locked by another process", sm.clusterName)
 	}
 
 	// Truncate and write lock metadata
@@ -303,12 +329,12 @@ func (sm *StateManager) ReleaseLock() error {
 
 	// Release file lock
 	syscall.Flock(int(sm.lockFile.Fd()), syscall.LOCK_UN)
-	
+
 	// Close and remove lock file
 	sm.lockFile.Close()
 	os.Remove(sm.GetLockPath())
 	sm.lockFile = nil
-	
+
 	return nil
 }
 
@@ -319,25 +345,27 @@ func (sm *StateManager) LoadState() (*DeploymentState, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	var state DeploymentState
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, err
 	}
-	
+
 	// Initialize StateVersion if not set (backward compatibility)
 	if state.StateVersion == 0 {
 		state.StateVersion = 2 // Current version with granular tracking
 	}
-	
-	// Initialize maps if nil (backward compatibility)
-	if state.DownloadProgress == nil {
-		state.DownloadProgress = make(map[string]DownloadProgress)
+
+	// Evaluate the state for corruption or legacy structures
+	issues := sm.ValidateState(&state)
+	if len(issues) > 0 {
+		sm.logger.Debug("State inconsistencies detected upon load. Triggering auto-recovery...", "issues", len(issues))
+		// Execute the self-healing routine
+		if err := sm.RecoverState(&state); err != nil {
+			sm.logger.Warn("Failed to auto-recover corrupted state file", "error", err)
+		}
 	}
-	if state.NodeBootStatus == nil {
-		state.NodeBootStatus = make(map[string]NodeBootStatus)
-	}
-	
+
 	return &state, nil
 }
 
@@ -346,13 +374,13 @@ func (sm *StateManager) SaveState(state *DeploymentState) error {
 	if err := os.MkdirAll(sm.workspaceDir, 0755); err != nil {
 		return err
 	}
-	
+
 	path := sm.GetStatePath()
-	
+
 	// Create backup if state file exists (Terraform-style)
 	if _, err := os.Stat(path); err == nil {
 		backupPath := path + ".backup"
-		
+
 		// Read existing state
 		existingData, err := os.ReadFile(path)
 		if err == nil {
@@ -363,25 +391,25 @@ func (sm *StateManager) SaveState(state *DeploymentState) error {
 			}
 		}
 	}
-	
+
 	// Marshal state to JSON
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
 	}
-	
+
 	// Write to temporary file first (atomic write)
 	tempPath := path + ".tmp"
 	if err := os.WriteFile(tempPath, data, 0644); err != nil {
 		return err
 	}
-	
+
 	// Rename temp file to actual state file (atomic operation)
 	if err := os.Rename(tempPath, path); err != nil {
 		os.Remove(tempPath)
 		return err
 	}
-	
+
 	return nil
 }
 
@@ -491,14 +519,14 @@ func (sm *StateManager) RecordCompletedEvent(state *DeploymentState, event strin
 	if state.CompletedEvents == nil {
 		state.CompletedEvents = []string{}
 	}
-	
+
 	// Check if already recorded
 	for _, e := range state.CompletedEvents {
 		if e == event {
 			return nil // Already recorded
 		}
 	}
-	
+
 	state.CompletedEvents = append(state.CompletedEvents, event)
 	return sm.SaveState(state)
 }
@@ -508,7 +536,7 @@ func (sm *StateManager) RecordFailedEvent(state *DeploymentState, event string, 
 	if state.FailedEvents == nil {
 		state.FailedEvents = []string{}
 	}
-	
+
 	failedEvent := fmt.Sprintf("%s: %v", event, err)
 	state.FailedEvents = append(state.FailedEvents, failedEvent)
 	return sm.SaveState(state)
@@ -590,14 +618,14 @@ func (sm *StateManager) RecordNodePowerOff(state *DeploymentState, nodeName stri
 	if state.CleanupProgress == nil {
 		sm.InitializeCleanupProgress(state)
 	}
-	
+
 	// Check if already recorded
 	for _, n := range state.CleanupProgress.PowerOffCompleted {
 		if n == nodeName {
 			return nil
 		}
 	}
-	
+
 	state.CleanupProgress.PowerOffCompleted = append(state.CleanupProgress.PowerOffCompleted, nodeName)
 	return sm.SaveState(state)
 }
@@ -607,14 +635,14 @@ func (sm *StateManager) RecordISOUnmapped(state *DeploymentState, nodeName strin
 	if state.CleanupProgress == nil {
 		sm.InitializeCleanupProgress(state)
 	}
-	
+
 	// Check if already recorded
 	for _, n := range state.CleanupProgress.ISOUnmapped {
 		if n == nodeName {
 			return nil
 		}
 	}
-	
+
 	state.CleanupProgress.ISOUnmapped = append(state.CleanupProgress.ISOUnmapped, nodeName)
 	return sm.SaveState(state)
 }
@@ -624,14 +652,14 @@ func (sm *StateManager) RecordNFSUnmounted(state *DeploymentState, viosUUID stri
 	if state.CleanupProgress == nil {
 		sm.InitializeCleanupProgress(state)
 	}
-	
+
 	// Check if already recorded
 	for _, v := range state.CleanupProgress.NFSUnmounted {
 		if v == viosUUID {
 			return nil
 		}
 	}
-	
+
 	state.CleanupProgress.NFSUnmounted = append(state.CleanupProgress.NFSUnmounted, viosUUID)
 	return sm.SaveState(state)
 }
@@ -641,14 +669,14 @@ func (sm *StateManager) RecordServiceRemoved(state *DeploymentState, serviceName
 	if state.CleanupProgress == nil {
 		sm.InitializeCleanupProgress(state)
 	}
-	
+
 	// Check if already recorded
 	for _, s := range state.CleanupProgress.ServicesRemoved {
 		if s == serviceName {
 			return nil
 		}
 	}
-	
+
 	state.CleanupProgress.ServicesRemoved = append(state.CleanupProgress.ServicesRemoved, serviceName)
 	return sm.SaveState(state)
 }
@@ -658,7 +686,7 @@ func (sm *StateManager) RecordVIPRemoved(state *DeploymentState) error {
 	if state.CleanupProgress == nil {
 		sm.InitializeCleanupProgress(state)
 	}
-	
+
 	state.CleanupProgress.VIPRemoved = true
 	return sm.SaveState(state)
 }
@@ -726,17 +754,17 @@ func (sm *StateManager) IsVIPRemoved(state *DeploymentState) bool {
 // ValidateState performs integrity checks on the deployment state
 func (sm *StateManager) ValidateState(state *DeploymentState) []string {
 	var issues []string
-	
+
 	// Check StateVersion
 	if state.StateVersion == 0 {
 		issues = append(issues, "StateVersion is not set (should be 2)")
 	}
-	
+
 	// Check ClusterName
 	if state.ClusterName == "" {
 		issues = append(issues, "ClusterName is empty")
 	}
-	
+
 	// Check Status validity
 	validStatuses := []string{"in_progress", "completed", "failed", "deleted"}
 	statusValid := false
@@ -749,12 +777,12 @@ func (sm *StateManager) ValidateState(state *DeploymentState) []string {
 	if !statusValid {
 		issues = append(issues, fmt.Sprintf("Invalid status: %s", state.Status))
 	}
-	
+
 	// Check StartTime is set
 	if state.StartTime == "" {
 		issues = append(issues, "StartTime is not set")
 	}
-	
+
 	// Check completed phases are valid
 	validPhases := []string{"discovery", "downloads", "services", "ignition", "boot", "wait", "iso_cleanup"}
 	for _, phase := range state.CompletedPhases {
@@ -769,23 +797,18 @@ func (sm *StateManager) ValidateState(state *DeploymentState) []string {
 			issues = append(issues, fmt.Sprintf("Unknown completed phase: %s", phase))
 		}
 	}
-	
-	// Check for orphaned resources
-	if len(state.ISOMappings) > 0 && state.Status == "completed" {
-		issues = append(issues, fmt.Sprintf("Deployment completed but %d ISO mappings still tracked", len(state.ISOMappings)))
-	}
-	
-	if len(state.NFSMounts) > 0 && state.Status == "completed" {
-		issues = append(issues, fmt.Sprintf("Deployment completed but %d NFS mounts still tracked", len(state.NFSMounts)))
-	}
-	
+
+	// NOTE: ISO mappings and NFS mounts are intentionally left in state after deployment
+	// completion because cleanup is deferred to the 'shiftlaunch delete' command.
+	// This allows the cluster to remain operational for debugging and Day-2 operations.
+
 	// Check cleanup progress consistency
 	if state.CleanupProgress != nil {
 		if state.Status != "deleted" && state.CleanupProgress.Status == "completed" {
 			issues = append(issues, "CleanupProgress is completed but state is not deleted")
 		}
 	}
-	
+
 	// Check for duplicate completed events
 	eventMap := make(map[string]bool)
 	for _, event := range state.CompletedEvents {
@@ -794,42 +817,42 @@ func (sm *StateManager) ValidateState(state *DeploymentState) []string {
 		}
 		eventMap[event] = true
 	}
-	
+
 	return issues
 }
 
 // RecoverState attempts to recover from an inconsistent state
 func (sm *StateManager) RecoverState(state *DeploymentState) error {
-	sm.logger.Info("Attempting state recovery...")
-	
+	sm.logger.Debug("Attempting state recovery...")
+
 	// Set StateVersion if missing
 	if state.StateVersion == 0 {
 		state.StateVersion = 2
-		sm.logger.Info("Set StateVersion to 2")
+		sm.logger.Debug("Set StateVersion to 2")
 	}
-	
+
 	// Initialize nil maps
 	if state.DownloadProgress == nil {
 		state.DownloadProgress = make(map[string]DownloadProgress)
-		sm.logger.Info("Initialized DownloadProgress map")
+		sm.logger.Debug("Initialized DownloadProgress map")
 	}
-	
+
 	if state.NodeBootStatus == nil {
 		state.NodeBootStatus = make(map[string]NodeBootStatus)
-		sm.logger.Info("Initialized NodeBootStatus map")
+		sm.logger.Debug("Initialized NodeBootStatus map")
 	}
-	
+
 	// Initialize nil slices
 	if state.CompletedEvents == nil {
 		state.CompletedEvents = []string{}
-		sm.logger.Info("Initialized CompletedEvents slice")
+		sm.logger.Debug("Initialized CompletedEvents slice")
 	}
-	
+
 	if state.FailedEvents == nil {
 		state.FailedEvents = []string{}
-		sm.logger.Info("Initialized FailedEvents slice")
+		sm.logger.Debug("Initialized FailedEvents slice")
 	}
-	
+
 	// Remove duplicate completed events
 	uniqueEvents := make(map[string]bool)
 	cleanedEvents := []string{}
@@ -842,9 +865,9 @@ func (sm *StateManager) RecoverState(state *DeploymentState) error {
 	if len(cleanedEvents) != len(state.CompletedEvents) {
 		duplicateCount := len(state.CompletedEvents) - len(cleanedEvents)
 		state.CompletedEvents = cleanedEvents
-		sm.logger.Info("Removed duplicate completed events", "count", duplicateCount)
+		sm.logger.Debug("Removed duplicate completed events", "count", duplicateCount)
 	}
-	
+
 	// Fix status if inconsistent
 	if state.Status == "" {
 		if state.EndTime != "" {
@@ -852,107 +875,107 @@ func (sm *StateManager) RecoverState(state *DeploymentState) error {
 		} else {
 			state.Status = "in_progress"
 		}
-		sm.logger.Info("Fixed missing status", "status", state.Status)
+		sm.logger.Debug("Fixed missing status", "status", state.Status)
 	}
-	
+
 	// Save recovered state
 	if err := sm.SaveState(state); err != nil {
 		return fmt.Errorf("failed to save recovered state: %w", err)
 	}
-	
-	sm.logger.Info("State recovery completed successfully")
+
+	sm.logger.Debug("State recovery completed successfully")
 	return nil
 }
 
 // CreateStateBackup creates a timestamped backup of the current state
 func (sm *StateManager) CreateStateBackup() error {
 	statePath := sm.GetStatePath()
-	
+
 	// Check if state file exists
 	if _, err := os.Stat(statePath); os.IsNotExist(err) {
 		return fmt.Errorf("state file does not exist: %s", statePath)
 	}
-	
+
 	// Read current state
 	data, err := os.ReadFile(statePath)
 	if err != nil {
 		return fmt.Errorf("failed to read state file: %w", err)
 	}
-	
+
 	// Create backup with timestamp
 	timestamp := time.Now().Format("20060102-150405")
 	backupPath := fmt.Sprintf("%s.backup-%s", statePath, timestamp)
-	
+
 	if err := os.WriteFile(backupPath, data, 0644); err != nil {
 		return fmt.Errorf("failed to write backup file: %w", err)
 	}
-	
+
 	return nil
 }
 
 // RestoreStateFromBackup restores state from the most recent backup
 func (sm *StateManager) RestoreStateFromBackup() error {
 	stateDir := sm.workspaceDir
-	
+
 	// Find all backup files
 	entries, err := os.ReadDir(stateDir)
 	if err != nil {
 		return fmt.Errorf("failed to read workspace directory: %w", err)
 	}
-	
+
 	var backupFiles []string
 	for _, entry := range entries {
 		if !entry.IsDir() && strings.HasPrefix(entry.Name(), "state.json.backup-") {
 			backupFiles = append(backupFiles, entry.Name())
 		}
 	}
-	
+
 	if len(backupFiles) == 0 {
 		return fmt.Errorf("no backup files found")
 	}
-	
+
 	// Sort to get most recent (lexicographic sort works with our timestamp format)
 	sort.Strings(backupFiles)
 	mostRecent := backupFiles[len(backupFiles)-1]
-	
+
 	// Read backup
 	backupPath := filepath.Join(stateDir, mostRecent)
 	data, err := os.ReadFile(backupPath)
 	if err != nil {
 		return fmt.Errorf("failed to read backup file: %w", err)
 	}
-	
+
 	// Write to state file
 	statePath := sm.GetStatePath()
 	if err := os.WriteFile(statePath, data, 0644); err != nil {
 		return fmt.Errorf("failed to restore state file: %w", err)
 	}
-	
+
 	return nil
 }
 
 // GetStateHistory returns a summary of state changes over time
 func (sm *StateManager) GetStateHistory(state *DeploymentState) string {
 	var history strings.Builder
-	
+
 	history.WriteString(fmt.Sprintf("Cluster: %s\n", state.ClusterName))
 	history.WriteString(fmt.Sprintf("State Version: %d\n", state.StateVersion))
 	history.WriteString(fmt.Sprintf("Status: %s\n", state.Status))
 	history.WriteString(fmt.Sprintf("Started: %s\n", state.StartTime))
-	
+
 	if state.EndTime != "" {
 		history.WriteString(fmt.Sprintf("Ended: %s\n", state.EndTime))
 	}
-	
+
 	if state.ResumeCount > 0 {
 		history.WriteString(fmt.Sprintf("Resumed: %d times\n", state.ResumeCount))
 	}
-	
+
 	history.WriteString(fmt.Sprintf("\nCompleted Phases: %d\n", len(state.CompletedPhases)))
 	for _, phase := range state.CompletedPhases {
 		history.WriteString(fmt.Sprintf("  - %s\n", phase))
 	}
-	
+
 	history.WriteString(fmt.Sprintf("\nCompleted Events: %d\n", len(state.CompletedEvents)))
 	if len(state.CompletedEvents) > 0 {
 		// Show first 10 and last 10
@@ -971,20 +994,20 @@ func (sm *StateManager) GetStateHistory(state *DeploymentState) string {
 			}
 		}
 	}
-	
+
 	if len(state.FailedEvents) > 0 {
 		history.WriteString(fmt.Sprintf("\nFailed Events: %d\n", len(state.FailedEvents)))
 		for _, event := range state.FailedEvents {
 			history.WriteString(fmt.Sprintf("  - %s\n", event))
 		}
 	}
-	
+
 	if len(state.PhaseHistory) > 0 {
 		history.WriteString(fmt.Sprintf("\nPhase Execution History: %d\n", len(state.PhaseHistory)))
 		for _, phase := range state.PhaseHistory {
 			history.WriteString(fmt.Sprintf("  - %s: %s (%s)\n", phase.Phase, phase.Status, phase.Duration))
 		}
 	}
-	
+
 	return history.String()
 }

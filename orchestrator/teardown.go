@@ -65,15 +65,25 @@ func (o *Orchestrator) Teardown(ctx context.Context) error {
 	o.logger.EndPhase(phaseErr == nil, "Cluster LPARs powered off")
 	o.endPhase(phaseExec, phaseErr)
 
-	// Phase 2: Clean up Agent mappings (AFTER LPARs are powered off)
-	if o.cfg.Nodes.BootMethod == "agent" {
+	// ========================================================================
+	// PHASE 2: CLEAN UP AGENT MAPPINGS
+	// ========================================================================
+	// HARDENED LOGIC: We must check the state file for orphaned mappings!
+	// If the user changed the boot method to 'netboot' after a failed 'agent' run,
+	// relying strictly on the YAML config will permanently orphan the ISO on the VIOS.
+	hasOrphanedISOs := o.state != nil && len(o.state.ISOMappings) > 0
+
+	if o.cfg.Nodes.BootMethod == "agent" || hasOrphanedISOs {
 		phaseExec = o.startPhase("teardown_agent_cleanup")
 		o.logger.StartPhase("Cleaning up VIOS ISO Mappings...")
 		phaseErr = nil
 		func() {
-			// We no longer initialize the provider here either!
+			// SHIELDED CONTEXT: If the user hits Ctrl+C while the VIOS is deleting the
+			// 1GB payload, it will corrupt the VIOS filesystem!
+			shieldedCtx := context.WithoutCancel(ctx)
+
 			if hmcProvider, ok := provider.(*compute.HMCProvider); ok {
-				if err := hmcProvider.CleanupISOMappings(ctx); err != nil {
+				if err := hmcProvider.CleanupISOMappings(shieldedCtx); err != nil {
 					o.logger.Warn("Failed to clean up some Agent ISO mappings", "error", err)
 					phaseErr = err
 				}
@@ -83,69 +93,87 @@ func (o *Orchestrator) Teardown(ctx context.Context) error {
 		o.endPhase(phaseExec, phaseErr)
 	}
 
-	// Phase 3: Clean up local services
+	// ========================================================================
+	// PHASE 3: CLEAN UP LOCAL SERVICES
+	// ========================================================================
 	phaseExec = o.startPhase("teardown_services")
 	o.logger.StartPhase("Removing local network and service configurations...")
 	phaseErr = nil
 	func() {
-		// Shield local network cleanup from cancellation to prevent orphaned VIPs and NFS exports!
 		shieldedCtx := context.WithoutCancel(ctx)
 
-		if o.cfg.ManagedServices.DNS || o.cfg.ManagedServices.DHCP || o.cfg.ManagedServices.PXE {
-			dnsmasq := services.NewDNSmasqManager(o.cfg, o.daemonCfg, o.executor)
-			dnsmasq.Cleanup(shieldedCtx)
+		// 1. DNS/DHCP/PXE - Unconditional file deletion based on cluster name
+		// Safe to run even if disabled, as it targets specific file string matches.
+		dnsmasq := services.NewDNSmasqManager(o.cfg, o.daemonCfg, o.executor)
+		dnsmasq.Cleanup(shieldedCtx)
+
+		// 2. HAProxy & VIP Cleanup
+		// We must check if the LB was previously managed during this deployment
+		wasLBManaged := o.cfg.Services.LoadBalancer.Enabled
+		if !wasLBManaged && o.state != nil {
+			for _, svc := range o.state.ConfiguredServices {
+				if svc.Name == "haproxy" && svc.Managed {
+					wasLBManaged = true
+					break
+				}
+			}
 		}
 
-		if o.cfg.ManagedServices.LoadBalancer {
-			o.executor.Execute(shieldedCtx, fmt.Sprintf("sudo rm -f /etc/haproxy/conf.d/10-%s.cfg", o.cfg.OpenShift.ClusterName))
-			o.executor.SystemctlRestart(shieldedCtx, "haproxy")
+		// Remove cluster HAProxy file unconditionally
+		o.executor.Execute(shieldedCtx, fmt.Sprintf("sudo rm -f /etc/haproxy/conf.d/10-%s.cfg", o.cfg.OpenShift.ClusterName))
+		o.executor.SystemctlRestart(shieldedCtx, "haproxy")
 
+		if wasLBManaged && o.cfg.Services.LoadBalancer.VIP != "" {
 			netMgr := controller.NewNetworkManager(o.executor, o.debug, o.logger)
-			vip := o.cfg.Network.LoadBalancerIP
-			iface := o.cfg.Controller.NetworkInterface
+			vip := o.cfg.Services.LoadBalancer.VIP
+			iface := o.cfg.Network.ControllerInterface
 			cidr := o.cfg.Network.MachineCIDR
-			ctrlIP := o.cfg.Controller.IP
+			ctrlIP := o.cfg.Network.ControllerIP
 
 			if err := netMgr.RemoveVIPAlias(shieldedCtx, iface, vip, cidr, ctrlIP); err != nil {
 				o.logger.Warn("Failed to cleanly remove VIP alias via nmcli", "error", err)
-				
 				prefix := controller.ExtractCIDRPrefix(cidr)
 				o.executor.Execute(shieldedCtx, fmt.Sprintf("sudo ip addr del %s/%s dev %s", vip, prefix, iface))
 			}
 		}
 
-		if o.cfg.ManagedServices.Proxy {
-			squidMgr := services.NewSquidManager(o.cfg, o.executor, o.logger, o.workspaceDir)
-			if err := squidMgr.Cleanup(shieldedCtx); err != nil {
-				o.logger.Warn("Failed to clean up Squid proxy", "error", err)
+		// 3. Proxy and Registry (State-aware execution)
+		wasProxyManaged := o.cfg.Services.Proxy.Enabled
+		wasRegistryManaged := (o.cfg.Network.IsolationLevel == "fully-disconnected" && o.cfg.Services.Registry.Enabled)
+
+		if o.state != nil {
+			for _, svc := range o.state.ConfiguredServices {
+				if svc.Name == "squid-proxy" && svc.Managed {
+					wasProxyManaged = true
+				}
+				if svc.Name == "local-registry" && svc.Managed {
+					wasRegistryManaged = true
+				}
 			}
 		}
 
-		//  Clean up the Podman registry, firewall rules, and certs!
-		if o.cfg.DisconnectedConfig.Enabled && o.cfg.ManagedServices.Registry {
+		if wasProxyManaged {
+			squidMgr := services.NewSquidManager(o.cfg, o.executor, o.logger, o.workspaceDir)
+			_ = squidMgr.Cleanup(shieldedCtx)
+		}
+
+		if wasRegistryManaged {
 			registryMgr := services.NewRegistryManager(o.cfg, o.executor, o.logger, o.stateManager, o.state, o.workspaceDir)
-			if err := registryMgr.Cleanup(shieldedCtx); err != nil {
-				o.logger.Warn("Failed to clean up Local Registry", "error", err)
-			}
+			_ = registryMgr.Cleanup(shieldedCtx)
 		}
-		
-		if !o.stateManager.IsServiceRemoved(o.state, "local-hosts") {
-			netMgr := controller.NewNetworkManager(o.executor, o.debug, o.logger)
-			if err := netMgr.RemoveHostsEntry(shieldedCtx, o.cfg.OpenShift.ClusterName); err != nil {
-				o.logger.Warn("Failed to clean up /etc/hosts entry", "error", err)
-			} else {
-				_ = o.stateManager.RecordServiceRemoved(o.state, "local-hosts")
-			}
-		}
-		
-		if o.cfg.Nodes.BootMethod != "agent" {
-			httpServer := services.NewHTTPServerManager(o.cfg, o.daemonCfg, o.executor, o.logger)
-			httpServer.Cleanup(shieldedCtx)
-		}
-		if o.cfg.Nodes.BootMethod == "agent" && o.cfg.ManagedServices.NFS {
-			nfsMgr := services.NewNFSManager(o.cfg, o.executor, o.logger, o.workspaceDir)
-			nfsMgr.Cleanup(shieldedCtx)
-		}
+
+		// 4. /etc/hosts & HTTP/NFS Cleanup
+		netMgr := controller.NewNetworkManager(o.executor, o.debug, o.logger)
+		_ = netMgr.RemoveHostsEntry(shieldedCtx, o.cfg.OpenShift.ClusterName)
+
+		// HTTP directory is named after the cluster, safe to remove unconditionally
+		httpServer := services.NewHTTPServerManager(o.cfg, o.daemonCfg, o.executor, o.logger)
+		httpServer.Cleanup(shieldedCtx)
+
+		// NFS cleanup - removes the cluster-named export file unconditionally
+		nfsMgr := services.NewNFSManager(o.cfg, o.executor, o.logger, o.workspaceDir)
+		nfsMgr.Cleanup(shieldedCtx)
+
 	}()
 	o.logger.EndPhase(phaseErr == nil, "Local network and services removed")
 	o.endPhase(phaseExec, phaseErr)
@@ -159,12 +187,12 @@ func (o *Orchestrator) Teardown(ctx context.Context) error {
 			o.logger.Warn("Failed to create .deleted marker", "error", err)
 			phaseErr = err
 		}
-		
+
 		managedMarkerPath := filepath.Join(o.workspaceDir, ".managed")
 		if err := os.Remove(managedMarkerPath); err != nil && !os.IsNotExist(err) {
 			o.logger.Warn("Failed to remove .managed marker", "error", err)
 		}
-		
+
 		failedMarkerPath := filepath.Join(o.workspaceDir, ".failed")
 		if err := os.Remove(failedMarkerPath); err != nil && !os.IsNotExist(err) {
 			o.logger.Warn("Failed to remove .failed marker", "error", err)

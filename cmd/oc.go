@@ -15,8 +15,8 @@ import (
 )
 
 var ocCmd = &cobra.Command{
-	Use:   "oc [args...]",
-	Short: "Execute OpenShift CLI (oc) commands against a managed cluster",
+	Use:     "oc [args...]",
+	Short:   "Execute OpenShift CLI (oc) commands against a managed cluster",
 	GroupID: "utils",
 	Long: `A convenience wrapper that automatically configures the KUBECONFIG 
 and executes the 'oc' binary for a specific cluster.
@@ -24,18 +24,18 @@ and executes the 'oc' binary for a specific cluster.
 Example:
   shiftlaunch oc --cluster my-cluster get nodes
   shiftlaunch oc --cluster my-cluster debug node/master-0`,
-	
+
 	// Keep flag parsing ENABLED so ShiftLaunch can read the --cluster flag
-	DisableFlagParsing: false, 
-	RunE: runOcWrapper,
+	DisableFlagParsing: false,
+	RunE:               runOcWrapper,
 }
 
 func init() {
-	// This tells Cobra to stop parsing flags the moment it hits 
-	// the first command (like "get" or "debug"). This means flags like "-w" 
+	// This tells Cobra to stop parsing flags the moment it hits
+	// the first command (like "get" or "debug"). This means flags like "-w"
 	// will be safely passed to 'oc' instead of breaking ShiftLaunch.
 	ocCmd.Flags().SetInterspersed(false)
-	
+
 	rootCmd.AddCommand(ocCmd)
 }
 
@@ -50,7 +50,7 @@ func runOcWrapper(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load daemon config: %w", err)
 	}
 
-	// Because DisableFlagParsing is false, the global clusterName 
+	// Because DisableFlagParsing is false, the global clusterName
 	// variable from root.go is perfectly populated!
 	if clusterName == "" {
 		return fmt.Errorf("you must specify a cluster using --cluster")
@@ -58,7 +58,7 @@ func runOcWrapper(cmd *cobra.Command, args []string) error {
 
 	workspaceDir := filepath.Join(daemonCfg.Paths.WorkspaceDir, clusterName)
 	stateManager := types.NewStateManager(clusterName)
-	
+
 	// 3. Ensure cluster actually exists and is deployed
 	if _, err := stateManager.LoadState(); err != nil {
 		return fmt.Errorf("could not load state for cluster '%s'. Is it deployed?", clusterName)
@@ -77,7 +77,7 @@ func runOcWrapper(cmd *cobra.Command, args []string) error {
 
 	// 5. Execute the command interactively
 	ocExec := exec.Command(ocPath, args...)
-	
+
 	// ---  Strip existing KUBECONFIG from shell to prevent bleed-through ---
 	var cleanEnv []string
 	for _, env := range os.Environ() {

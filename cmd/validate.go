@@ -11,9 +11,9 @@ import (
 )
 
 var validateCmd = &cobra.Command{
-	Use:   "validate",
-	Short: "Validate cluster configuration against infrastructure",
-	GroupID: "utils",
+	Use:          "validate",
+	Short:        "Validate cluster configuration against infrastructure",
+	GroupID:      "utils",
 	SilenceUsage: true, // Suppress usage menu on validation errors
 	Long: `Performs pre-flight checks against the YAML and physical HMC infrastructure.
 
@@ -56,7 +56,6 @@ func runValidate(cmd *cobra.Command, args []string) error {
 
 	// The validator handles all its own Phase UI and error printing now
 	if err := validator.Validate(ctx); err != nil {
-		log.Error("Validation failed", "error", err)
 		return fmt.Errorf("validation failed for cluster %s: %w", cfg.OpenShift.ClusterName, err)
 	}
 

@@ -74,7 +74,7 @@ func (h *HMCProvider) DiscoverMetadata(ctx context.Context) error {
 	// 2. PARALLELIZE WITH SEMAPHORE AND CONTEXT AWARENESS
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(nodes))
-	var memMu sync.Mutex 
+	var memMu sync.Mutex
 	var discoveredData []types.DiscoveredNode
 
 	concurrencyLimit := 3
@@ -114,16 +114,16 @@ func (h *HMCProvider) DiscoverMetadata(ctx context.Context) error {
 					if ctx.Err() != nil {
 						return ctx.Err() // Abort if cancelled mid-flight
 					}
-					
+
 					apiTrafficMutex.RLock()
 					err := call(ctx)
 					apiTrafficMutex.RUnlock()
-					
+
 					if err != nil && strings.Contains(err.Error(), "406") {
-						// 🛡️ SHIELDED LOCK UPGRADE: If user hits Ctrl+C right now, 
+						// 🛡️ SHIELDED LOCK UPGRADE: If user hits Ctrl+C right now,
 						// the login MUST complete to prevent session corruption!
 						shieldedCtx := context.WithoutCancel(ctx)
-						
+
 						apiTrafficMutex.Lock()
 						testErr := call(shieldedCtx)
 						if testErr != nil && strings.Contains(testErr.Error(), "406") {
@@ -197,11 +197,11 @@ func (h *HMCProvider) DiscoverMetadata(ctx context.Context) error {
 	close(errCh)
 
 	// 🛡️ SAVE ON ABORT: We process the state save BEFORE evaluating errors.
-	// This guarantees that any nodes successfully discovered before the cancellation 
+	// This guarantees that any nodes successfully discovered before the cancellation
 	// are safely written to state.json and won't be lost!
 	if h.stateManager != nil && len(discoveredData) > 0 {
 		state, err := h.stateManager.LoadState()
-		
+
 		if err != nil || state == nil {
 			state = &types.DeploymentState{
 				StateVersion:     2,
@@ -258,6 +258,7 @@ func (h *HMCProvider) BootNode(ctx context.Context, node *types.NodeConfig) erro
 	// Default to netboot
 	return h.networkBootLpar(ctx, node)
 }
+
 // BootNodes boots all nodes using the configured boot method
 func (h *HMCProvider) BootNodes(ctx context.Context) error {
 	if h.cfg.Nodes.BootMethod == "agent" {
@@ -266,10 +267,10 @@ func (h *HMCProvider) BootNodes(ctx context.Context) error {
 
 	// Default to netboot - boot all nodes in parallel
 	h.logger.Info("Initiating parallel network boot sequence...")
-	
+
 	state, _ := h.stateManager.LoadState()
 	allNodes := h.cfg.GetAllNodes()
-	
+
 	var wg sync.WaitGroup
 	var stateMu sync.Mutex
 	errCh := make(chan error, len(allNodes))
@@ -286,7 +287,7 @@ func (h *HMCProvider) BootNodes(ctx context.Context) error {
 		wg.Add(1)
 		go func(targetNode *types.NodeConfig) {
 			defer wg.Done()
-			
+
 			if err := h.networkBootLpar(ctx, targetNode); err != nil {
 				errCh <- fmt.Errorf("HMC boot sequence failed for %s: %w", targetNode.Hostname, err)
 				return
@@ -308,14 +309,13 @@ func (h *HMCProvider) BootNodes(ctx context.Context) error {
 	for err := range errCh {
 		errs = append(errs, err.Error())
 	}
-	
+
 	if len(errs) > 0 {
 		return fmt.Errorf("parallel boot encountered errors: %s", strings.Join(errs, "; "))
 	}
 
 	return nil
 }
-
 
 // networkBootLpar executes the lpar_netboot command via REST API for a single node
 func (h *HMCProvider) networkBootLpar(ctx context.Context, node *types.NodeConfig) error {
@@ -338,7 +338,7 @@ func (h *HMCProvider) networkBootLpar(ctx context.Context, node *types.NodeConfi
 
 			// 🛡️ Exclusive Lock: Pause ALL other goroutines from making API calls
 			apiTrafficMutex.Lock()
-			
+
 			// Do a quick test to see if another thread already fixed the token while we were waiting in line!
 			_, testErr := h.hmcClient.GetLogicalPartitionDetailed(ctx, node.UUID, false)
 			if testErr != nil && strings.Contains(testErr.Error(), "406") {
@@ -357,7 +357,7 @@ func (h *HMCProvider) networkBootLpar(ctx context.Context, node *types.NodeConfi
 					h.logger.Info("Successfully re-authenticated with HMC")
 				}
 			}
-			
+
 			apiTrafficMutex.Unlock()
 			time.Sleep(5 * time.Second)
 		} else {
@@ -574,7 +574,7 @@ func (h *HMCProvider) PowerOffNodes(ctx context.Context) error {
 		if err != nil {
 			// Extract just the first line of the error for cleaner logging
 			errMsg := strings.Split(err.Error(), "\n")[0]
-			
+
 			// If the HMC complains the LPAR is already off, feed it cleanly to the spinner!
 			if strings.Contains(errMsg, "HSCL1558") || strings.Contains(strings.ToLower(errMsg), "unavailable in the current partition state") {
 				h.logger.Info("LPAR already powered off", "lpar", node.ExistingLPARName)
@@ -592,16 +592,16 @@ func (h *HMCProvider) PowerOffNodes(ctx context.Context) error {
 
 	if powerOffCount > 0 {
 		h.logger.Info("Waiting for LPARs to fully transition to powered-off state (this may take a minute)...")
-		
+
 		maxRetries := 36 // Up to 3 minutes (36 * 5 seconds)
 		for i := 0; i < maxRetries; i++ {
 			allPoweredOff := true
-			
+
 			for _, node := range nodes {
 				if node.UUID == "" {
 					continue
 				}
-				
+
 				// Natively query the lightweight JSON endpoint for the exact LPAR state
 				lpar, err := h.hmcClient.GetLogicalPartitionQuick(node.UUID, false)
 				if err == nil && lpar != nil {
@@ -612,12 +612,12 @@ func (h *HMCProvider) PowerOffNodes(ctx context.Context) error {
 					}
 				}
 			}
-			
+
 			if allPoweredOff {
 				h.logger.Info("All LPARs successfully powered off and hardware locks released!")
 				break
 			}
-			
+
 			if i == maxRetries-1 {
 				h.logger.Warn("Timeout waiting for some LPARs to power off. ISO cleanup may fail.")
 			} else {
@@ -751,15 +751,22 @@ func (h *HMCProvider) bootNodeWithISO(ctx context.Context, node *types.NodeConfi
 	h.logger.Info("Mount point and media configuration", "mount", mountPoint, "media", mediaName, "node", node.Hostname)
 
 	// ========================================================================
-	// STEP 6: MOUNT NFS IF NOT ALREADY MOUNTED (SHARED MOUNT PER VIOS)
+	// STEP 6: MOUNT NFS (External BYO-NFS or Local Dynamic Resolution)
 	// ========================================================================
-	//  Dynamically discover the Management IP that can route to the VIOS
-	nfsServer := h.cfg.Controller.IP
-	if conn, err := net.Dial("udp", h.cfg.HMC.IP+":443"); err == nil {
-		nfsServer = conn.LocalAddr().(*net.UDPAddr).IP.String()
-		conn.Close()
-	}
+	nfsServer := h.cfg.Network.ControllerIP
 	exportPath := fmt.Sprintf("/opt/shiftlaunch/clusters/%s/install-dir", h.cfg.OpenShift.ClusterName)
+
+	if !h.cfg.Services.NFS.Enabled && h.cfg.Services.NFS.NFSServerIP != "" {
+		// External "Bring Your Own" NFS
+		nfsServer = h.cfg.Services.NFS.NFSServerIP
+		// Note: External NFS implies the user has exported the install-dir to match the cluster name
+	} else {
+		// Local Managed NFS: Dynamically discover the Management IP that can route to the VIOS
+		if conn, err := net.Dial("udp", h.cfg.HMC.IP+":443"); err == nil {
+			nfsServer = conn.LocalAddr().(*net.UDPAddr).IP.String()
+			conn.Close()
+		}
+	}
 
 	// Check if we've already mounted NFS for this VIOS
 	if !h.viosMounted[viosUUID] {
@@ -1232,15 +1239,22 @@ func (h *HMCProvider) bootNodesWithISOBulk(ctx context.Context) error {
 			}
 		}
 
-		// Ensure NFS is Mounted on VIOS
+		// Ensure NFS is Mounted on VIOS (External BYO-NFS or Local Dynamic Resolution)
 		if !h.viosMounted[viosUUID] {
-			//  Dynamically discover the Management IP that can route to the VIOS
-			nfsServer := h.cfg.Controller.IP
-			if conn, err := net.Dial("udp", h.cfg.HMC.IP+":443"); err == nil {
-				nfsServer = conn.LocalAddr().(*net.UDPAddr).IP.String()
-				conn.Close()
-			}
+			nfsServer := h.cfg.Network.ControllerIP
 			exportPath := fmt.Sprintf("/opt/shiftlaunch/clusters/%s/install-dir", h.cfg.OpenShift.ClusterName)
+
+			if !h.cfg.Services.NFS.Enabled && h.cfg.Services.NFS.NFSServerIP != "" {
+				// External "Bring Your Own" NFS
+				nfsServer = h.cfg.Services.NFS.NFSServerIP
+				// Note: External NFS implies the user has exported the install-dir to match the cluster name
+			} else {
+				// Local Managed NFS: Dynamically discover the Management IP that can route to the VIOS
+				if conn, err := net.Dial("udp", h.cfg.HMC.IP+":443"); err == nil {
+					nfsServer = conn.LocalAddr().(*net.UDPAddr).IP.String()
+					conn.Close()
+				}
+			}
 
 			h.logger.Info("Creating mount directory on VIOS", "path", mountPoint)
 			mkdirCmd := fmt.Sprintf(`viosvrcmd -m %s -p %s -c "mkdir -p %s" --admin`, node.SystemName, viosName, mountPoint)
@@ -1265,7 +1279,7 @@ func (h *HMCProvider) bootNodesWithISOBulk(ctx context.Context) error {
 			h.logger.Info("Uploading ISO to VIOS repository (this copies ~1GB and may take a few minutes)...", "iso", isoPath)
 			err = h.hmcClient.CreateVirtualOpticalMedia(
 				context.WithoutCancel(ctx), node.SystemName, viosUUID, viosName, mediaName, isoPath, 0, true, false, h.debug)
-			
+
 			if err != nil && !strings.Contains(err.Error(), "already exists") {
 				return fmt.Errorf("failed to create optical media on VIOS: %w", err)
 			}
@@ -1289,7 +1303,7 @@ func (h *HMCProvider) bootNodesWithISOBulk(ctx context.Context) error {
 		if h.isoMappings == nil {
 			h.isoMappings = []types.ISOMapping{}
 		}
-		
+
 		exists := false
 		for _, m := range h.isoMappings {
 			if m.NodeName == node.Hostname {
@@ -1297,7 +1311,7 @@ func (h *HMCProvider) bootNodesWithISOBulk(ctx context.Context) error {
 				break
 			}
 		}
-		
+
 		if !exists {
 			h.isoMappings = append(h.isoMappings, types.ISOMapping{
 				NodeName:   node.Hostname,
@@ -1318,7 +1332,7 @@ func (h *HMCProvider) bootNodesWithISOBulk(ctx context.Context) error {
 		for sysUUID, viosMap := range bulkMap {
 			for viosUUID, lparMediaMap := range viosMap {
 				h.logger.Info("Bulk mapping on VIOS", "viosUUID", viosUUID, "lpar_count", len(lparMediaMap))
-				
+
 				_, err := h.hmcClient.CreateVirtualOpticalMapsMultiLpar(
 					context.WithoutCancel(ctx), sysUUID, viosUUID, lparMediaMap, h.debug)
 				if err != nil {
@@ -1361,7 +1375,7 @@ func (h *HMCProvider) bootNodesWithISOBulk(ctx context.Context) error {
 		h.logger.Info("Unmounting NFS from VIOS", "vios", h.isoMappings[i].VIOSName, "mount", mp)
 		// Shield from cancellation so we don't leave the VIOS hanging!
 		_, err := hmc.UnmountNFS(context.WithoutCancel(ctx), h.hmcClient, h.isoMappings[i].SystemName, h.isoMappings[i].VIOSName, mp, h.debug)
-		
+
 		if err != nil && !strings.Contains(err.Error(), "Could not find anything to unmount") && !strings.Contains(err.Error(), "not mounted") {
 			h.logger.Warn("Failed to cleanly unmount NFS (will retry during teardown)", "error", err)
 			continue
@@ -1370,7 +1384,7 @@ func (h *HMCProvider) bootNodesWithISOBulk(ctx context.Context) error {
 		h.logger.Info("Removing mount directory from VIOS", "mount", mp)
 		rmdirCmd := fmt.Sprintf(`viosvrcmd -m %s -p %s -c "rmdir %s" --admin`, h.isoMappings[i].SystemName, h.isoMappings[i].VIOSName, mp)
 		_, _ = hmc.CliRunnerViaSSH(h.cfg.HMC.IP, viosUsername, viosPassword, rmdirCmd, h.debug)
-		
+
 		mountsCleaned[mp] = true
 	}
 
@@ -1387,35 +1401,33 @@ func (h *HMCProvider) bootNodesWithISOBulk(ctx context.Context) error {
 	}
 	_ = h.stateManager.SaveState(state)
 
-
-	// 3. Save Profiles and Power On (PARALLELIZED)
+	// 3. Save Profiles and Power On (PARALLELIZED & SHIELDED)
 	h.logger.Info("Saving profiles and powering on all LPARs concurrently...")
 	var wg sync.WaitGroup
 	var stateMu sync.Mutex
-	errCh := make(chan error, len(nodesToProcess)) // 🛡️ ADDED ERROR CHANNEL
+	errCh := make(chan error, len(nodesToProcess))
 
 	for _, n := range nodesToProcess {
 		wg.Add(1)
-		
-		// Pass the node into the closure to prevent loop-capture bugs
+
 		go func(targetNode *types.NodeConfig) {
 			defer wg.Done()
-			
 			h.logger.Info("Configuring and booting", "lpar", targetNode.ExistingLPARName)
-			
-			// These operations are safe to run concurrently for DIFFERENT LparUUIDs
+
+			// 🛡️ SHIELDED API CALLS: Protect the HMC session token from concurrent corruption
+			apiTrafficMutex.RLock()
 			_ = h.hmcClient.SaveCurrentLparConfig(context.WithoutCancel(ctx), targetNode.UUID, "default_profile", true, h.debug)
 			_ = h.hmcClient.SetPartitionBootString(context.WithoutCancel(ctx), targetNode.UUID, "cd/dvd-all", h.debug)
 
 			lparDetails, err := h.hmcClient.GetLogicalPartitionDetailed(ctx, targetNode.UUID, h.debug)
+			apiTrafficMutex.RUnlock()
+
 			if err != nil {
 				errCh <- fmt.Errorf("failed to fetch LPAR details for %s: %w", targetNode.Hostname, err)
 				return
 			}
 
 			profileHref := lparDetails.AssociatedPartitionProfile.Href
-			
-			// 🛡️ ADDED BOUNDARY SAFETY CHECK
 			if len(profileHref) < 36 {
 				errCh <- fmt.Errorf("invalid profile href format for LPAR %s: '%s'", targetNode.Hostname, profileHref)
 				return
@@ -1427,8 +1439,11 @@ func (h *HMCProvider) bootNodesWithISOBulk(ctx context.Context) error {
 				BootMode:    "norm",
 				Keylock:     "normal",
 			}
-			
+
+			apiTrafficMutex.RLock()
 			_, err = h.hmcClient.PowerOnPartition(ctx, targetNode.UUID, powerOnOpts, h.debug)
+			apiTrafficMutex.RUnlock()
+
 			if err != nil && !strings.Contains(err.Error(), "already running") {
 				errCh <- fmt.Errorf("failed to power on LPAR %s: %w", targetNode.Hostname, err)
 				return
@@ -1442,7 +1457,7 @@ func (h *HMCProvider) bootNodesWithISOBulk(ctx context.Context) error {
 				_ = h.stateManager.SaveState(state)
 			}
 			stateMu.Unlock()
-			
+
 			h.logger.Info("LPAR booted successfully", "lpar", targetNode.ExistingLPARName)
 		}(n)
 	}
@@ -1478,7 +1493,7 @@ func (h *HMCProvider) CleanupISOMappings(ctx context.Context) error {
 	}
 
 	var viosUsername, viosPassword string
-	
+
 	// Ensure we don't accept an empty password from a corrupted state file
 	if state, err := h.stateManager.LoadState(); err == nil && state != nil && state.VIOSAdminUsername != "" && state.VIOSAdminPassword != "" {
 		viosUsername = state.VIOSAdminUsername
@@ -1498,7 +1513,6 @@ func (h *HMCProvider) CleanupISOMappings(ctx context.Context) error {
 	}
 
 	h.logger.Info("Cleaning up ISO mappings", "count", len(h.isoMappings))
-
 
 	errorCount := 0
 
@@ -1530,10 +1544,10 @@ func (h *HMCProvider) CleanupISOMappings(ctx context.Context) error {
 	for sysUUID, viosMap := range unmapTargets {
 		for viosUUID, lparMediaMap := range viosMap {
 			h.logger.Info("Bulk unmapping optical media from VIOS...", "viosUUID", viosUUID, "lpar_count", len(lparMediaMap))
-			
+
 			_, err := h.hmcClient.DeleteVirtualOpticalMapsMultiLpar(
 				context.WithoutCancel(ctx), sysUUID, viosUUID, lparMediaMap, h.debug)
-			
+
 			if err != nil {
 				h.logger.Error("Failed to bulk unmap optical media", "error", err)
 				errorCount++
@@ -1546,34 +1560,34 @@ func (h *HMCProvider) CleanupISOMappings(ctx context.Context) error {
 	// Save LPAR Profiles safely now that media is unmapped (PARALLELIZED)
 	h.logger.Info("Saving LPAR profiles concurrently after unmapping...")
 	var wgSave sync.WaitGroup
-	
+
 	for _, m := range h.isoMappings {
 		wgSave.Add(1)
-		
+
 		go func(targetMapping types.ISOMapping) {
 			defer wgSave.Done()
-			
+
 			h.logger.Info("Saving LPAR profile", "node", targetMapping.NodeName)
-			
+
 			err := h.hmcClient.SaveCurrentLparConfig(context.WithoutCancel(ctx), targetMapping.LparUUID, "default_profile", true, h.debug)
 			if err != nil {
 				h.logger.Warn("Failed to save LPAR profile", "node", targetMapping.NodeName, "error", err)
 			}
 		}(m)
 	}
-	
+
 	// Wait for all profiles to finish saving to the Hypervisor
 	wgSave.Wait()
 
 	// ========================================================================
 	// 1. DELETE VIRTUAL OPTICAL MEDIA (Per-Node Media)
 	// ========================================================================
-	
+
 	// 🛡️  Deduplicate media deletion so we don't try to delete the shared ISO multiple times!
 	mediaDeleted := make(map[string]bool)
 
 	for _, mapping := range h.isoMappings {
-		
+
 		// Skip if we already deleted this exact media from this VIOS
 		mediaKey := fmt.Sprintf("%s_%s", mapping.VIOSUUID, mapping.MediaName)
 		if mediaDeleted[mediaKey] {
@@ -1672,7 +1686,7 @@ func (h *HMCProvider) CleanupISOMappings(ctx context.Context) error {
 // ensureMediaRepository checks if the VIOS Media Repository exists, and auto-creates it if missing
 func (h *HMCProvider) ensureMediaRepository(ctx context.Context, systemName, viosUUID, viosName string) error {
 	repoInfo, err := h.hmcClient.GetMediaRepositoryInfo(ctx, systemName, viosName, h.debug)
-	
+
 	//  The HMC API can return success (err == nil) but SizeMB = 0 if the repository isn't created,
 	// OR it can return an error if the repository doesn't exist. Handle both cases.
 	if err == nil && repoInfo.SizeMB > 0 {
@@ -1688,7 +1702,7 @@ func (h *HMCProvider) ensureMediaRepository(ctx context.Context, systemName, vio
 	}
 
 	h.logger.Info("Media Repository not found. Auto-creating...", "vios", viosName)
-	
+
 	// Calculate size requirements
 	nodes := h.cfg.GetAllNodes()
 	requiredMB := 1536 * len(nodes)
@@ -1705,7 +1719,9 @@ func (h *HMCProvider) ensureMediaRepository(ctx context.Context, systemName, vio
 
 	var targetVG string
 	for _, vg := range vgs {
-		if strings.ToLower(vg.GroupName) == "rootvg" { continue }
+		if strings.ToLower(vg.GroupName) == "rootvg" {
+			continue
+		}
 		freeSpaceGB, parseErr := strconv.ParseFloat(vg.FreeSpace, 64)
 		if parseErr == nil && freeSpaceGB >= requiredGB {
 			targetVG = vg.GroupName

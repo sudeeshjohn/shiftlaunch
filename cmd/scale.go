@@ -24,6 +24,7 @@ import (
 type Day2NodesConfig struct {
 	Hosts []Day2Host `yaml:"hosts"`
 }
+
 // Day2Host represents the configuration for a Day 2 host
 type Day2Host struct {
 	Hostname        string            `yaml:"hostname"`
@@ -31,39 +32,47 @@ type Day2Host struct {
 	Interfaces      []Day2Interface   `yaml:"interfaces"`
 	NetworkConfig   Day2NetworkConfig `yaml:"networkConfig"`
 }
+
 // Day2DeviceHints represents the hints for the root device
 type Day2DeviceHints struct {
 	DeviceName string `yaml:"deviceName"`
 }
+
 // Day2Interface represents the configuration for a Day 2 network interface
 type Day2Interface struct {
 	MacAddress string `yaml:"macAddress"`
 	Name       string `yaml:"name"`
 }
+
 // Day2NetworkConfig represents the configuration for Day 2 network
 type Day2NetworkConfig struct {
 	Interfaces  []Day2NetInterface `yaml:"interfaces"`
 	DNSResolver *Day2DNSResolver   `yaml:"dns-resolver,omitempty"`
 	Routes      *Day2Routes        `yaml:"routes,omitempty"`
 }
+
 // Day2DNSResolver represents the configuration for Day 2 DNS resolver
 type Day2DNSResolver struct {
 	Config Day2DNSConfig `yaml:"config"`
 }
+
 // Day2DNSConfig represents the configuration for Day 2 DNS
 type Day2DNSConfig struct {
 	Server []string `yaml:"server"`
 }
+
 // Day2Routes represents the configuration for Day 2 routes
 type Day2Routes struct {
 	Config []Day2RouteConfig `yaml:"config"`
 }
+
 // Day2RouteConfig represents the configuration for Day 2 routes
 type Day2RouteConfig struct {
 	Destination      string `yaml:"destination"`
 	NextHopAddress   string `yaml:"next-hop-address"`
 	NextHopInterface string `yaml:"next-hop-interface"`
 }
+
 // Day2NetInterface represents the configuration for Day 2 network interface
 type Day2NetInterface struct {
 	Name       string   `yaml:"name"`
@@ -73,16 +82,19 @@ type Day2NetInterface struct {
 	Ipv4       Day2Ipv4 `yaml:"ipv4"`
 	Ipv6       Day2Ipv6 `yaml:"ipv6"`
 }
+
 // Day2Ipv6 represents the configuration for Day 2 IPv6
 type Day2Ipv6 struct {
 	Enabled bool `yaml:"enabled"`
 }
+
 // Day2Ipv4 represents the configuration for Day 2 IPv4
 type Day2Ipv4 struct {
 	Enabled bool       `yaml:"enabled"`
 	Address []Day2Addr `yaml:"address"`
 	Dhcp    bool       `yaml:"dhcp"`
 }
+
 // Day2Addr represents the configuration for Day 2 address
 type Day2Addr struct {
 	IP           string `yaml:"ip"`
@@ -95,10 +107,12 @@ var scaleCmd = &cobra.Command{
 	GroupID: "core",
 	RunE:    runScale,
 }
+
 // init scales the cluster by adding new worker nodes to the cluster.
 func init() {
 	rootCmd.AddCommand(scaleCmd)
 }
+
 // runScale scales the cluster by adding new worker nodes to the cluster.
 func runScale(cmd *cobra.Command, args []string) error {
 	// 1. Load active cluster configuration
@@ -132,7 +146,12 @@ func runScale(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to parse updated config YAML: %w", err)
 	}
 
-	updatedCfg.Controller.IP = cfg.Controller.IP
+	// NEW: Catch copy-paste topology bugs (like adding workers to SNO) immediately!
+	if err := updatedCfg.Validate(); err != nil {
+		return fmt.Errorf("invalid scale configuration detected: %w", err)
+	}
+
+	updatedCfg.Network.ControllerIP = cfg.Network.ControllerIP
 
 	// --- SMART BACKUP ENGINE ---
 	workspaceConfigPath := filepath.Join(workspaceDir, "config.yaml")
@@ -141,12 +160,12 @@ func runScale(cmd *cobra.Command, args []string) error {
 		if !bytes.Equal(existingConfigData, updatedYamlData) {
 			timestamp := time.Now().Format("20060102-150405")
 			configBackupPath := filepath.Join(workspaceDir, fmt.Sprintf("config.yaml.backup.%s", timestamp))
-			
+
 			if backupErr := os.WriteFile(configBackupPath, existingConfigData, 0644); backupErr != nil {
 				log.Warn("Failed to create a historical backup of the original config.yaml", "error", backupErr)
 			} else {
 				log.Info("Successfully archived original cluster config.yaml backup", "path", configBackupPath)
-				
+
 				// Track the backup formally in state.json
 				stateManager.AddConfigBackup(state, configBackupPath)
 				_ = stateManager.SaveState(state)
@@ -165,7 +184,7 @@ func runScale(cmd *cobra.Command, args []string) error {
 	// 3. Differentiate between nodes needing Boot vs Monitoring
 	var scaleTargets []types.NodeConfig
 	var pendingBoot []types.NodeConfig
-	
+
 	localExec := localexec.NewLocalClient(log)
 	ocPath := filepath.Join(workspaceDir, "tools", "oc")
 	kubeconfigPath := filepath.Join(installDir, "auth", "kubeconfig")
@@ -229,27 +248,35 @@ func runScale(cmd *cobra.Command, args []string) error {
 
 		// 5. Dynamic Networking & Load Balancer configuration scaling
 		log.StartPhase("Reconciling infrastructure services for additional node paths...")
-		
-		log.Info("Regenerating DNS routing rules locally...")
-		dnsmasq := services.NewDNSmasqManager(cfg, daemonCfg, localExec)
-		if err := dnsmasq.SetupDNS(ctx); err != nil {
-			log.EndPhase(false, "Failed to regenerate DNS")
-			return fmt.Errorf("failed to regenerate DNS configurations: %w", err)
+
+		if cfg.Services.DNS.Enabled {
+			log.Info("Regenerating DNS routing rules locally...")
+			dnsmasq := services.NewDNSmasqManager(cfg, daemonCfg, localExec)
+			if err := dnsmasq.SetupDNS(ctx); err != nil {
+				log.EndPhase(false, "Failed to regenerate DNS")
+				return fmt.Errorf("failed to regenerate DNS configurations: %w", err)
+			}
+			_ = localExec.SystemctlRestart(ctx, "dnsmasq")
+		} else {
+			log.Debug("Skipping DNS regeneration (User Managed)")
 		}
 
-		log.Info("Regenerating HAProxy backend pools locally...")
-		if err := services.SetupHAProxy(ctx, cfg, localExec); err != nil {
-			log.EndPhase(false, "Failed to regenerate HAProxy")
-			return fmt.Errorf("failed to regenerate HAProxy configurations: %w", err)
+		if cfg.Services.LoadBalancer.Enabled {
+			log.Info("Regenerating HAProxy backend pools locally...")
+			if err := services.SetupHAProxy(ctx, cfg, localExec); err != nil {
+				log.EndPhase(false, "Failed to regenerate HAProxy")
+				return fmt.Errorf("failed to regenerate HAProxy configurations: %w", err)
+			}
+		} else {
+			log.Debug("Skipping HAProxy regeneration (User Managed)")
 		}
 
-		_ = localExec.SystemctlRestart(ctx, "dnsmasq")
-		log.EndPhase(true, "Local network core tables cleanly regenerated to support new compute infrastructure")
+		log.EndPhase(true, "Local network core tables reconciled successfully")
 
 		// 6. Guarantee Local API Resolution
 		log.Debug("Ensuring OpenShift API is reachable from controller...")
 		netMgr := controller.NewNetworkManager(localExec, debug, log)
-		_ = netMgr.AddHostsEntry(ctx, cfg.OpenShift.ClusterName, cfg.OpenShift.BaseDomain, cfg.Network.LoadBalancerIP)
+		_ = netMgr.AddHostsEntry(ctx, cfg.OpenShift.ClusterName, cfg.OpenShift.BaseDomain, cfg.Services.LoadBalancer.VIP)
 
 		// 7. Build the temporary Red Hat spec nodes-config.yaml file programmatically
 		log.StartPhase("Compiling transient nodes-config.yaml manifest matching native Red Hat spec...")
@@ -259,9 +286,9 @@ func runScale(cmd *cobra.Command, args []string) error {
 			prefixLen, _ = ipNet.Mask.Size()
 		}
 
-		dnsServer := cfg.Network.Nameserver
-		if cfg.ManagedServices.DNS {
-			dnsServer = cfg.Controller.IP
+		dnsServer := cfg.Services.DNS.ExternalNameserver
+		if cfg.Services.DNS.Enabled {
+			dnsServer = cfg.Network.ControllerIP
 		}
 
 		var day2Config Day2NodesConfig
@@ -297,7 +324,7 @@ func runScale(cmd *cobra.Command, args []string) error {
 			netInterface.Ipv6 = Day2Ipv6{
 				Enabled: false,
 			}
-			
+
 			hostEntry.Interfaces = []Day2Interface{
 				{MacAddress: nodeMac, Name: "env2"},
 			}
@@ -357,10 +384,10 @@ func runScale(cmd *cobra.Command, args []string) error {
 		}
 
 		log.StartPhase("Invoking native OpenShift CLI to compile specialized node installer ISO...")
-		
+
 		//  Use the updated pull secret for Day-2 ISO compilation so it can authenticate to the local registry!
 		pullSecretPath := cfg.OpenShift.PullSecretFile
-		if updatedCfg.DisconnectedConfig.Enabled && updatedCfg.ManagedServices.Registry {
+		if updatedCfg.Network.IsolationLevel == "fully-disconnected" && updatedCfg.Services.Registry.Enabled {
 			updatedSecretPath := filepath.Join(workspaceDir, "pull-secret-updated.json")
 			if _, err := os.Stat(updatedSecretPath); err == nil {
 				pullSecretPath = updatedSecretPath
@@ -375,7 +402,7 @@ func runScale(cmd *cobra.Command, args []string) error {
 			log.EndPhase(false, "OpenShift node image compilation threw an unexpected exception")
 			return fmt.Errorf("node image compilation failed: %w\noutput: %s\n\ncritical hint: the initial KUBECONFIG created during deployment expires after 24 hours; if your cluster is older than a day, you must replace '%s' with a fresh cluster-admin kubeconfig to scale", err, string(out), kubeconfigPath)
 		}
-		
+
 		generatedIso := filepath.Join(installDir, "node.ppc64le.iso")
 		runtimeIso := filepath.Join(installDir, "agent.ppc64le.iso")
 		if _, err := os.Stat(generatedIso); err == nil {
@@ -383,24 +410,23 @@ func runScale(cmd *cobra.Command, args []string) error {
 				log.Warn("Failed to rename node ISO to agent ISO", "error", cpErr)
 			}
 		}
-		
+
 		_ = os.Remove(tempYAMLPath)
 		log.EndPhase(true, "Target configuration nodes injected directly into custom asset ISO payload")
 
 		// 9. Parallel LPAR provisioning and hardware boot distribution pipelines
 		log.StartPhase("Distributing customized node assets to IBM Power hardware blocks...")
-		
+
 		// Leverage the optimized bulk parallel boot engine (auto-skips already booted nodes)
 		if err := hmcProvider.BootNodes(ctx); err != nil {
 			log.EndPhase(false, "Parallel hypervisor boot sequence failed")
 			return err
 		}
-		
+
 		log.EndPhase(true, "All target LPAR instances successfully power cycled with specialized assets")
 	} else {
 		log.Info("Bypassing ISO generation and HMC boot phases (Nodes already booted).")
 	}
-
 
 	// =========================================================================
 	// 10. NATIVE NODE MONITORING & CSR AUTO-APPROVAL
@@ -450,6 +476,7 @@ func runScale(cmd *cobra.Command, args []string) error {
 	log.Info("=== Scale Operation Completed Successfully ===")
 	return nil
 }
+
 // contains function is for search a string in a slice of strings
 func contains(slice []string, item string) bool {
 	for _, s := range slice {

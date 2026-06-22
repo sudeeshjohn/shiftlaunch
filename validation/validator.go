@@ -40,7 +40,7 @@ type Validator struct {
 // NewValidator creates a new validator
 func NewValidator(cfg *types.AgentConfig, exec *localexec.LocalClient, debug bool) *Validator {
 	fallbackLog, _ := logger.New(debug, "/dev/null")
-	
+
 	// Get workspace directory from environment or use default
 	workspaceDir := os.Getenv("SHIFTLAUNCH_WORKSPACE")
 	if workspaceDir == "" {
@@ -103,8 +103,8 @@ func (v *Validator) Validate(ctx context.Context) error {
 
 	// Check 4: External Services Validation
 	if v.exec != nil {
-		// NFS is excluded from this check because it's a hard requirement for Agent ISO boot (validated in Check 1)
-		hasExternalServices := !v.cfg.ManagedServices.DNS || !v.cfg.ManagedServices.DHCP || !v.cfg.ManagedServices.PXE || !v.cfg.ManagedServices.LoadBalancer
+		hasExternalServices := !v.cfg.Services.DNS.Enabled || !v.cfg.Services.DHCP.Enabled ||
+			!v.cfg.Services.PXE.Enabled || !v.cfg.Services.LoadBalancer.Enabled
 
 		if hasExternalServices {
 			v.log.StartPhase("[Check 4/4] Validating external unmanaged services...")
@@ -142,184 +142,147 @@ func (v *Validator) Validate(ctx context.Context) error {
 
 // validateController validates the local controller node configuration
 func (v *Validator) validateController() {
-	c := v.cfg.Controller
-
-	if c.NetworkInterface == "" {
-		v.errors = append(v.errors, "controller.network_interface is required")
+	if v.cfg.Network.ControllerInterface == "" {
+		v.errors = append(v.errors, "network.controller_interface is required")
 	}
 
-	vip := v.cfg.Network.LoadBalancerIP
+	vip := v.cfg.Services.LoadBalancer.VIP
 	if vip == "" {
-		v.errors = append(v.errors, "network.loadbalancer_ip is missing")
+		v.errors = append(v.errors, "services.load_balancer.vip is missing")
 	} else if !v.isValidIP(vip) {
-		v.errors = append(v.errors, fmt.Sprintf("VIP '%s' is not a valid IP", vip))
+		v.errors = append(v.errors, fmt.Sprintf("services.load_balancer.vip '%s' is not a valid IP", vip))
 	}
 }
 
 // validateHMC validates HMC configuration
 func (v *Validator) validateHMC() {
 	h := v.cfg.HMC
-
 	if h.IP == "" {
 		v.errors = append(v.errors, "hmc.ip is required")
-	} else if !v.isValidIP(h.IP) && !v.isValidHostname(h.IP) {
-		v.errors = append(v.errors, fmt.Sprintf("hmc.ip '%s' must be a valid IP address or hostname", h.IP))
 	}
-
 	if h.Username == "" {
 		v.errors = append(v.errors, "hmc.username is required")
 	}
-
-	if h.Password == "" {
-		v.errors = append(v.errors, "hmc.password is required")
+	if h.Password == "" || h.Password == "YOUR_HMC_PASSWORD" {
+		v.errors = append(v.errors, "hmc.password must be set to your actual physical console password")
 	}
 }
 
 // validateNetwork validates network configuration
 func (v *Validator) validateNetwork(ctx context.Context) {
 	n := v.cfg.Network
-
 	if v.cfg.OpenShift.BaseDomain == "" {
 		v.errors = append(v.errors, "openshift.base_domain is required")
 	}
-
 	if n.MachineCIDR == "" {
 		v.errors = append(v.errors, "network.machine_network_cidr is required")
+		return
 	} else if !v.isValidCIDR(n.MachineCIDR) {
 		v.errors = append(v.errors, fmt.Sprintf("network.machine_network_cidr '%s' is not a valid CIDR", n.MachineCIDR))
+		return
 	}
 
-	// Parse CIDR for subnet validation
 	_, ipNet, err := net.ParseCIDR(n.MachineCIDR)
 	if err == nil {
-		// Validate gateway is within machine CIDR
 		if n.Gateway != "" {
 			gwIP := net.ParseIP(n.Gateway)
 			if gwIP == nil || !ipNet.Contains(gwIP) {
 				v.errors = append(v.errors, fmt.Sprintf("network.gateway '%s' is not within the machine_network_cidr '%s'", n.Gateway, n.MachineCIDR))
 			}
 		}
-		
-		// Validate VIP is within machine CIDR
-		if n.LoadBalancerIP != "" {
-			vipIP := net.ParseIP(n.LoadBalancerIP)
+		vip := v.cfg.Services.LoadBalancer.VIP
+		if vip != "" {
+			vipIP := net.ParseIP(vip)
 			if vipIP == nil || !ipNet.Contains(vipIP) {
-				v.errors = append(v.errors, fmt.Sprintf("network.loadbalancer_ip '%s' is not within the machine_network_cidr '%s'", n.LoadBalancerIP, n.MachineCIDR))
+				v.errors = append(v.errors, fmt.Sprintf("services.load_balancer.vip '%s' is not within the machine_network_cidr '%s'", vip, n.MachineCIDR))
 			}
 		}
 	}
 
 	if n.Gateway == "" {
 		v.errors = append(v.errors, "network.gateway is required")
-	} else if !v.isValidIP(n.Gateway) {
-		v.errors = append(v.errors, fmt.Sprintf("network.gateway '%s' is not a valid IP address", n.Gateway))
 	}
 
-	// Validate DNS forwarders are provided to prevent DNS resolution loops
-	if len(n.DNSForwarders) == 0 {
-		v.errors = append(v.errors, "network.dns_forwarders is required to prevent DNS resolution loops and ensure internet connectivity")
+	// Enforce strict logic dependencies on DNS profiles
+	if v.cfg.Services.DNS.Enabled {
+		if len(v.cfg.Services.DNS.UpstreamNameservers) == 0 {
+			v.errors = append(v.errors, "services.dns.dns_forwarders requires at least one address when local DNS management is active")
+		}
+	} else {
+		if v.cfg.Services.DNS.ExternalNameserver == "" {
+			v.errors = append(v.errors, "services.dns.external_nameserver parameter must be configured when local DNS is disabled")
+		}
 	}
-	
-	// Validate VIP is not already configured on the controller (conflict detection)
-	if v.cfg.ManagedServices.LoadBalancer && n.LoadBalancerIP != "" {
-		v.validateVIPNotInUse(ctx,n.LoadBalancerIP)
+
+	if v.cfg.Services.LoadBalancer.Enabled && v.cfg.Services.LoadBalancer.VIP != "" {
+		v.validateVIPNotInUse(ctx, v.cfg.Services.LoadBalancer.VIP)
 	}
 }
 
 // validateVIPNotInUse checks if the VIP is already configured on the controller interface
 // or being used by another managed cluster
-func (v *Validator) validateVIPNotInUse(ctx context.Context,vip string) {
-	iface := v.cfg.Controller.NetworkInterface
+func (v *Validator) validateVIPNotInUse(ctx context.Context, vip string) {
+	iface := v.cfg.Network.ControllerInterface
 	if iface == "" {
-		return // Can't check without interface name
+		return
 	}
-	
-	// Check 1: Is VIP configured on the controller interface?
-	output, err := v.exec.Execute(ctx,fmt.Sprintf("ip addr show %s", iface))
-	if err != nil {
-		v.warnings = append(v.warnings, fmt.Sprintf("Could not check if VIP %s is already in use on interface: %v", vip, err))
-	} else if strings.Contains(output, vip+"/") {
-		// VIP is configured - check if it belongs to another cluster
+
+	output, err := v.exec.Execute(ctx, fmt.Sprintf("ip addr show %s", iface))
+	if err == nil && strings.Contains(output, vip+"/") {
 		conflictingCluster := v.findClusterUsingVIP(vip)
 		if conflictingCluster != "" {
-			v.errors = append(v.errors, fmt.Sprintf(
-				"VIP %s is already in use by cluster '%s'. "+
-				"Please choose a different loadbalancer_ip or delete the conflicting cluster first.",
-				vip, conflictingCluster))
+			v.errors = append(v.errors, fmt.Sprintf("VIP %s is already in use by cluster '%s'. Choose a different VIP", vip, conflictingCluster))
 		} else {
-			v.errors = append(v.errors, fmt.Sprintf(
-				"VIP %s is already configured on interface %s but no managed cluster found using it. "+
-				"Please remove the VIP alias manually or choose a different loadbalancer_ip.",
-				vip, iface))
+			v.errors = append(v.errors, fmt.Sprintf("VIP %s is already configured on interface %s. Remove it manually or use a different IP", vip, iface))
 		}
 		return
 	}
-	
-	// Check 2: Is VIP defined in any other managed cluster's config?
+
 	conflictingCluster := v.findClusterUsingVIP(vip)
 	if conflictingCluster != "" {
-		v.errors = append(v.errors, fmt.Sprintf(
-			"VIP %s is already configured for cluster '%s'. "+
-			"Please choose a different loadbalancer_ip.",
-			vip, conflictingCluster))
+		v.errors = append(v.errors, fmt.Sprintf("VIP %s is already assigned to cluster '%s' in configurations", vip, conflictingCluster))
 	}
 }
 
-// findClusterUsingVIP searches all managed clusters to find if any is using the given VIP
 func (v *Validator) findClusterUsingVIP(vip string) string {
-	// List all directories in workspace
 	entries, err := os.ReadDir(v.workspaceDir)
 	if err != nil {
-		return "" // Can't check, return empty
+		return ""
 	}
-	
 	currentCluster := v.cfg.OpenShift.ClusterName
-	
+
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
-		
 		clusterName := entry.Name()
-		
-		// Skip current cluster
 		if clusterName == currentCluster {
 			continue
 		}
-		
-		// Check if cluster is managed OR failed (both mean the cluster occupies the VIP)
-		managedMarker := filepath.Join(v.workspaceDir, clusterName, ".managed")
-		failedMarker := filepath.Join(v.workspaceDir, clusterName, ".failed")
-		
-		if _, err1 := os.Stat(managedMarker); os.IsNotExist(err1) {
-			if _, err2 := os.Stat(failedMarker); os.IsNotExist(err2) {
-				continue // Not a managed or failed cluster
+
+		if _, err1 := os.Stat(filepath.Join(v.workspaceDir, clusterName, ".managed")); os.IsNotExist(err1) {
+			if _, err2 := os.Stat(filepath.Join(v.workspaceDir, clusterName, ".failed")); os.IsNotExist(err2) {
+				continue
 			}
 		}
-		
-		// Check if cluster is deleted
-		deletedMarker := filepath.Join(v.workspaceDir, clusterName, ".deleted")
-		if _, err := os.Stat(deletedMarker); err == nil {
-			continue // Cluster is deleted, skip
+		if _, err := os.Stat(filepath.Join(v.workspaceDir, clusterName, ".deleted")); err == nil {
+			continue
 		}
-		
-		// Read the cluster's config
+
 		configPath := filepath.Join(v.workspaceDir, clusterName, "config.yaml")
 		data, err := os.ReadFile(configPath)
 		if err != nil {
-			continue // Can't read config
+			continue
 		}
-		
-		// Safely parse the YAML to guarantee an exact value match
+
 		var tempCfg types.AgentConfig
 		if err := yaml.Unmarshal(data, &tempCfg); err == nil {
-			if tempCfg.Network.LoadBalancerIP == vip {
+			if tempCfg.Services.LoadBalancer.VIP == vip {
 				return clusterName
 			}
 		}
 	}
-	
-	return "" // No conflict found
+	return ""
 }
 
 // validateOpenShift validates OpenShift configuration
@@ -379,16 +342,11 @@ func (v *Validator) validateOpenShift() {
 		v.errors = append(v.errors, "openshift.rhcos_images.rootfs_url is required")
 	}
 
-	v.validateChecksum(o.RHCOSImages.KernelCSUM, "openshift.rhcos_images.kernel_csum")
-	v.validateChecksum(o.RHCOSImages.InitramfsCSUM, "openshift.rhcos_images.initramfs_csum")
-	v.validateChecksum(o.RHCOSImages.RootfsCSUM, "openshift.rhcos_images.rootfs_csum")
-
 	// Validate OCP client config
-	if o.OCPClientConfig.Client == "" {
-		v.errors = append(v.errors, "openshift.ocp_client_config.ocp_client is required")
-	}
-	if o.OCPClientConfig.Installer == "" {
-		v.errors = append(v.errors, "openshift.ocp_client_config.ocp_installer is required")
+	if v.cfg.Network.IsolationLevel != "fully-disconnected" {
+		if o.OCPClientConfig.Client == "" || o.OCPClientConfig.Installer == "" {
+			v.errors = append(v.errors, "Connected profiles require valid installation tool source URLs")
+		}
 	}
 }
 
@@ -410,29 +368,40 @@ func (v *Validator) validateChecksum(checksum, fieldName string) {
 	}
 }
 
-// validateDisconnected ensures airgap properties are logically sound
 func (v *Validator) validateDisconnected() {
-	if !v.cfg.DisconnectedConfig.Enabled {
+	mode := v.cfg.Network.IsolationLevel
+	if mode != "connected" && mode != "soft-disconnected" && mode != "fully-disconnected" {
+		v.errors = append(v.errors, fmt.Sprintf("network.isolation_level must be 'connected', 'soft-disconnected', or 'fully-disconnected'. Got: '%s'", mode))
 		return
 	}
 
-	// If they are disconnected, they MUST either let ShiftLaunch manage the registry/proxy,
-	// OR they must explicitly provide an external registry.
-	if !v.cfg.ManagedServices.Registry {
-		if v.cfg.DisconnectedConfig.RegistryHostname == "" {
-			v.errors = append(v.errors, "disconnected mode is enabled, but managed_services.registry is false. You must provide an external disconnected.registry_hostname")
+	if mode == "fully-disconnected" {
+		reg := v.cfg.Services.Registry
+		if !reg.Enabled && reg.ExternalHostname == "registry.example.com" {
+			v.errors = append(v.errors, "CRITICAL CONFIGURATION ERROR: network.isolation_level is locked to 'fully-disconnected', but services.registry.external_reqistry_server is still set to the default placeholder value ('registry.example.com'). Please update it to your actual enterprise registry or switch isolation modes.")
+			return
 		}
-		if v.cfg.DisconnectedConfig.LocalRepo == "" {
-			v.errors = append(v.errors, "disconnected mode is enabled, but managed_services.registry is false. You must provide an external disconnected.local_repo")
+		if !reg.Enabled && reg.ExternalHostname == "" {
+			v.errors = append(v.errors, "Airgap configuration conflict: network.isolation_level is set to 'fully-disconnected' but local registry service is disabled and no remote enterprise external_reqistry_server target was supplied.")
+		}
+	}
+
+	if mode == "soft-disconnected" {
+		proxy := v.cfg.Services.Proxy
+		if !proxy.Enabled && proxy.ExternalHTTPProxy == "" {
+			v.errors = append(v.errors, "Proxy configuration conflict: network.isolation_level is set to 'soft-disconnected' but local Squid management is disabled and no external_http_proxy path was supplied.")
 		}
 	}
 }
 
-// validateNodes validates node configuration
 func (v *Validator) validateNodes() {
-	// 🛡️  Enforce NFS requirement for Agent boot
-	if v.cfg.Nodes.BootMethod == "agent" && !v.cfg.ManagedServices.NFS {
-		v.errors = append(v.errors, "managed_services.nfs MUST be true when using boot_method: 'agent'. ShiftLaunch requires local NFS to transfer the generated Agent ISO to the VIOS.")
+	if err := v.cfg.Validate(); err != nil {
+		v.errors = append(v.errors, err.Error())
+		return
+	}
+
+	if v.cfg.Nodes.BootMethod == "agent" && !v.cfg.Services.NFS.Enabled {
+		v.errors = append(v.errors, "Boot method 'agent' requires services.nfs.enabled to be set to true so ShiftLaunch can transfer assets to the storage subsystem")
 	}
 
 	// Track uniqueness to prevent copy-paste errors
@@ -475,14 +444,8 @@ func (v *Validator) validateNodes() {
 	}
 }
 
-// validateSNONode validates SNO node configuration
 func (v *Validator) validateSNONode() {
-	if len(v.cfg.Nodes.SNO) == 0 {
-		v.errors = append(v.errors, "nodes.sno block is required for SNO deployment")
-		return
-	}
-
-	sno := v.cfg.Nodes.SNO[0]
+	sno := v.cfg.Nodes.Masters[0]
 
 	if sno.IP == "" {
 		v.errors = append(v.errors, "nodes.sno.ip is required")
@@ -599,7 +562,7 @@ func (v *Validator) validateMultiNodeCluster() {
 
 func (v *Validator) validateLocalEnvironment(ctx context.Context) {
 	//Validate the physical interface actually exists on this host
-	iface := v.cfg.Controller.NetworkInterface
+	iface := v.cfg.Network.ControllerInterface
 	if iface != "" {
 		checkCmd := fmt.Sprintf("ip link show %s >/dev/null 2>&1 && echo 'exists' || echo 'missing'", iface)
 		if out, err := v.exec.Execute(ctx, checkCmd); err == nil && strings.TrimSpace(out) == "missing" {
@@ -619,28 +582,28 @@ func (v *Validator) validateLocalEnvironment(ctx context.Context) {
 	checkCmd := fmt.Sprintf("if [ -d '%s' ] || ls %s 1> /dev/null 2>&1 || ls %s 1> /dev/null 2>&1; then echo 'exists'; else echo 'missing'; fi",
 		httpDir, dnsmasqPath, haproxyPath)
 
-	if out, err := v.exec.Execute(ctx,checkCmd); err == nil && strings.TrimSpace(out) == "exists" {
+	if out, err := v.exec.Execute(ctx, checkCmd); err == nil && strings.TrimSpace(out) == "exists" {
 		v.errors = append(v.errors, fmt.Sprintf("CLUSTER COLLISION: Artifacts for '%s' already exist locally. Run the 'delete' command to clean them up first to prevent accidental overwrites.", clusterName))
 	}
 
 	// 4. Check for VIP Conflicts on the network
-	vip := v.cfg.Network.LoadBalancerIP
+	vip := v.cfg.Services.LoadBalancer.VIP
 	if vip != "" {
-		iface := v.cfg.Controller.NetworkInterface
-		
+		iface := v.cfg.Network.ControllerInterface
+
 		// Guardrail: Prevent hijacking the controller's primary IP
 		ipCmd := fmt.Sprintf("ip -4 addr show dev %s | grep -oP '(?<=inet\\s)\\d+(\\.\\d+){3}' | head -1", iface)
-		if hostIP, err := v.exec.Execute(ctx,ipCmd); err == nil && strings.TrimSpace(hostIP) == vip {
+		if hostIP, err := v.exec.Execute(ctx, ipCmd); err == nil && strings.TrimSpace(hostIP) == vip {
 			v.errors = append(v.errors, fmt.Sprintf(
 				"VIP conflict: VIP '%s' cannot be the same as the controller's primary IP on %s.", vip, iface))
 		}
 
 		checkBoundCmd := fmt.Sprintf("ip addr show dev %s | grep -q '%s/'", iface, vip)
-		if _, err := v.exec.Execute(ctx,checkBoundCmd); err != nil {
+		if _, err := v.exec.Execute(ctx, checkBoundCmd); err != nil {
 			// Not bound to us. Check if it's in use on the network.
-			if v.cfg.ManagedServices.LoadBalancer { // Only ping if we expect to manage it
+			if v.cfg.Services.LoadBalancer.Enabled {
 				pingCmd := fmt.Sprintf("ping -c 2 -W 2 %s", vip)
-				if _, pingErr := v.exec.Execute(ctx,pingCmd); pingErr == nil {
+				if _, pingErr := v.exec.Execute(ctx, pingCmd); pingErr == nil {
 					v.errors = append(v.errors, fmt.Sprintf("IP CONFLICT: The VIP %s is already actively responding on the network. Please choose an unused IP.", vip))
 				}
 			}
@@ -656,7 +619,7 @@ func (v *Validator) validateLocalDiskSpace(ctx context.Context) {
 	// We create it silently here so the 'df' command doesn't crash.
 	v.exec.Execute(ctx, "sudo mkdir -p /var/www/html")
 	dfCmd := "df -BK --output=avail /var/www/html | tail -n 1 | tr -d 'K'"
-	output, err := v.exec.Execute(ctx,dfCmd)
+	output, err := v.exec.Execute(ctx, dfCmd)
 	if err != nil {
 		v.warnings = append(v.warnings, fmt.Sprintf("Unable to check disk space locally: %v", err))
 		return
@@ -681,7 +644,7 @@ func (v *Validator) validateLocalDiskSpace(ctx context.Context) {
 	}
 
 	//  Validate registry capacity for Airgapped deployments
-	if v.cfg.DisconnectedConfig.Enabled && v.cfg.DisconnectedConfig.AutoMirror {
+	if v.cfg.Network.IsolationLevel == "fully-disconnected" && v.cfg.Services.Registry.Enabled {
 		v.exec.Execute(ctx, "sudo mkdir -p /opt/registry/data")
 		regDfCmd := "df -BK --output=avail /opt/registry/data | tail -n 1 | tr -d 'K'"
 		regOutput, regErr := v.exec.Execute(ctx, regDfCmd)
@@ -689,18 +652,18 @@ func (v *Validator) validateLocalDiskSpace(ctx context.Context) {
 			v.warnings = append(v.warnings, fmt.Sprintf("Unable to check registry disk space: %v", regErr))
 			return
 		}
-		
+
 		var regAvailKB int
 		regTrimmed := strings.TrimSpace(regOutput)
 		if _, err := fmt.Sscanf(regTrimmed, "%d", &regAvailKB); err != nil {
 			v.warnings = append(v.warnings, fmt.Sprintf("Unable to parse registry disk space output '%s': %v", regTrimmed, err))
 			return
 		}
-		
+
 		regAvailGB := float64(regAvailKB) / (1024 * 1024)
 		// A full OCP mirror usually needs at least 60GB
 		regRequiredGB := 40.0
-		
+
 		if regAvailGB < regRequiredGB {
 			v.errors = append(v.errors,
 				fmt.Sprintf("INSUFFICIENT DISK SPACE: Airgap mirroring enabled, but /opt/registry/data only has %.2f GB available (%.0f GB required).",
@@ -789,17 +752,17 @@ func (v *Validator) validateBYOILPARs() {
 // ============================================================================
 
 func (v *Validator) validateExternalServices(ctx context.Context) {
-	if !v.cfg.ManagedServices.DNS {
+	if !v.cfg.Services.DNS.Enabled {
 		v.validateExternalDNS(ctx)
 	}
-	if !v.cfg.ManagedServices.DHCP {
+	if !v.cfg.Services.DHCP.Enabled {
 		v.validateExternalDHCP()
 	}
 	//  Only validate external PXE if we are actually using network boot!
-	if !v.cfg.ManagedServices.PXE && v.cfg.Nodes.BootMethod != "agent" {
+	if !v.cfg.Services.PXE.Enabled && v.cfg.Nodes.BootMethod != "agent" {
 		v.validateExternalPXE()
 	}
-	if !v.cfg.ManagedServices.LoadBalancer {
+	if !v.cfg.Services.LoadBalancer.Enabled {
 		v.validateExternalLoadBalancer(ctx)
 	}
 	// NFS validation removed - now enforced as hard error in validateNodes()
@@ -808,14 +771,14 @@ func (v *Validator) validateExternalServices(ctx context.Context) {
 func (v *Validator) validateExternalDNS(ctx context.Context) {
 	v.log.Info("Validating external DNS server...")
 
-	dnsServer := v.cfg.Network.Nameserver
+	dnsServer := v.cfg.Services.DNS.ExternalNameserver
 	if dnsServer == "" {
 		v.warnings = append(v.warnings, "DNS is external, but network.nameserver is empty. External DNS validation skipped.")
 		return
 	}
 
 	testCmd := fmt.Sprintf("dig @%s google.com +short +time=2 +tries=1", dnsServer)
-	if _, err := v.exec.Execute(ctx,testCmd); err != nil {
+	if _, err := v.exec.Execute(ctx, testCmd); err != nil {
 		v.warnings = append(v.warnings, fmt.Sprintf(
 			"External DNS server %s may not be reachable or responding. Ensure DNS is properly configured before deployment.", dnsServer))
 	} else {
@@ -825,7 +788,7 @@ func (v *Validator) validateExternalDNS(ctx context.Context) {
 
 func (v *Validator) validateExternalDHCP() {
 	v.log.Info("Validating external DHCP configuration...")
-	
+
 	// Check if all nodes have static IPs configured
 	allNodesHaveStaticIP := true
 	nodes := v.cfg.GetAllNodes()
@@ -835,13 +798,13 @@ func (v *Validator) validateExternalDHCP() {
 			break
 		}
 	}
-	
+
 	// Skip DHCP warning if using static IPs
 	if allNodesHaveStaticIP {
 		v.log.Debug("Static IPs configured for all nodes via NMState. DHCP not required.")
 		return
 	}
-	
+
 	//  Provide contextual warnings based on the boot method
 	if v.cfg.Nodes.BootMethod == "agent" {
 		v.warnings = append(v.warnings,
@@ -872,7 +835,7 @@ func (v *Validator) validateExternalPXE() {
 func (v *Validator) validateExternalLoadBalancer(ctx context.Context) {
 	v.log.Info("Validating external load balancer...")
 
-	vip := v.cfg.Network.LoadBalancerIP
+	vip := v.cfg.Services.LoadBalancer.VIP
 	if vip == "" {
 		v.errors = append(v.errors, "Cannot validate external load balancer: cluster VIP not provided")
 		return
@@ -890,7 +853,7 @@ func (v *Validator) validateExternalLoadBalancer(ctx context.Context) {
 
 	for _, p := range ports {
 		testCmd := fmt.Sprintf("timeout 2 bash -c 'cat < /dev/null > /dev/tcp/%s/%d' 2>/dev/null", vip, p.port)
-		if _, err := v.exec.Execute(ctx,testCmd); err != nil {
+		if _, err := v.exec.Execute(ctx, testCmd); err != nil {
 			v.warnings = append(v.warnings, fmt.Sprintf(
 				"External load balancer port %d (%s) at %s is not responding. This is expected before cluster deployment, but ensure load balancer is configured.",
 				p.port, p.name, vip))
@@ -925,6 +888,7 @@ func (v *Validator) isValidHostname(hostname string) bool {
 	hostnameRegex := regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$`)
 	return hostnameRegex.MatchString(hostname)
 }
+
 // validateMediaRepositorySpace ensures the VIOS has a Media Repository with enough space for Agent ISO files.
 // If it doesn't exist, it verifies a Volume Group exists with sufficient space for Phase 5 to auto-create it.
 func (v *Validator) validateMediaRepositorySpace() {
@@ -975,7 +939,7 @@ func (v *Validator) validateMediaRepositorySpace() {
 
 		// Calculate ACTUAL requirements strictly for the nodes hosted on THIS system
 		actualRequiredMB := 1536 * count
-		
+
 		// What we will request if we have to auto-create it (enforce 10GB minimum for creation)
 		createRequestMB := actualRequiredMB
 		if createRequestMB < 10240 {
@@ -985,18 +949,18 @@ func (v *Validator) validateMediaRepositorySpace() {
 
 		// 1. Try to fetch the existing repository info
 		repoInfo, err := v.hmcClient.GetMediaRepositoryInfo(context.Background(), systemName, activeViosName, v.debug)
-		
+
 		// 2. If it fails OR SizeMB is 0, the repository is missing. Verify we HAVE the capacity to auto-create it later.
 		if err != nil || repoInfo.SizeMB == 0 {
 			v.log.Info(fmt.Sprintf("Media Repository not found on VIOS '%s' (or size is 0). Verifying auto-creation capacity...", activeViosName))
-			
+
 			// Discover a suitable Volume Group
 			vgs, vgErr := v.hmcClient.GetVolumeGroups(context.Background(), activeViosUUID, v.debug)
 			if vgErr != nil {
 				v.warnings = append(v.warnings, fmt.Sprintf("Failed to list Volume Groups to verify auto-creation on '%s': %v", activeViosName, vgErr))
 				continue
 			}
-			
+
 			var targetVG string
 			// First pass: Prefer a VG that is NOT rootvg and has enough free space
 			for _, vg := range vgs {
@@ -1009,7 +973,7 @@ func (v *Validator) validateMediaRepositorySpace() {
 					break
 				}
 			}
-			
+
 			// Second pass: Fallback to rootvg if absolutely necessary
 			if targetVG == "" {
 				for _, vg := range vgs {
@@ -1021,12 +985,12 @@ func (v *Validator) validateMediaRepositorySpace() {
 					}
 				}
 			}
-			
+
 			if targetVG == "" {
 				v.errors = append(v.errors, fmt.Sprintf("Cannot auto-create Media Repository on VIOS '%s': No Volume Group found with at least %.2f GB of free space.", activeViosName, requiredGB))
 				continue
 			}
-			
+
 			v.log.Info(fmt.Sprintf("✓ Sufficient space found in VG '%s'. ShiftLaunch will auto-create the repository during deployment.", targetVG))
 			continue
 		}
@@ -1038,8 +1002,8 @@ func (v *Validator) validateMediaRepositorySpace() {
 		if repoInfo.FreeMB < actualRequiredMB {
 			v.errors = append(v.errors, fmt.Sprintf(
 				"VIOS MEDIA REPOSITORY FULL: VIOS '%s' on system '%s' only has %d MB free, but %d MB is required.\n"+
-				"   Solution 1: Clean up old ISOs via HMC (rmvopt).\n"+
-				"   Solution 2: Expand the repository using 'chrep -size'.",
+					"   Solution 1: Clean up old ISOs via HMC (rmvopt).\n"+
+					"   Solution 2: Expand the repository using 'chrep -size'.",
 				activeViosName, systemName, repoInfo.FreeMB, actualRequiredMB))
 		} else {
 			v.log.Info(fmt.Sprintf("✓ Sufficient space available in VIOS Media Repository on '%s'", activeViosName))
@@ -1067,7 +1031,7 @@ func (v *Validator) validateNodeIPsNotAlive(ctx context.Context) {
 			// Ping the IP with 2 packets and 2 second timeout
 			// If the command SUCCEEDS (exit code 0), it means the IP answered us!
 			pingCmd := fmt.Sprintf("ping -c 2 -W 2 %s >/dev/null 2>&1", n.IP)
-			
+
 			if _, err := v.exec.Execute(ctx, pingCmd); err == nil {
 				mu.Lock()
 				conflictErrors = append(conflictErrors, fmt.Sprintf(

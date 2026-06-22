@@ -45,7 +45,7 @@ func (o *Orchestrator) waitForBootstrapComplete(cancelCtx context.Context) error
 	}
 
 	o.logger.Info("Bootstrap Complete! (Details safely recorded to deployment.log)")
-	
+
 	// Write massive output ONLY to the log file, bypassing the terminal
 	o.logger.FileOnly().Write([]byte("\n=== BOOTSTRAP OUTPUT ===\n"))
 	o.logger.FileOnly().Write(output)
@@ -106,12 +106,12 @@ func (o *Orchestrator) waitForInstallComplete(cancelCtx context.Context) error {
 	}
 
 	o.logger.Info("Installation Complete! (Details safely recorded to deployment.log)")
-	
+
 	// Write massive output ONLY to the log file, bypassing the terminal
 	o.logger.FileOnly().Write([]byte("\n=== INSTALLER OUTPUT ===\n"))
 	o.logger.FileOnly().Write(output)
 	o.logger.FileOnly().Write([]byte("\n========================\n"))
-	
+
 	return nil
 }
 
@@ -154,12 +154,12 @@ func (o *Orchestrator) waitForAgentInstall(cancelCtx context.Context) error {
 	}
 
 	o.logger.Info("Agent Installation Complete! (Details safely recorded to deployment.log)")
-	
+
 	// Write massive output ONLY to the log file, bypassing the terminal
 	o.logger.FileOnly().Write([]byte("\n=== AGENT INSTALLER OUTPUT ===\n"))
 	o.logger.FileOnly().Write(output)
 	o.logger.FileOnly().Write([]byte("\n==============================\n"))
-	
+
 	return nil
 }
 
@@ -170,7 +170,7 @@ func (o *Orchestrator) AutoApproveCSRs(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
-	kubeconfigPath := filepath.Join(o.workspaceDir, "install-dir", "auth", "kubeconfig") 
+	kubeconfigPath := filepath.Join(o.workspaceDir, "install-dir", "auth", "kubeconfig")
 	ocPath := filepath.Join(o.workspaceDir, "tools", "oc")
 
 	// Local pipeline execution: oc get csr | grep pending | xargs oc adm certificate approve
@@ -189,11 +189,11 @@ func (o *Orchestrator) AutoApproveCSRs(ctx context.Context) {
 		case <-ticker.C:
 			cmd := exec.CommandContext(ctx, "bash", "-c", approveCmd)
 			output, err := cmd.CombinedOutput()
-			
+
 			if err == nil && strings.Contains(string(output), "approved") {
 				// Route through logger so it safely intercepts and updates the spinner text
 				o.logger.Debug("Approved pending worker CSRs")
-				
+
 				// Send the raw output to the debug log file silently
 				o.logger.Debug(fmt.Sprintf("CSR Auto-Approver details:\n%s", string(output)))
 			}

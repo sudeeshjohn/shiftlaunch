@@ -36,10 +36,10 @@ func NewNetworkManager(executor *localexec.LocalClient, debug bool, log *logger.
 }
 
 // AddVIPAlias appends a secondary IP to the EXISTING connection profile via nmcli
-func (nm *NetworkManager) AddVIPAlias(ctx context.Context,iface, ip, cidr string) error {
+func (nm *NetworkManager) AddVIPAlias(ctx context.Context, iface, ip, cidr string) error {
 	// Shield from cancellation so the VIP doesn't get orphaned in the NM profile without being activated!
 	shieldedCtx := context.WithoutCancel(ctx)
-	
+
 	prefix := ExtractCIDRPrefix(cidr)
 	nm.logger.Info("Appending persistent VIP via nmcli", "ip", ip, "interface", iface)
 
@@ -47,7 +47,7 @@ func (nm *NetworkManager) AddVIPAlias(ctx context.Context,iface, ip, cidr string
 
 	// 1. Discover the connection name managing the interface (e.g., "eth0" or "Wired connection 1")
 	getConCmd := fmt.Sprintf("nmcli -t -f GENERAL.CONNECTION device show %s | head -n1 | cut -d: -f2", iface)
-	conName, err := nm.executor.Execute(shieldedCtx,getConCmd)
+	conName, err := nm.executor.Execute(shieldedCtx, getConCmd)
 	conName = strings.TrimSpace(conName)
 	if err != nil || conName == "" {
 		return fmt.Errorf("failed to discover NetworkManager connection for interface %s: %v", iface, err)
@@ -56,16 +56,16 @@ func (nm *NetworkManager) AddVIPAlias(ctx context.Context,iface, ip, cidr string
 	// 2. Append the VIP to the existing profile
 	// The '+' prefix ensures we add the IP without overwriting existing ones.
 	addCmd := fmt.Sprintf("sudo nmcli connection modify \"%s\" +ipv4.addresses %s", conName, fullIP)
-	if _, err := nm.executor.Execute(shieldedCtx,addCmd); err != nil {
+	if _, err := nm.executor.Execute(shieldedCtx, addCmd); err != nil {
 		return fmt.Errorf("failed to modify connection profile: %v", err)
 	}
 
 	// 3. Apply changes without disrupting the connection
 	reapplyCmd := fmt.Sprintf("sudo nmcli device reapply %s", iface)
-	if _, err := nm.executor.Execute(shieldedCtx,reapplyCmd); err != nil {
+	if _, err := nm.executor.Execute(shieldedCtx, reapplyCmd); err != nil {
 		nm.logger.Warn("Device reapply failed, falling back to connection up", "error", err)
 		upCmd := fmt.Sprintf("sudo nmcli connection up \"%s\"", conName)
-		_, _ = nm.executor.Execute(shieldedCtx,upCmd)
+		_, _ = nm.executor.Execute(shieldedCtx, upCmd)
 	}
 
 	return nil
@@ -74,20 +74,20 @@ func (nm *NetworkManager) AddVIPAlias(ctx context.Context,iface, ip, cidr string
 // RemoveVIPAlias dynamically identifies and removes a specific VIP alias from the interface
 // while leaving all other active cluster VIPs and the primary IP completely intact.
 func (nm *NetworkManager) RemoveVIPAlias(ctx context.Context, iface, ip, cidr, controllerIP string) error {
-	nm.logger.Info("Starting dynamic VIP cleanup using kernel routing table", "interface", iface)
+	nm.logger.Info("Starting dynamic VIP cleanup using interface analysis", "interface", iface)
 
-	// 1. Get the "Base IP" (The True Identity IP chosen by the kernel for outbound routing)
-	baseIPCmd := `ip route get 1.1.1.1 | awk -F"src " 'NR==1{split($2,a," "); print a[1]}'`
+	// 1. Get the "Base IP" securely without dialing the internet (Airgap Safe)
+	baseIPCmd := fmt.Sprintf("ip -4 addr show dev %s | grep -oP '(?<=inet\\s)\\d+(\\.\\d+){3}' | head -1", iface)
 	baseIPOut, err := nm.executor.Execute(ctx, baseIPCmd)
 	if err != nil {
-		return fmt.Errorf("failed to determine kernel Base IP: %v", err)
+		return fmt.Errorf("failed to determine primary interface IP: %v", err)
 	}
 	baseIP := strings.TrimSpace(baseIPOut)
 	if baseIP == "" {
-		return fmt.Errorf("kernel returned an empty Base IP for interface %s", iface)
+		return fmt.Errorf("kernel returned an empty primary IP for interface %s", iface)
 	}
 
-	nm.logger.Debug("Kernel Routing Analysis", "BaseIP", baseIP)
+	nm.logger.Debug("Interface IP Analysis", "BaseIP", baseIP)
 
 	// Prevent the orchestrator from pruning the controller's own primary IP
 	if ip == baseIP {
@@ -133,7 +133,7 @@ func (nm *NetworkManager) RemoveVIPAlias(ctx context.Context, iface, ip, cidr, c
 			// Remove the VIP from the NetworkManager profile to ensure it doesn't return on reboot
 			delCmd := fmt.Sprintf("sudo nmcli connection modify \"%s\" -ipv4.addresses %s", conName, ipWithCidr)
 			_, _ = nm.executor.Execute(ctx, delCmd)
-			
+
 			vipsRemoved++
 		}
 	}
@@ -155,7 +155,7 @@ func (nm *NetworkManager) RemoveVIPAlias(ctx context.Context, iface, ip, cidr, c
 }
 
 // CheckVIPExists checks if a VIP is already configured on an interface
-func (nm *NetworkManager) CheckVIPExists(ctx context.Context,iface, ip string) (bool, error) {
+func (nm *NetworkManager) CheckVIPExists(ctx context.Context, iface, ip string) (bool, error) {
 	checkCmd := fmt.Sprintf("sudo ip addr show dev %s | grep -q '%s/'", iface, ip)
 	_, err := nm.executor.Execute(ctx, checkCmd)
 	// grep returns non-zero (exit status 1) if not found, which localexec surfaces as an error
@@ -163,7 +163,7 @@ func (nm *NetworkManager) CheckVIPExists(ctx context.Context,iface, ip string) (
 }
 
 // VerifyVIPPersistence checks if the VIP is defined in the connection profile
-func (nm *NetworkManager) VerifyVIPPersistence(ctx context.Context,iface, ip string) (bool, error) {
+func (nm *NetworkManager) VerifyVIPPersistence(ctx context.Context, iface, ip string) (bool, error) {
 	getConCmd := fmt.Sprintf("nmcli -t -f GENERAL.CONNECTION device show %s | head -n1 | cut -d: -f2", iface)
 	conName, _ := nm.executor.Execute(ctx, getConCmd)
 	conName = strings.TrimSpace(conName)
@@ -173,8 +173,8 @@ func (nm *NetworkManager) VerifyVIPPersistence(ctx context.Context,iface, ip str
 	}
 
 	checkCmd := fmt.Sprintf("nmcli -g ipv4.addresses connection show \"%s\" | grep -q '%s/'", conName, ip)
-	_, err := nm.executor.Execute(ctx,checkCmd)
-	
+	_, err := nm.executor.Execute(ctx, checkCmd)
+
 	return err == nil, nil
 }
 
@@ -219,7 +219,7 @@ func (nm *NetworkManager) AddHostsEntry(ctx context.Context, clusterName, baseDo
 	nm.logger.Debug("Appending cluster API endpoints to local /etc/hosts")
 
 	domain := fmt.Sprintf("%s.%s", clusterName, baseDomain)
-	
+
 	// The installer strictly needs api and api-int. We add console and oauth for convenience.
 	entry := fmt.Sprintf("%s api.%s api-int.%s console-openshift-console.apps.%s oauth-openshift.apps.%s",
 		vip, domain, domain, domain, domain)
@@ -242,7 +242,7 @@ func (nm *NetworkManager) RemoveHostsEntry(ctx context.Context, clusterName stri
 	// Shield from cancellation! Killing sed -i mid-execution will
 	// permanently destroy the OS /etc/hosts file!
 	shieldedCtx := context.WithoutCancel(ctx)
-	
+
 	marker := fmt.Sprintf("# ShiftLaunch-Cluster-API: %s", clusterName)
 	delCmd := fmt.Sprintf("sudo sed -i '/%s/d' /etc/hosts", marker)
 	_, err := nm.executor.Execute(shieldedCtx, delCmd)

@@ -46,7 +46,7 @@ func (n *NFSManager) Setup(ctx context.Context) error {
 	// 3. Create the export configuration
 	// We use a cluster-specific drop-in file to avoid touching the main /etc/exports
 	exportPath := fmt.Sprintf("/etc/exports.d/shiftlaunch-%s.exports", n.cfg.OpenShift.ClusterName)
-	
+
 	// Exporting as read-only to all hosts (*). The options ensure stable, safe reads for the VIOS.
 	exportContent := fmt.Sprintf("%s *(rw,sync,insecure,no_root_squash)\n", installDir)
 
@@ -77,8 +77,7 @@ func (n *NFSManager) Setup(ctx context.Context) error {
 // Cleanup removes the cluster's NFS export and dynamically unpublishes the directory
 func (n *NFSManager) Cleanup(ctx context.Context) error {
 	n.logger.Info("Cleaning up NFS configuration...", "cluster", n.cfg.OpenShift.ClusterName)
-exportPath := fmt.Sprintf("/etc/exports.d/shiftlaunch-%s.exports", n.cfg.OpenShift.ClusterName)
-
+	exportPath := fmt.Sprintf("/etc/exports.d/shiftlaunch-%s.exports", n.cfg.OpenShift.ClusterName)
 
 	// Remove the specific drop-in export file
 	if _, err := n.executor.Execute(ctx, fmt.Sprintf("sudo rm -f %s", exportPath)); err != nil {

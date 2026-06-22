@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.ibm.com/sudeeshjohn/shiftlaunch/config"
 	"github.ibm.com/sudeeshjohn/shiftlaunch/localexec"
@@ -32,17 +33,17 @@ func NewControllerSetup(cfg *types.AgentConfig, daemonCfg *config.AgentDaemonCon
 // getRequiredPackages figures out what dnf packages we need based on the YAML toggles
 func (c *ControllerSetup) getRequiredPackages() []string {
 	var pkgs []string
-	
+
 	// We always need firewalld for port management
 	pkgs = append(pkgs, "firewalld", "policycoreutils-python-utils", "tar")
 
 	//  Inject registry dependencies for disconnected deployments!
-	if c.cfg.DisconnectedConfig.Enabled && c.cfg.ManagedServices.Registry {
+	if c.cfg.Network.IsolationLevel == "fully-disconnected" && c.cfg.Services.Registry.Enabled {
 		pkgs = append(pkgs, "podman", "httpd-tools", "jq", "openssl")
 	}
 
 	// Centralize Squid installation here for consistency
-	if c.cfg.ManagedServices.Proxy {
+	if c.cfg.Services.Proxy.Enabled {
 		pkgs = append(pkgs, "squid")
 	}
 
@@ -51,19 +52,19 @@ func (c *ControllerSetup) getRequiredPackages() []string {
 		pkgs = append(pkgs, "httpd")
 	}
 
-	needsDHCP := c.cfg.ManagedServices.DHCP && c.cfg.Nodes.BootMethod != "agent"
-	needsPXE := c.cfg.ManagedServices.PXE && c.cfg.Nodes.BootMethod != "agent"
+	needsDHCP := c.cfg.Services.DHCP.Enabled && c.cfg.Nodes.BootMethod != "agent"
+	needsPXE := c.cfg.Services.PXE.Enabled && c.cfg.Nodes.BootMethod != "agent"
 
-	if c.cfg.ManagedServices.DNS || needsDHCP || needsPXE {
+	if c.cfg.Services.DNS.Enabled || needsDHCP || needsPXE {
 		pkgs = append(pkgs, "dnsmasq")
 	}
 	if needsPXE {
 		pkgs = append(pkgs, "tftp-server", "syslinux-tftpboot", "grub2-tools-extra")
 	}
-	if c.cfg.ManagedServices.LoadBalancer {
+	if c.cfg.Services.LoadBalancer.Enabled {
 		pkgs = append(pkgs, "haproxy")
 	}
-	if c.cfg.Nodes.BootMethod == "agent" && c.cfg.ManagedServices.NFS {
+	if c.cfg.Nodes.BootMethod == "agent" && c.cfg.Services.NFS.Enabled {
 		pkgs = append(pkgs, "nfs-utils")
 	}
 	// nmstate is required for Agent ISO with static networking validation
@@ -96,37 +97,54 @@ func (c *ControllerSetup) InstallPackages(ctx context.Context) error {
 func (c *ControllerSetup) ConfigureFirewall(ctx context.Context) error {
 	c.logger.Info("Configuring local firewall...")
 
-	if _, err := c.executor.Execute(ctx, "sudo systemctl enable --now firewalld"); err != nil {
+	// Shield from cancellation during systemd and firewall operations
+	// Killing firewall-cmd mid-execution can corrupt /etc/firewalld/zones/public.xml
+	shieldedCtx := context.WithoutCancel(ctx)
+
+	if _, err := c.executor.Execute(shieldedCtx, "sudo systemctl enable --now firewalld"); err != nil {
 		return fmt.Errorf("failed to start firewalld: %w", err)
+	}
+
+	// Wait for D-Bus initialization
+	// firewall-cmd communicates over D-Bus, which takes a second to spin up after systemd returns
+	c.logger.Debug("Waiting for FirewallD daemon to fully initialize...")
+	daemonReady := false
+	for i := 0; i < 15; i++ {
+		out, err := c.executor.Execute(shieldedCtx, "sudo firewall-cmd --state")
+		if err == nil && strings.TrimSpace(out) == "running" {
+			daemonReady = true
+			break
+		}
+		time.Sleep(1 * time.Second)
+	}
+
+	if !daemonReady {
+		return fmt.Errorf("firewalld service started via systemd, but daemon is not responding to firewall-cmd")
 	}
 
 	var ports []string
 	var services []string
-	
+
 	// HTTP for Ignition is only needed for netboot
 	if c.cfg.Nodes.BootMethod != "agent" {
 		ports = append(ports, fmt.Sprintf("%d/tcp", c.daemonCfg.Network.HTTPPort))
 	}
 
-	if c.cfg.ManagedServices.DNS {
+	if c.cfg.Services.DNS.Enabled {
 		ports = append(ports, "53/tcp", "53/udp")
 	}
-	if c.cfg.ManagedServices.DHCP && c.cfg.Nodes.BootMethod != "agent" {
+	if c.cfg.Services.DHCP.Enabled && c.cfg.Nodes.BootMethod != "agent" {
 		ports = append(ports, "67/udp")
 	}
-	if c.cfg.ManagedServices.PXE && c.cfg.Nodes.BootMethod != "agent" {
+	if c.cfg.Services.PXE.Enabled && c.cfg.Nodes.BootMethod != "agent" {
 		ports = append(ports, "69/udp")
 	}
-	if c.cfg.ManagedServices.LoadBalancer {
+	if c.cfg.Services.LoadBalancer.Enabled {
 		ports = append(ports, "6443/tcp", "22623/tcp", "80/tcp", "443/tcp")
 	}
-	if c.cfg.Nodes.BootMethod == "agent" && c.cfg.ManagedServices.NFS {
+	if c.cfg.Nodes.BootMethod == "agent" && c.cfg.Services.NFS.Enabled {
 		services = append(services, "nfs", "rpc-bind", "mountd")
 	}
-
-	// Shield from cancellation! Killing firewall-cmd mid-execution
-	// can corrupt the /etc/firewalld/zones/public.xml file, breaking the OS firewall!
-	shieldedCtx := context.WithoutCancel(ctx)
 
 	// 1. Apply Ports
 	if len(ports) > 0 {

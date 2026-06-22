@@ -34,18 +34,18 @@ type Orchestrator struct {
 // NewOrchestrator initializes the phase engine and loads/creates the state tracker
 func NewOrchestrator(cfg *types.AgentConfig, daemonCfg *config.AgentDaemonConfig, log *logger.Logger, workspaceDir string, debug bool) *Orchestrator {
 	stateManager := types.NewStateManager(cfg.OpenShift.ClusterName)
-	
+
 	// Attempt to load existing state for resumes
 	state, err := stateManager.LoadState()
 	if err != nil || state == nil {
 		// Fresh deployment
 		state = &types.DeploymentState{
-			StateVersion:    2, // Current version with granular tracking
-			ClusterName:     cfg.OpenShift.ClusterName,
-			Status:          "in_progress",
-			StartTime:       time.Now().Format(time.RFC3339),
-			CompletedPhases: []string{},
-			CompletedEvents: []string{},
+			StateVersion:     2, // Current version with granular tracking
+			ClusterName:      cfg.OpenShift.ClusterName,
+			Status:           "in_progress",
+			StartTime:        time.Now().Format(time.RFC3339),
+			CompletedPhases:  []string{},
+			CompletedEvents:  []string{},
 			DownloadProgress: make(map[string]types.DownloadProgress),
 			NodeBootStatus:   make(map[string]types.NodeBootStatus),
 		}
@@ -62,18 +62,19 @@ func NewOrchestrator(cfg *types.AgentConfig, daemonCfg *config.AgentDaemonConfig
 		debug:        debug,
 	}
 }
+
 // GetDebug returns the debug flag status
 func (o *Orchestrator) GetDebug() bool {
-    return o.debug
+	return o.debug
 }
 
 // saveState records phase completion to the local state.json file
 func (o *Orchestrator) saveState(phase string) {
 	// --- CRITICAL  Sync completely instead of manually copying specific fields ---
 	if currentState, err := o.stateManager.LoadState(); err == nil && currentState != nil {
-		o.state = currentState 
+		o.state = currentState
 	}
-	
+
 	o.state.CurrentPhase = phase
 	if !contains(o.state.CompletedPhases, phase) {
 		o.state.CompletedPhases = append(o.state.CompletedPhases, phase)
@@ -95,7 +96,7 @@ func (o *Orchestrator) trackServiceStart(name, serviceType string, managed bool)
 // trackServiceEnd records the completion of a service configuration
 func (o *Orchestrator) trackServiceEnd(svc *types.ConfiguredService, err error, details string) {
 	svc.CompletedAt = time.Now().Format(time.RFC3339)
-	
+
 	// Calculate duration
 	if startTime, parseErr := time.Parse(time.RFC3339, svc.StartedAt); parseErr == nil {
 		if endTime, parseErr := time.Parse(time.RFC3339, svc.CompletedAt); parseErr == nil {
@@ -103,21 +104,21 @@ func (o *Orchestrator) trackServiceEnd(svc *types.ConfiguredService, err error, 
 			svc.Duration = duration.Round(time.Millisecond).String()
 		}
 	}
-	
+
 	if err != nil {
 		svc.Status = "failed"
 		svc.Error = err.Error()
 	} else {
 		svc.Status = "completed"
 	}
-	
+
 	if details != "" {
 		svc.Details = details
 	}
-	
+
 	// Add to state
 	o.state.ConfiguredServices = append(o.state.ConfiguredServices, *svc)
-	
+
 	// Save state immediately to persist service tracking
 	_ = o.stateManager.SaveState(o.state)
 }
@@ -135,27 +136,43 @@ func (o *Orchestrator) startPhase(phase string) *types.PhaseExecution {
 // endPhase records the completion of a phase execution
 func (o *Orchestrator) endPhase(phaseExec *types.PhaseExecution, err error) {
 	phaseExec.EndTime = time.Now().Format(time.RFC3339)
-	
+
 	// Calculate duration
 	if startTime, parseErr := time.Parse(time.RFC3339, phaseExec.StartTime); parseErr == nil {
 		if endTime, parseErr := time.Parse(time.RFC3339, phaseExec.EndTime); parseErr == nil {
 			phaseExec.Duration = endTime.Sub(startTime).String()
 		}
 	}
-	
+
 	if err != nil {
 		phaseExec.Status = "failed"
 		phaseExec.Error = err.Error()
 	} else {
 		phaseExec.Status = "success"
 	}
-	
+
 	// --- CRITICAL  Sync in-memory state with the disk to preserve provider updates ---
 	if currentState, loadErr := o.stateManager.LoadState(); loadErr == nil && currentState != nil {
-		o.state = currentState 
+		o.state = currentState
 	}
-	
-	o.stateManager.AddPhaseExecution(o.state, *phaseExec)
+
+	// Deduplicate: If this phase was executed in a previous failed run, overwrite it instead of bloating the array
+	updated := false
+	for i, existing := range o.state.PhaseHistory {
+		if existing.Phase == phaseExec.Phase {
+			// Inherit the attempt count and increment it
+			phaseExec.Attempts = existing.Attempts + 1
+			o.state.PhaseHistory[i] = *phaseExec
+			updated = true
+			break
+		}
+	}
+
+	if !updated {
+		phaseExec.Attempts = 1
+		o.stateManager.AddPhaseExecution(o.state, *phaseExec)
+	}
+
 	o.stateManager.SaveState(o.state)
 }
 
@@ -200,57 +217,56 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 			o.stateManager.ClearFailed()
 		}
 		_ = o.stateManager.SaveState(o.state)
-		
+
 		if lockErr := o.stateManager.ReleaseLock(); lockErr != nil {
 			o.logger.Warn("Failed to release lock", "error", lockErr)
 		}
 	}()
-o.logger.Debug("Starting ShiftLaunch Local Agent Orchestration...", "cluster", o.cfg.OpenShift.ClusterName)
-
+	o.logger.Debug("Starting ShiftLaunch Local Agent Orchestration...", "cluster", o.cfg.OpenShift.ClusterName)
 
 	// --- PHASE 0: VALIDATION (Only for fresh deployments) ---
 	if !resume || len(o.state.CompletedPhases) == 0 {
 		o.logger.StartPhase("[Phase 0/6] Pre-Deployment Validation")
-		
+
 		// Validate VIP is not in use
-		if o.cfg.ManagedServices.LoadBalancer && o.cfg.Network.LoadBalancerIP != "" {
-			o.logger.Info("Validating VIP availability...", "vip", o.cfg.Network.LoadBalancerIP)
-			
+		if o.cfg.Services.LoadBalancer.Enabled && o.cfg.Services.LoadBalancer.VIP != "" {
+			o.logger.Info("Validating VIP availability...", "vip", o.cfg.Services.LoadBalancer.VIP)
+
 			// Check if VIP is configured on interface
-			iface := o.cfg.Controller.NetworkInterface
+			iface := o.cfg.Network.ControllerInterface
 			if iface != "" {
 				output, err := o.executor.Execute(ctx, fmt.Sprintf("ip addr show %s", iface))
-				if err == nil && strings.Contains(output, o.cfg.Network.LoadBalancerIP+"/") {
+				if err == nil && strings.Contains(output, o.cfg.Services.LoadBalancer.VIP+"/") {
 					// VIP is configured - check which cluster is using it
-					conflictingCluster := o.findClusterUsingVIP(o.cfg.Network.LoadBalancerIP)
+					conflictingCluster := o.findClusterUsingVIP(o.cfg.Services.LoadBalancer.VIP)
 					if conflictingCluster != "" {
 						o.logger.Error("VIP is already in use by another cluster",
-							"vip", o.cfg.Network.LoadBalancerIP,
+							"vip", o.cfg.Services.LoadBalancer.VIP,
 							"cluster", conflictingCluster)
-						return fmt.Errorf("VIP %s is already in use by cluster '%s'. Please choose a different loadbalancer_ip or delete the conflicting cluster first",
-							o.cfg.Network.LoadBalancerIP, conflictingCluster)
+						return fmt.Errorf("VIP %s is already in use by cluster '%s'. Please choose a different VIP or delete the conflicting cluster first",
+							o.cfg.Services.LoadBalancer.VIP, conflictingCluster)
 					}
 					o.logger.Error("VIP is already configured on interface",
-						"vip", o.cfg.Network.LoadBalancerIP,
+						"vip", o.cfg.Services.LoadBalancer.VIP,
 						"interface", iface)
-					return fmt.Errorf("VIP %s is already configured on interface %s. Please remove the VIP alias manually or choose a different loadbalancer_ip",
-						o.cfg.Network.LoadBalancerIP, iface)
+					return fmt.Errorf("VIP %s is already configured on interface %s. Please remove the VIP alias manually or choose a different VIP",
+						o.cfg.Services.LoadBalancer.VIP, iface)
 				}
 			}
-			
+
 			// Check if VIP is defined in another cluster's config
-			conflictingCluster := o.findClusterUsingVIP(o.cfg.Network.LoadBalancerIP)
+			conflictingCluster := o.findClusterUsingVIP(o.cfg.Services.LoadBalancer.VIP)
 			if conflictingCluster != "" {
 				o.logger.Error("VIP is already configured for another cluster",
-					"vip", o.cfg.Network.LoadBalancerIP,
+					"vip", o.cfg.Services.LoadBalancer.VIP,
 					"cluster", conflictingCluster)
-				return fmt.Errorf("VIP %s is already configured for cluster '%s'. Please choose a different loadbalancer_ip",
-					o.cfg.Network.LoadBalancerIP, conflictingCluster)
+				return fmt.Errorf("VIP %s is already configured for cluster '%s'. Please choose a different VIP",
+					o.cfg.Services.LoadBalancer.VIP, conflictingCluster)
 			}
-			
-			o.logger.Info("VIP is available", "vip", o.cfg.Network.LoadBalancerIP)
+
+			o.logger.Info("VIP is available", "vip", o.cfg.Services.LoadBalancer.VIP)
 		}
-		
+
 		o.logger.EndPhase(true, "[Phase 0/6] Pre-Deployment Validation Complete")
 	}
 	// --- RESTORE IN-MEMORY STATE FOR RESUMES ---
@@ -272,7 +288,7 @@ o.logger.Debug("Starting ShiftLaunch Local Agent Orchestration...", "cluster", o
 	if !resume || !contains(o.state.CompletedPhases, "discovery") {
 		phaseExec := o.startPhase("discovery")
 		o.logger.StartPhase("[Phase 1/6] Pre-Flight & HMC Discovery")
-		
+
 		var phaseErr error
 		func() {
 			provider, err := compute.NewProviderWithState(o.cfg, o.logger, o.debug, o.stateManager)
@@ -285,20 +301,20 @@ o.logger.Debug("Starting ShiftLaunch Local Agent Orchestration...", "cluster", o
 					hmcProvider.Cleanup()
 				}
 			}()
-			
+
 			if err := provider.DiscoverMetadata(ctx); err != nil {
 				o.logger.Error("Failed to discover LPAR metadata from HMC", "error", err)
 				phaseErr = fmt.Errorf("failed to discover LPAR metadata from HMC: %w", err)
 				return
 			}
 		}()
-		
+
 		o.endPhase(phaseExec, phaseErr)
 		if phaseErr != nil {
 			o.logger.EndPhase(false, "[Phase 1/6] Pre-Flight & HMC Discovery Failed")
 			return phaseErr
 		}
-		
+
 		o.logger.EndPhase(true, "[Phase 1/6] Pre-Flight & HMC Discovery Complete")
 		o.saveState("discovery")
 	}
@@ -318,16 +334,16 @@ o.logger.Debug("Starting ShiftLaunch Local Agent Orchestration...", "cluster", o
 	if needsDownloads {
 		phaseExec := o.startPhase("downloads")
 		o.logger.StartPhase("[Phase 2/6] Downloading OpenShift Artifacts")
-		
+
 		downloader := services.NewDownloader(o.cfg, o.daemonCfg, o.executor, o.logger)
 		phaseErr := downloader.DownloadAll(ctx, o.workspaceDir)
-		
+
 		o.endPhase(phaseExec, phaseErr)
 		if phaseErr != nil {
 			o.logger.EndPhase(false, "[Phase 2/6] Downloading OpenShift Artifacts Failed")
 			return phaseErr
 		}
-		
+
 		o.logger.EndPhase(true, "[Phase 2/6] Downloading OpenShift Artifacts Complete")
 		o.saveState("downloads")
 	}
@@ -348,7 +364,7 @@ o.logger.Debug("Starting ShiftLaunch Local Agent Orchestration...", "cluster", o
 				return
 			}
 			o.trackServiceEnd(pkgSvc, nil, "Installed required packages")
-			
+
 			// Track firewall configuration
 			fwSvc := o.trackServiceStart("firewall", "firewall", true)
 			if err := setup.ConfigureFirewall(ctx); err != nil {
@@ -359,11 +375,11 @@ o.logger.Debug("Starting ShiftLaunch Local Agent Orchestration...", "cluster", o
 			o.trackServiceEnd(fwSvc, nil, "Configured firewall rules")
 
 			// Track HAProxy configuration
-			if o.cfg.ManagedServices.LoadBalancer {
+			if o.cfg.Services.LoadBalancer.Enabled {
 				haproxySvc := o.trackServiceStart("haproxy", "load-balancer", true)
 				haproxySvc.ServiceName = "haproxy"
 				haproxySvc.ConfigFile = "/etc/haproxy/haproxy.cfg"
-				
+
 				o.logger.Info("Configuring Local HAProxy...")
 
 				o.executor.Execute(ctx, "sudo sysctl -w net.ipv4.ip_nonlocal_bind=1")
@@ -374,10 +390,10 @@ o.logger.Debug("Starting ShiftLaunch Local Agent Orchestration...", "cluster", o
 				o.executor.Execute(ctx, "sudo semanage port -m -t http_port_t -p tcp 22623 2>/dev/null || true")
 
 				netMgr := controller.NewNetworkManager(o.executor, o.debug, o.logger)
-				vip := o.cfg.Network.LoadBalancerIP
-				iface := o.cfg.Controller.NetworkInterface
+				vip := o.cfg.Services.LoadBalancer.VIP
+				iface := o.cfg.Network.ControllerInterface
 				cidr := o.cfg.Network.MachineCIDR
-				
+
 				if err := netMgr.AddVIPAlias(ctx, iface, vip, cidr); err != nil {
 					o.trackServiceEnd(haproxySvc, err, "")
 					phaseErr = fmt.Errorf("FATAL: Failed to configure VIP alias '%s' on interface '%s': %w", vip, iface, err)
@@ -397,14 +413,14 @@ o.logger.Debug("Starting ShiftLaunch Local Agent Orchestration...", "cluster", o
 			}
 
 			// Track Squid Proxy configuration
-			if o.cfg.ManagedServices.Proxy {
+			if o.cfg.Services.Proxy.Enabled {
 				squidSvc := o.trackServiceStart("squid-proxy", "proxy", true)
 				squidSvc.ServiceName = "squid"
 				squidSvc.ConfigFile = "/etc/squid/squid.conf"
-				
+
 				o.logger.Info("Configuring Local Squid Proxy...")
 				squidMgr := services.NewSquidManager(o.cfg, o.executor, o.logger, o.workspaceDir)
-				
+
 				if err := squidMgr.Setup(ctx); err != nil {
 					o.trackServiceEnd(squidSvc, err, "")
 					phaseErr = err
@@ -418,25 +434,25 @@ o.logger.Debug("Starting ShiftLaunch Local Agent Orchestration...", "cluster", o
 			}
 
 			// Track Local Registry configuration for disconnected deployments
-			if o.cfg.DisconnectedConfig.Enabled && o.cfg.ManagedServices.Registry {
+			if o.cfg.Network.IsolationLevel == "fully-disconnected" && o.cfg.Services.Registry.Enabled {
 				registrySvc := o.trackServiceStart("local-registry", "registry", true)
 				registrySvc.ServiceName = "local-registry"
 				registrySvc.ConfigFile = "/etc/systemd/system/local-registry.service"
-				
+
 				o.logger.Info("Configuring Local Container Registry for Disconnected Deployment...")
 				o.logger.Info("This will mirror OpenShift images and may take 15-30 minutes...")
-				
+
 				registryMgr := services.NewRegistryManager(o.cfg, o.executor, o.logger, o.stateManager, o.state, o.workspaceDir)
-				
+
 				if err := registryMgr.Setup(ctx, o.workspaceDir); err != nil {
 					o.trackServiceEnd(registrySvc, err, "")
 					phaseErr = fmt.Errorf("failed to setup local registry: %w", err)
 					return
 				}
-				
+
 				registryURL := registryMgr.GetRegistryURL()
 				o.trackServiceEnd(registrySvc, nil, fmt.Sprintf("Local registry configured at https://%s", registryURL))
-			} else if o.cfg.DisconnectedConfig.Enabled {
+			} else if o.cfg.Network.IsolationLevel == "fully-disconnected" {
 				o.logger.Info("Skipping Local Registry (User Managed)")
 				skipSvc := o.trackServiceStart("local-registry", "registry", false)
 				o.trackServiceEnd(skipSvc, nil, "User managed")
@@ -444,11 +460,11 @@ o.logger.Debug("Starting ShiftLaunch Local Agent Orchestration...", "cluster", o
 
 			dnsmasq := services.NewDNSmasqManager(o.cfg, o.daemonCfg, o.executor)
 
-			if o.cfg.ManagedServices.DNS {
+			if o.cfg.Services.DNS.Enabled {
 				dnsSvc := o.trackServiceStart("dns", "dns", true)
 				dnsSvc.ServiceName = "dnsmasq"
 				dnsSvc.ConfigFile = "/etc/dnsmasq.d/dns.conf"
-				
+
 				o.logger.Info("Configuring Local DNS...")
 				if err := dnsmasq.SetupDNS(ctx); err != nil {
 					o.trackServiceEnd(dnsSvc, err, "")
@@ -462,11 +478,11 @@ o.logger.Debug("Starting ShiftLaunch Local Agent Orchestration...", "cluster", o
 				o.trackServiceEnd(skipSvc, nil, "User managed")
 			}
 
-			if o.cfg.ManagedServices.DHCP && o.cfg.Nodes.BootMethod != "agent" {
+			if o.cfg.Services.DHCP.Enabled && o.cfg.Nodes.BootMethod != "agent" {
 				dhcpSvc := o.trackServiceStart("dhcp", "dhcp", true)
 				dhcpSvc.ServiceName = "dnsmasq"
 				dhcpSvc.ConfigFile = "/etc/dnsmasq.d/dhcp.conf"
-				
+
 				o.logger.Info("Configuring Local DHCP...")
 				if err := dnsmasq.SetupDHCP(ctx); err != nil {
 					o.trackServiceEnd(dhcpSvc, err, "")
@@ -478,17 +494,17 @@ o.logger.Debug("Starting ShiftLaunch Local Agent Orchestration...", "cluster", o
 				o.logger.Info("Skipping DHCP (Not required for Agent ISO or User Managed)")
 				skipSvc := o.trackServiceStart("dhcp", "dhcp", false)
 				skipReason := "Not required for Agent ISO"
-				if !o.cfg.ManagedServices.DHCP {
+				if !o.cfg.Services.DHCP.Enabled {
 					skipReason = "User managed"
 				}
 				o.trackServiceEnd(skipSvc, nil, skipReason)
 			}
 
-			if o.cfg.ManagedServices.PXE && o.cfg.Nodes.BootMethod != "agent" {
+			if o.cfg.Services.PXE.Enabled && o.cfg.Nodes.BootMethod != "agent" {
 				pxeSvc := o.trackServiceStart("pxe", "pxe", true)
 				pxeSvc.ServiceName = "dnsmasq"
 				pxeSvc.ConfigFile = "/etc/dnsmasq.d/tftp.conf"
-				
+
 				o.logger.Info("Configuring Local PXE Service...")
 				if err := dnsmasq.SetupPXEService(ctx); err != nil {
 					o.trackServiceEnd(pxeSvc, err, "")
@@ -506,19 +522,19 @@ o.logger.Debug("Starting ShiftLaunch Local Agent Orchestration...", "cluster", o
 				o.logger.Info("Skipping PXE (Not required for Agent ISO or User Managed)")
 				skipSvc := o.trackServiceStart("pxe", "pxe", false)
 				skipReason := "Not required for Agent ISO"
-				if !o.cfg.ManagedServices.PXE {
+				if !o.cfg.Services.PXE.Enabled {
 					skipReason = "User managed"
 				}
 				o.trackServiceEnd(skipSvc, nil, skipReason)
 			}
 
-			needsDHCP := o.cfg.ManagedServices.DHCP && o.cfg.Nodes.BootMethod != "agent"
-			needsPXE := o.cfg.ManagedServices.PXE && o.cfg.Nodes.BootMethod != "agent"
+			needsDHCP := o.cfg.Services.DHCP.Enabled && o.cfg.Nodes.BootMethod != "agent"
+			needsPXE := o.cfg.Services.PXE.Enabled && o.cfg.Nodes.BootMethod != "agent"
 
-			if o.cfg.ManagedServices.DNS || needsDHCP || needsPXE {
+			if o.cfg.Services.DNS.Enabled || needsDHCP || needsPXE {
 				restartSvc := o.trackServiceStart("dnsmasq-restart", "service-restart", true)
 				restartSvc.ServiceName = "dnsmasq"
-				
+
 				o.logger.Info("Restarting DNSmasq service...")
 				if err := dnsmasq.Restart(ctx); err != nil {
 					o.trackServiceEnd(restartSvc, err, "")
@@ -527,24 +543,24 @@ o.logger.Debug("Starting ShiftLaunch Local Agent Orchestration...", "cluster", o
 				}
 				o.trackServiceEnd(restartSvc, nil, "DNSmasq service restarted successfully")
 			}
-			
+
 			// ========================================================================
 			// LOCAL DNS OVERRIDE (Tracked in State)
 			// ========================================================================
 			hostsSvc := o.trackServiceStart("local-hosts", "dns-override", true)
 			hostsSvc.ConfigFile = "/etc/hosts"
-			
+
 			o.logger.Info("Updating local /etc/hosts for installer resolution...")
 			netMgr := controller.NewNetworkManager(o.executor, o.debug, o.logger)
-			
-			if err := netMgr.AddHostsEntry(ctx, o.cfg.OpenShift.ClusterName, o.cfg.OpenShift.BaseDomain, o.cfg.Network.LoadBalancerIP); err != nil {
+
+			if err := netMgr.AddHostsEntry(ctx, o.cfg.OpenShift.ClusterName, o.cfg.OpenShift.BaseDomain, o.cfg.Services.LoadBalancer.VIP); err != nil {
 				o.trackServiceEnd(hostsSvc, err, "")
 				o.logger.Warn("Failed to update /etc/hosts (installer wait phase may fail)", "error", err)
 			} else {
 				o.trackServiceEnd(hostsSvc, nil, "Added cluster API to /etc/hosts for local resolution")
-				
+
 				//  Force Squid to flush its cache and learn the new OpenShift API routes!
-				if o.cfg.ManagedServices.Proxy {
+				if o.cfg.Services.Proxy.Enabled {
 					_ = o.executor.SystemctlRestart(ctx, "squid")
 					o.logger.Debug("Reloaded Squid proxy to register new API routing")
 				}
@@ -557,7 +573,7 @@ o.logger.Debug("Starting ShiftLaunch Local Agent Orchestration...", "cluster", o
 			o.logger.EndPhase(false, "[Phase 3/6] Configuring Managed Infrastructure Services Failed")
 			return phaseErr
 		}
-		
+
 		o.logger.EndPhase(true, "[Phase 3/6] Configuring Managed Infrastructure Services Complete")
 		o.saveState("services")
 	}
@@ -575,7 +591,7 @@ o.logger.Debug("Starting ShiftLaunch Local Agent Orchestration...", "cluster", o
 	if needsIgnition {
 		phaseExec := o.startPhase("ignition")
 		o.logger.StartPhase("[Phase 4/6] Generating OpenShift Ignition Payload")
-		
+
 		var phaseErr error
 		func() {
 			ignSvc := o.trackServiceStart("ignition-generation", "ignition", true)
@@ -590,9 +606,9 @@ o.logger.Debug("Starting ShiftLaunch Local Agent Orchestration...", "cluster", o
 				httpSvc := o.trackServiceStart("http-server", "http", true)
 				httpSvc.ServiceName = "httpd"
 				httpSvc.ConfigFile = "/etc/httpd/conf.d/shiftlaunch.conf"
-				
+
 				o.logger.Info("Setting up Local HTTP Server (Port 8080)...")
-				
+
 				if err := services.ConfigureHTTPD(ctx, o.executor, o.daemonCfg.Network.HTTPPort); err != nil {
 					o.trackServiceEnd(httpSvc, err, "")
 					phaseErr = err
@@ -605,7 +621,7 @@ o.logger.Debug("Starting ShiftLaunch Local Agent Orchestration...", "cluster", o
 					phaseErr = err
 					return
 				}
-				
+
 				o.logger.Info("Staging files to HTTP Server...")
 				if err := httpServer.StageFiles(ctx, o.workspaceDir); err != nil {
 					o.trackServiceEnd(httpSvc, err, "")
@@ -617,12 +633,12 @@ o.logger.Debug("Starting ShiftLaunch Local Agent Orchestration...", "cluster", o
 				o.logger.Info("Skipping HTTP Server setup (Not required for Agent ISO)")
 				skipSvc := o.trackServiceStart("http-server", "http", false)
 				o.trackServiceEnd(skipSvc, nil, "Not required for Agent ISO")
-				
-				if o.cfg.ManagedServices.NFS {
+
+				if o.cfg.Services.NFS.Enabled {
 					nfsSvc := o.trackServiceStart("nfs-server", "nfs", true)
 					nfsSvc.ServiceName = "nfs-server"
 					nfsSvc.ConfigFile = "/etc/exports"
-					
+
 					o.logger.Info("Setting up NFS Server for Agent ISO...")
 					nfsMgr := services.NewNFSManager(o.cfg, o.executor, o.logger, o.workspaceDir)
 					if err := nfsMgr.Setup(ctx); err != nil {
@@ -646,7 +662,7 @@ o.logger.Debug("Starting ShiftLaunch Local Agent Orchestration...", "cluster", o
 			o.logger.EndPhase(false, "[Phase 4/6] Generating OpenShift Ignition Payload Failed")
 			return phaseErr
 		}
-		
+
 		o.logger.EndPhase(true, "[Phase 4/6] Generating OpenShift Ignition Payload Complete")
 		o.saveState("ignition")
 	}
@@ -655,7 +671,7 @@ o.logger.Debug("Starting ShiftLaunch Local Agent Orchestration...", "cluster", o
 	if !resume || !contains(o.state.CompletedPhases, "boot") {
 		phaseExec := o.startPhase("boot")
 		o.logger.StartPhase("[Phase 5/6] Initiating Cluster Boot")
-		
+
 		var phaseErr error
 		func() {
 			provider, err := compute.NewProviderWithState(o.cfg, o.logger, o.debug, o.stateManager)
@@ -683,13 +699,13 @@ o.logger.Debug("Starting ShiftLaunch Local Agent Orchestration...", "cluster", o
 				return
 			}
 		}()
-		
+
 		o.endPhase(phaseExec, phaseErr)
 		if phaseErr != nil {
 			o.logger.EndPhase(false, "[Phase 5/6] Initiating Cluster Boot Failed")
 			return phaseErr
 		}
-		
+
 		o.logger.EndPhase(true, "[Phase 5/6] Initiating Cluster Boot Complete")
 		o.saveState("boot")
 	}
@@ -698,7 +714,7 @@ o.logger.Debug("Starting ShiftLaunch Local Agent Orchestration...", "cluster", o
 	if !resume || !contains(o.state.CompletedPhases, "wait") {
 		phaseExec := o.startPhase("wait")
 		o.logger.StartPhase("[Phase 6/6] Waiting for OpenShift Installation")
-		
+
 		var phaseErr error
 		func() {
 			if err := o.waitForBootstrapComplete(ctx); err != nil {
@@ -717,7 +733,7 @@ o.logger.Debug("Starting ShiftLaunch Local Agent Orchestration...", "cluster", o
 			o.logger.EndPhase(false, "[Phase 6/6] Waiting for OpenShift Installation Failed")
 			return phaseErr
 		}
-		
+
 		o.logger.EndPhase(true, "[Phase 6/6] Waiting for OpenShift Installation Complete")
 		o.saveState("wait")
 	}
@@ -728,7 +744,6 @@ o.logger.Debug("Starting ShiftLaunch Local Agent Orchestration...", "cluster", o
 	o.logger.Debug("ShiftLaunch Agent Execution Complete! OpenShift is ready.")
 	return nil
 }
-
 
 // GetClusterStatus returns a beautifully formatted, Docker-style summary of the deployment
 func (o *Orchestrator) GetClusterStatus(ctx context.Context) string {
@@ -760,15 +775,25 @@ func (o *Orchestrator) GetClusterStatus(ctx context.Context) string {
 
 	// ---INFRASTRUCTURE & SERVICES ---
 	sb.WriteString(pterm.Cyan("\n◉ INFRASTRUCTURE & SERVICES\n"))
-	
+
 	// Format managed services list (Boot-Method Aware)
 	var activeServices []string
-	if o.cfg.ManagedServices.DNS { activeServices = append(activeServices, "DNS") }
-	if o.cfg.ManagedServices.DHCP && o.cfg.Nodes.BootMethod != "agent" { activeServices = append(activeServices, "DHCP") }
-	if o.cfg.ManagedServices.PXE && o.cfg.Nodes.BootMethod != "agent" { activeServices = append(activeServices, "PXE") }
-	if o.cfg.ManagedServices.LoadBalancer { activeServices = append(activeServices, "HAProxy") }
-	if o.cfg.ManagedServices.NFS && o.cfg.Nodes.BootMethod == "agent" { activeServices = append(activeServices, "NFS") }
-	
+	if o.cfg.Services.DNS.Enabled {
+		activeServices = append(activeServices, "DNS")
+	}
+	if o.cfg.Services.DHCP.Enabled && o.cfg.Nodes.BootMethod != "agent" {
+		activeServices = append(activeServices, "DHCP")
+	}
+	if o.cfg.Services.PXE.Enabled && o.cfg.Nodes.BootMethod != "agent" {
+		activeServices = append(activeServices, "PXE")
+	}
+	if o.cfg.Services.LoadBalancer.Enabled {
+		activeServices = append(activeServices, "HAProxy")
+	}
+	if o.cfg.Services.NFS.Enabled && o.cfg.Nodes.BootMethod == "agent" {
+		activeServices = append(activeServices, "NFS")
+	}
+
 	managedStr := "None"
 	if len(activeServices) > 0 {
 		managedStr = strings.Join(activeServices, ", ")
@@ -776,18 +801,18 @@ func (o *Orchestrator) GetClusterStatus(ctx context.Context) string {
 
 	// Format Proxy
 	proxyStr := "None"
-	if o.cfg.ManagedServices.Proxy {
-		proxyStr = fmt.Sprintf("Managed Squid Proxy (http://%s:3128)", o.cfg.Controller.IP)
-	} else if o.cfg.ExternalProxy.HTTPProxy != "" {
-		proxyStr = fmt.Sprintf("External (%s)", o.cfg.ExternalProxy.HTTPProxy)
+	if o.cfg.Services.Proxy.Enabled {
+		proxyStr = fmt.Sprintf("Managed Squid Proxy (http://%s:3128)", o.cfg.Network.ControllerIP)
+	} else if o.cfg.Services.Proxy.ExternalHTTPProxy != "" {
+		proxyStr = fmt.Sprintf("External (%s)", o.cfg.Services.Proxy.ExternalHTTPProxy)
 	}
 
 	// Format Registry
 	registryStr := "Official Red Hat Upstream"
-	if o.cfg.ManagedServices.Registry {
-		registryStr = fmt.Sprintf("Managed Local Registry (%s:5000)", o.cfg.Controller.IP)
-	} else if o.cfg.DisconnectedConfig.Enabled {
-		registryStr = fmt.Sprintf("External Airgap Registry (%s)", o.cfg.DisconnectedConfig.RegistryHostname)
+	if o.cfg.Services.Registry.Enabled {
+		registryStr = fmt.Sprintf("Managed Local Registry (%s:5000)", o.cfg.Network.ControllerIP)
+	} else if o.cfg.Network.IsolationLevel == "fully-disconnected" {
+		registryStr = fmt.Sprintf("External Airgap Registry (%s)", o.cfg.Services.Registry.ExternalHostname)
 	}
 
 	infraData := pterm.TableData{
@@ -802,11 +827,11 @@ func (o *Orchestrator) GetClusterStatus(ctx context.Context) string {
 	if len(state.DiscoveredNodes) > 0 {
 		sb.WriteString(pterm.Cyan("\n◉ CLUSTER NODES\n"))
 		nodeData := pterm.TableData{{"HOSTNAME", "ROLE", "IP ADDRESS", "MAC ADDRESS"}}
-		
+
 		for _, node := range state.DiscoveredNodes {
 			nodeData = append(nodeData, []string{node.Hostname, node.Role, node.IP, node.MACAddress})
 		}
-		
+
 		nodeTable, _ := pterm.DefaultTable.
 			WithHasHeader().
 			WithHeaderStyle(pterm.NewStyle(pterm.FgCyan, pterm.Bold)).
@@ -850,7 +875,7 @@ func (o *Orchestrator) GetClusterStatus(ctx context.Context) string {
 
 		sb.WriteString(pterm.Cyan("\n◉ /etc/hosts ENTRY (Controller Override)\n"))
 		hostsEntry := fmt.Sprintf("%s api.%s console-openshift-console.apps.%s oauth-openshift.apps.%s prometheus-k8s-openshift-monitoring.apps.%s grafana-openshift-monitoring.apps.%s",
-			o.cfg.Network.LoadBalancerIP, clusterDomain, clusterDomain, clusterDomain, clusterDomain, clusterDomain)
+			o.cfg.Services.LoadBalancer.VIP, clusterDomain, clusterDomain, clusterDomain, clusterDomain, clusterDomain)
 		sb.WriteString(pterm.Gray(hostsEntry) + "\n\n")
 	}
 
@@ -861,23 +886,23 @@ func (o *Orchestrator) GetClusterStatus(ctx context.Context) string {
 func (o *Orchestrator) DumpConfigs(ctx context.Context) error {
 	o.logger.Info("Dumping configuration requirements for unmanaged services...")
 
-	if !o.cfg.ManagedServices.DNS {
+	if !o.cfg.Services.DNS.Enabled {
 		fmt.Printf("\n--- REQUIRED DNS RECORDS ---\n")
-		fmt.Printf("%s\tapi.%s.%s\n", o.cfg.Network.LoadBalancerIP, o.cfg.OpenShift.ClusterName, o.cfg.OpenShift.BaseDomain)
-		fmt.Printf("%s\tapi-int.%s.%s\n", o.cfg.Network.LoadBalancerIP, o.cfg.OpenShift.ClusterName, o.cfg.OpenShift.BaseDomain)
-		fmt.Printf("%s\t*.apps.%s.%s\n", o.cfg.Network.LoadBalancerIP, o.cfg.OpenShift.ClusterName, o.cfg.OpenShift.BaseDomain)
+		fmt.Printf("%s\tapi.%s.%s\n", o.cfg.Services.LoadBalancer.VIP, o.cfg.OpenShift.ClusterName, o.cfg.OpenShift.BaseDomain)
+		fmt.Printf("%s\tapi-int.%s.%s\n", o.cfg.Services.LoadBalancer.VIP, o.cfg.OpenShift.ClusterName, o.cfg.OpenShift.BaseDomain)
+		fmt.Printf("%s\t*.apps.%s.%s\n", o.cfg.Services.LoadBalancer.VIP, o.cfg.OpenShift.ClusterName, o.cfg.OpenShift.BaseDomain)
 	}
 
-	if !o.cfg.ManagedServices.LoadBalancer {
-		fmt.Printf("\n--- REQUIRED LOAD BALANCER POOLS (Target: %s) ---\n", o.cfg.Network.LoadBalancerIP)
+	if !o.cfg.Services.LoadBalancer.Enabled {
+		fmt.Printf("\n--- REQUIRED LOAD BALANCER POOLS (Target: %s) ---\n", o.cfg.Services.LoadBalancer.VIP)
 		fmt.Println("Port 6443 (API)   -> Masters & Bootstrap")
 		fmt.Println("Port 22623 (MCS)  -> Masters & Bootstrap")
 		fmt.Println("Port 80/443 (App) -> Workers (or Masters if SNO/Compact)")
 	}
 
-	if !o.cfg.ManagedServices.DHCP {
+	if !o.cfg.Services.DHCP.Enabled {
 		fmt.Printf("\n--- REQUIRED DHCP OPTIONS ---\n")
-		fmt.Printf("Option 66 (Next-Server): %s\n", o.cfg.Controller.IP)
+		fmt.Printf("Option 66 (Next-Server): %s\n", o.cfg.Network.ControllerIP)
 		fmt.Printf("Option 67 (Bootfile):    %s/core.elf\n", o.cfg.OpenShift.ClusterName)
 	}
 
@@ -898,67 +923,68 @@ func contains(slice []string, item string) bool {
 func (o *Orchestrator) findClusterUsingVIP(vip string) string {
 	// Get workspace parent directory
 	workspaceParent := filepath.Dir(o.workspaceDir)
-	
+
 	// List all directories in workspace
 	entries, err := os.ReadDir(workspaceParent)
 	if err != nil {
 		return "" // Can't check, return empty
 	}
-	
+
 	currentCluster := o.cfg.OpenShift.ClusterName
-	
+
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
-		
+
 		clusterName := entry.Name()
-		
+
 		// Skip current cluster
 		if clusterName == currentCluster {
 			continue
 		}
-		
+
 		// Check if cluster is managed OR failed (both mean the cluster occupies the VIP)
 		managedMarker := filepath.Join(workspaceParent, clusterName, ".managed")
 		failedMarker := filepath.Join(workspaceParent, clusterName, ".failed")
-		
+
 		if _, err1 := os.Stat(managedMarker); os.IsNotExist(err1) {
 			if _, err2 := os.Stat(failedMarker); os.IsNotExist(err2) {
 				continue // Not a managed or failed cluster
 			}
-		}	
-		
+		}
+
 		// Check if cluster is deleted
 		deletedMarker := filepath.Join(workspaceParent, clusterName, ".deleted")
 		if _, err := os.Stat(deletedMarker); err == nil {
 			continue // Cluster is deleted, skip
 		}
-		
+
 		// Read the cluster's config
 		configPath := filepath.Join(workspaceParent, clusterName, "config.yaml")
 		data, err := os.ReadFile(configPath)
 		if err != nil {
 			continue // Can't read config
 		}
-		
+
 		// Safely parse the YAML to guarantee an exact value match
 		var tempCfg types.AgentConfig
 		if err := yaml.Unmarshal(data, &tempCfg); err == nil {
-			if tempCfg.Network.LoadBalancerIP == vip {
+			if tempCfg.Services.LoadBalancer.VIP == vip {
 				return clusterName
 			}
 		}
 	}
-	
+
 	return "" // No conflict found
 }
+
 // GetLogger returns the orchestrator's logger instance
 func (o *Orchestrator) GetLogger() *logger.Logger {
 	return o.logger
 }
+
 // GetClusterName returns the cluster name from the configuration
 func (o *Orchestrator) GetClusterName() string {
 	return o.cfg.OpenShift.ClusterName
 }
-

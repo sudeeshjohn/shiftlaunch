@@ -75,7 +75,7 @@ func (l *Logger) Info(msg string, keyvals ...interface{}) {
 	// 2. Feed the intermediate logs into the spinner!
 	if l.activeSpinner != nil && !l.debug {
 		plainText := pterm.RemoveColorFromString(formattedMsg)
-		
+
 		// 🛡️ THE DYNAMIC FIX
 		// Get the actual width of the user's terminal window
 		termWidth := pterm.GetTerminalWidth()
@@ -85,12 +85,12 @@ func (l *Logger) Info(msg string, keyvals ...interface{}) {
 
 		// Reserve ~18 characters for the spinner prefix ("▀ ") and timer suffix (" (12m34s)")
 		maxLen := termWidth - 18
-		
+
 		// Only truncate if the text is ACTUALLY going to wrap and break the UI
 		if len(plainText) > maxLen {
 			plainText = plainText[:maxLen-3] + "..."
 		}
-		
+
 		l.activeSpinner.UpdateText(plainText)
 		l.activeSpinner.UpdateText(plainText + "\033[K")
 		return
@@ -112,7 +112,7 @@ func (l *Logger) Error(msg string, keyvals ...interface{}) {
 		l.fileLogger.Error(msg, keyvals...)
 	}
 	formatted := formatKV(msg, keyvals...)
-	
+
 	if l.activeSpinner != nil && !l.debug {
 		termWidth := pterm.GetTerminalWidth()
 		if termWidth <= 0 {
@@ -135,7 +135,7 @@ func (l *Logger) Warn(msg string, keyvals ...interface{}) {
 		l.fileLogger.Warn(msg, keyvals...)
 	}
 	formatted := formatKV(msg, keyvals...)
-	
+
 	if l.activeSpinner != nil && !l.debug {
 		termWidth := pterm.GetTerminalWidth()
 		if termWidth <= 0 {
@@ -192,7 +192,7 @@ func (l *Logger) StartPhase(msg string) {
 		WithWriter(os.Stderr).
 		WithRemoveWhenDone(true).
 		Start(pterm.Cyan(msg))
-		
+
 	l.activeSpinner = spinner
 
 	// 3.   Yield to the Go scheduler!

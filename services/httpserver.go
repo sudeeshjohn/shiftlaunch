@@ -33,7 +33,7 @@ func NewHTTPServerManager(cfg *types.AgentConfig, daemonCfg *config.AgentDaemonC
 }
 
 // Setup creates the HTTP directory structure and downloads required files
-func (h *HTTPServerManager) Setup(ctx context.Context,workspaceDir string) error {
+func (h *HTTPServerManager) Setup(ctx context.Context, workspaceDir string) error {
 	h.logger.Info("Setting up HTTP server for deployment...", "cluster", h.cfg.OpenShift.ClusterName)
 
 	// Create base cluster directory
@@ -47,7 +47,7 @@ func (h *HTTPServerManager) Setup(ctx context.Context,workspaceDir string) error
 	}
 
 	// Download RHCOS images and OpenShift tools
-	if err := h.downloader.DownloadAll(ctx,workspaceDir); err != nil {
+	if err := h.downloader.DownloadAll(ctx, workspaceDir); err != nil {
 		return fmt.Errorf("failed to download artifacts: %w", err)
 	}
 
@@ -76,14 +76,14 @@ func (h *HTTPServerManager) createClusterDirectory(ctx context.Context) error {
 
 	// Check if directory already exists
 	checkCmd := fmt.Sprintf("test -d %s && echo 'exists' || echo 'missing'", clusterDir)
-	output, err := h.exec.Execute(ctx,checkCmd)
+	output, err := h.exec.Execute(ctx, checkCmd)
 
 	if err == nil && strings.TrimSpace(output) == "exists" {
 		h.logger.Debug("Cluster directory already exists", "dir", clusterDir)
 
 		// Check if it contains files from a previous deployment
 		listCmd := fmt.Sprintf("ls -A %s 2>/dev/null | wc -l", clusterDir)
-		countOutput, _ := h.exec.Execute(ctx,listCmd)
+		countOutput, _ := h.exec.Execute(ctx, listCmd)
 		fileCount := strings.TrimSpace(countOutput)
 
 		if fileCount != "0" {
@@ -95,7 +95,7 @@ func (h *HTTPServerManager) createClusterDirectory(ctx context.Context) error {
 
 	// Create directory if it doesn't exist
 	cmd := fmt.Sprintf("sudo mkdir -p %s", clusterDir)
-	if _, err := h.exec.Execute(ctx,cmd); err != nil {
+	if _, err := h.exec.Execute(ctx, cmd); err != nil {
 		return fmt.Errorf("failed to create cluster directory %s: %w", clusterDir, err)
 	}
 
@@ -119,7 +119,7 @@ func (h *HTTPServerManager) createSubdirectories(ctx context.Context) error {
 
 		// Check if subdirectory exists
 		checkCmd := fmt.Sprintf("test -d %s && echo 'exists' || echo 'missing'", path)
-		output, err := h.exec.Execute(ctx,checkCmd)
+		output, err := h.exec.Execute(ctx, checkCmd)
 
 		if err == nil && strings.TrimSpace(output) == "exists" {
 			h.logger.Debug("Subdirectory already exists", "path", path)
@@ -128,7 +128,7 @@ func (h *HTTPServerManager) createSubdirectories(ctx context.Context) error {
 
 		// Create subdirectory
 		cmd := fmt.Sprintf("sudo mkdir -p %s", path)
-		if _, err := h.exec.Execute(ctx,cmd); err != nil {
+		if _, err := h.exec.Execute(ctx, cmd); err != nil {
 			return fmt.Errorf("failed to create subdirectory %s: %w", path, err)
 		}
 
@@ -144,14 +144,14 @@ func (h *HTTPServerManager) setPermissions(ctx context.Context) error {
 
 	// Set directory permissions to 755 (rwxr-xr-x)
 	cmd := fmt.Sprintf("sudo chmod -R 755 %s", clusterDir)
-	if _, err := h.exec.Execute(ctx,cmd); err != nil {
+	if _, err := h.exec.Execute(ctx, cmd); err != nil {
 		return fmt.Errorf("failed to set permissions: %w", err)
 	}
 
 	// Set ownership to apache user (typically apache:apache or httpd:httpd)
 	cmd = fmt.Sprintf("sudo chown -R apache:apache %s 2>/dev/null || sudo chown -R httpd:httpd %s 2>/dev/null || true",
 		clusterDir, clusterDir)
-	if _, err := h.exec.Execute(ctx,cmd); err != nil {
+	if _, err := h.exec.Execute(ctx, cmd); err != nil {
 		h.logger.Warn("Could not set apache/httpd ownership", "error", err)
 	}
 
@@ -163,7 +163,7 @@ func (h *HTTPServerManager) setPermissions(ctx context.Context) error {
 func (h *HTTPServerManager) restoreSELinuxContexts(ctx context.Context) error {
 	clusterDir := h.GetClusterHTTPDir()
 
-	if _, err := h.exec.Execute(ctx,fmt.Sprintf("sudo restorecon -R -v %s", clusterDir)); err != nil {
+	if _, err := h.exec.Execute(ctx, fmt.Sprintf("sudo restorecon -R -v %s", clusterDir)); err != nil {
 		h.logger.Warn("Could not restore SELinux contexts", "error", err)
 		return nil
 	}
@@ -178,13 +178,13 @@ func (h *HTTPServerManager) createHelperScript(ctx context.Context) error {
 
 	scriptPath := filepath.Join(h.GetClusterHTTPDir(), "scripts", "install-helper.sh")
 
-	if err := h.exec.WriteFile(ctx,scriptPath, []byte(script), 0644); err != nil {
+	if err := h.exec.WriteFile(ctx, scriptPath, []byte(script), 0644); err != nil {
 		return fmt.Errorf("failed to upload helper script: %w", err)
 	}
 
 	// Make executable
 	cmd := fmt.Sprintf("sudo chmod 755 %s", scriptPath)
-	if _, err := h.exec.Execute(ctx,cmd); err != nil {
+	if _, err := h.exec.Execute(ctx, cmd); err != nil {
 		return fmt.Errorf("failed to make script executable: %w", err)
 	}
 
@@ -193,16 +193,16 @@ func (h *HTTPServerManager) createHelperScript(ctx context.Context) error {
 }
 
 // UploadIgnitionFile uploads an ignition file to the cluster's ignition directory
-func (h *HTTPServerManager) UploadIgnitionFile(ctx context.Context,filename string, content []byte) error {
+func (h *HTTPServerManager) UploadIgnitionFile(ctx context.Context, filename string, content []byte) error {
 	destPath := filepath.Join(h.GetClusterHTTPDir(), "ignition", filename)
 
-	if err := h.exec.WriteFile(ctx,destPath, content, 0644); err != nil {
+	if err := h.exec.WriteFile(ctx, destPath, content, 0644); err != nil {
 		return fmt.Errorf("failed to upload ignition file %s: %w", filename, err)
 	}
 
 	// Set proper permissions
 	cmd := fmt.Sprintf("sudo chmod 644 %s", destPath)
-	if _, err := h.exec.Execute(ctx,cmd); err != nil {
+	if _, err := h.exec.Execute(ctx, cmd); err != nil {
 		return fmt.Errorf("failed to set permissions on %s: %w", destPath, err)
 	}
 
@@ -213,7 +213,7 @@ func (h *HTTPServerManager) UploadIgnitionFile(ctx context.Context,filename stri
 // GetIgnitionURL returns the HTTP URL for an ignition file
 func (h *HTTPServerManager) GetIgnitionURL(filename string) string {
 	return fmt.Sprintf("http://%s:%d/%s/ignition/%s",
-		h.cfg.Controller.IP,
+		h.cfg.Network.ControllerIP,
 		h.daemonCfg.Network.HTTPPort,
 		h.cfg.OpenShift.ClusterName,
 		filename)
@@ -222,7 +222,7 @@ func (h *HTTPServerManager) GetIgnitionURL(filename string) string {
 // GetRHCOSImageURL returns the HTTP URL for an RHCOS image
 func (h *HTTPServerManager) GetRHCOSImageURL(filename string) string {
 	return fmt.Sprintf("http://%s:%d/%s/rhcos/%s",
-		h.cfg.Controller.IP,
+		h.cfg.Network.ControllerIP,
 		h.daemonCfg.Network.HTTPPort,
 		h.cfg.OpenShift.ClusterName,
 		filename)
@@ -230,7 +230,7 @@ func (h *HTTPServerManager) GetRHCOSImageURL(filename string) string {
 
 // GetKernelURL returns the URL for the RHCOS kernel
 func (h *HTTPServerManager) GetKernelURL() string {
-	return h.GetRHCOSImageURL("rhcos-live-kernel-ppc64le")
+	return h.GetRHCOSImageURL("rhcos-live-kernel.ppc64le")
 }
 
 // GetInitramfsURL returns the URL for the RHCOS initramfs
@@ -260,7 +260,7 @@ func (h *HTTPServerManager) Cleanup(ctx context.Context) error {
 	clusterDir := h.GetClusterHTTPDir()
 
 	cmd := fmt.Sprintf("sudo rm -rf %s", clusterDir)
-	if _, err := h.exec.Execute(ctx,cmd); err != nil {
+	if _, err := h.exec.Execute(ctx, cmd); err != nil {
 		return fmt.Errorf("failed to remove cluster directory: %w", err)
 	}
 
@@ -276,7 +276,7 @@ func (h *HTTPServerManager) VerifySetup(ctx context.Context) error {
 
 	// Check main directory
 	cmd := fmt.Sprintf("test -d %s", clusterDir)
-	if _, err := h.exec.Execute(ctx,cmd); err != nil {
+	if _, err := h.exec.Execute(ctx, cmd); err != nil {
 		return fmt.Errorf("cluster directory does not exist: %s", clusterDir)
 	}
 
@@ -285,7 +285,7 @@ func (h *HTTPServerManager) VerifySetup(ctx context.Context) error {
 	for _, subdir := range subdirs {
 		path := filepath.Join(clusterDir, subdir)
 		cmd := fmt.Sprintf("test -d %s", path)
-		if _, err := h.exec.Execute(ctx,cmd); err != nil {
+		if _, err := h.exec.Execute(ctx, cmd); err != nil {
 			return fmt.Errorf("subdirectory does not exist: %s", path)
 		}
 	}
@@ -299,7 +299,7 @@ func (h *HTTPServerManager) VerifySetup(ctx context.Context) error {
 	for _, image := range rhcosImages {
 		path := filepath.Join(clusterDir, "rhcos", image)
 		cmd := fmt.Sprintf("test -f %s", path)
-		if _, err := h.exec.Execute(ctx,cmd); err != nil {
+		if _, err := h.exec.Execute(ctx, cmd); err != nil {
 			return fmt.Errorf("RHCOS image missing: %s", image)
 		}
 	}
@@ -313,17 +313,18 @@ func (h *HTTPServerManager) GetDiskUsage(ctx context.Context) (string, error) {
 	clusterDir := h.GetClusterHTTPDir()
 
 	cmd := fmt.Sprintf("sudo du -sh %s 2>/dev/null | awk '{print $1}'", clusterDir)
-	output, err := h.exec.Execute(ctx,cmd)
+	output, err := h.exec.Execute(ctx, cmd)
 	if err != nil {
 		return "", fmt.Errorf("failed to get disk usage: %w", err)
 	}
 
 	return output, nil
 }
+
 // Inside services/httpserver.go
 
 // StageFiles copies the downloaded images and generated ignition configs into the HTTP root
-func (h *HTTPServerManager) StageFiles(ctx context.Context,workspaceDir string) error {
+func (h *HTTPServerManager) StageFiles(ctx context.Context, workspaceDir string) error {
 	h.logger.Info("Staging artifacts to HTTP directory...", "cluster", h.cfg.OpenShift.ClusterName)
 	httpDir := h.GetClusterHTTPDir()
 
@@ -340,7 +341,7 @@ func (h *HTTPServerManager) StageFiles(ctx context.Context,workspaceDir string) 
 	// 2. Copy Ignition files from the install-dir directory based on topology
 	targetDir := filepath.Join(workspaceDir, "install-dir")
 	var copyIgnCmd string
-	
+
 	if h.cfg.IsSNO() {
 		copyIgnCmd = fmt.Sprintf("sudo cp %s/bootstrap-in-place-for-live-iso.ign %s/ignition/bootstrap.ign", targetDir, httpDir)
 	} else {
@@ -352,7 +353,12 @@ func (h *HTTPServerManager) StageFiles(ctx context.Context,workspaceDir string) 
 	}
 
 	// 3. Fix permissions and SELinux contexts for the HTTP server
-	h.exec.Execute(shieldedCtx, fmt.Sprintf("sudo chmod -R 755 %s", httpDir))
+	// Directories get 755 (execute to traverse), Files get 644 (read-only)
+	h.exec.Execute(shieldedCtx, fmt.Sprintf("sudo find %s -type d -exec chmod 755 {} \\;", httpDir))
+	h.exec.Execute(shieldedCtx, fmt.Sprintf("sudo find %s -type f -exec chmod 644 {} \\;", httpDir))
+
+	// Ensure Apache owns the new ignition payloads to prevent 403 Forbidden errors
+	h.exec.Execute(shieldedCtx, fmt.Sprintf("sudo chown -R apache:apache %s 2>/dev/null || sudo chown -R httpd:httpd %s 2>/dev/null || true", httpDir, httpDir))
 	h.exec.Execute(shieldedCtx, fmt.Sprintf("sudo restorecon -Rv %s", httpDir))
 
 	h.logger.Info("Artifacts staged successfully")

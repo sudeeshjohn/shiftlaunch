@@ -174,11 +174,11 @@ func generateNetbootIgnition(ctx context.Context, cfg *types.AgentConfig, exec *
 	// CI / NIGHTLY INJECTION (Connected OR Disconnected)
 	// Inject the Insecure Policy to bypass Signature Validation for raw CI builds
 	// ========================================================================
-if cfg.OpenShift.ReleaseType == "ci" {
-    if err := injectInsecurePolicy(targetDir); err != nil {
-        return fmt.Errorf("failed to inject insecure policy: %w", err)
-    }
-}
+	if cfg.OpenShift.ReleaseType == "ci" {
+		if err := injectInsecurePolicy(targetDir); err != nil {
+			return fmt.Errorf("failed to inject insecure policy: %w", err)
+		}
+	}
 
 	// 4. Create Ignition Configs
 	var cmd string
@@ -201,10 +201,25 @@ func generateInstallConfigYAML(cfg *types.AgentConfig, workspaceDir string) (str
 		return "", err
 	}
 
-	// Read pull secret and SSH key
-	pullSecretPath := cfg.OpenShift.PullSecretFile
-	pullSecret, _ := os.ReadFile(pullSecretPath)
-	sshKey, _ := os.ReadFile(os.ExpandEnv(strings.ReplaceAll(cfg.OpenShift.SSHPublicKeyFile, "~", "$HOME")))
+	// 1. Safely read and validate the Pull Secret
+	pullSecretPath := os.ExpandEnv(strings.ReplaceAll(cfg.OpenShift.PullSecretFile, "~", "$HOME"))
+	pullSecret, err := os.ReadFile(pullSecretPath)
+	if err != nil {
+		return "", fmt.Errorf("FATAL: failed to read pull secret file at '%s': %w", pullSecretPath, err)
+	}
+	if len(strings.TrimSpace(string(pullSecret))) == 0 {
+		return "", fmt.Errorf("FATAL: pull secret file at '%s' is empty", pullSecretPath)
+	}
+
+	// 2. Safely read and validate the SSH Public Key
+	sshKeyPath := os.ExpandEnv(strings.ReplaceAll(cfg.OpenShift.SSHPublicKeyFile, "~", "$HOME"))
+	sshKey, err := os.ReadFile(sshKeyPath)
+	if err != nil {
+		return "", fmt.Errorf("FATAL: failed to read SSH public key file at '%s': %w", sshKeyPath, err)
+	}
+	if len(strings.TrimSpace(string(sshKey))) == 0 {
+		return "", fmt.Errorf("FATAL: SSH public key file at '%s' is empty", sshKeyPath)
+	}
 
 	// ---  Dynamic Worker Replica Assignment based on Boot Method ---
 	workerReplicas := 0
@@ -214,7 +229,7 @@ func generateInstallConfigYAML(cfg *types.AgentConfig, workspaceDir string) (str
 
 	// Prepare data structure for template
 	data := struct {
-		BaseDomain            string
+		BaseDomain               string
 		WorkerReplicas           int
 		MasterReplicas           int
 		ClusterName              string
@@ -248,28 +263,28 @@ func generateInstallConfigYAML(cfg *types.AgentConfig, workspaceDir string) (str
 		DiskDevice:               "/dev/sda",
 		PullSecret:               strings.TrimSpace(string(pullSecret)),
 		SSHKey:                   strings.TrimSpace(string(sshKey)),
-		UseLocalRegistry:         cfg.DisconnectedConfig.Enabled,
+		UseLocalRegistry:         cfg.Network.IsolationLevel == "fully-disconnected",
 		ReleaseType:              cfg.OpenShift.ReleaseType,
-		UseProxy:                 cfg.ManagedServices.Proxy,
+		UseProxy:                 cfg.Services.Proxy.Enabled,
 	}
 
 	// Add disconnected registry configuration if enabled
 	if data.UseLocalRegistry {
-		registryHostname := cfg.DisconnectedConfig.RegistryHostname
-		if cfg.ManagedServices.Registry {
-			registryHostname = cfg.Controller.IP
+		registryHostname := cfg.Services.Registry.ExternalHostname
+		if cfg.Services.Registry.Enabled {
+			registryHostname = cfg.Network.ControllerIP
 		} else if registryHostname == "" {
 			registryHostname = fmt.Sprintf("registry.%s.%s", cfg.OpenShift.ClusterName, cfg.OpenShift.BaseDomain)
 		}
 
 		data.LocalRegistry = fmt.Sprintf("%s:5000", registryHostname)
-		if !cfg.ManagedServices.Registry && strings.Contains(registryHostname, ":") {
+		if !cfg.Services.Registry.Enabled && strings.Contains(registryHostname, ":") {
 			data.LocalRegistry = registryHostname
 		}
 
-		data.LocalRepo = cfg.DisconnectedConfig.LocalRepo
+		data.LocalRepo = cfg.Services.Registry.LocalRepo
 
-		if cfg.ManagedServices.Registry {
+		if cfg.Services.Registry.Enabled {
 			updatedSecretPath := filepath.Join(workspaceDir, "pull-secret-updated.json")
 			if updatedSecret, err := os.ReadFile(updatedSecretPath); err == nil {
 				data.PullSecretUpdated = strings.TrimSpace(string(updatedSecret))
@@ -291,8 +306,8 @@ func generateInstallConfigYAML(cfg *types.AgentConfig, workspaceDir string) (str
 		} else {
 			data.PullSecretUpdated = data.PullSecret
 
-			if cfg.DisconnectedConfig.RegistryCAFile != "" {
-				caPath := os.ExpandEnv(strings.ReplaceAll(cfg.DisconnectedConfig.RegistryCAFile, "~", "$HOME"))
+			if cfg.Services.Registry.CACertFile != "" {
+				caPath := os.ExpandEnv(strings.ReplaceAll(cfg.Services.Registry.CACertFile, "~", "$HOME"))
 				certData, err := os.ReadFile(caPath)
 				if err != nil {
 					return "", fmt.Errorf("failed to read external registry CA file at '%s': %w", caPath, err)
@@ -309,18 +324,18 @@ func generateInstallConfigYAML(cfg *types.AgentConfig, workspaceDir string) (str
 	}
 
 	// Add proxy configuration if enabled
-	if cfg.ManagedServices.Proxy || cfg.ExternalProxy.HTTPProxy != "" {
+	if cfg.Services.Proxy.Enabled || cfg.Services.Proxy.ExternalHTTPProxy != "" {
 		data.UseProxy = true
-		if cfg.ManagedServices.Proxy {
-			data.ProxyURL = fmt.Sprintf("http://%s:3128", cfg.Controller.IP)
+		if cfg.Services.Proxy.Enabled {
+			data.ProxyURL = fmt.Sprintf("http://%s:3128", cfg.Network.ControllerIP)
 			data.NoProxy = fmt.Sprintf("127.0.0.1,localhost,%s,%s,.%s,%s",
 				cfg.Network.MachineCIDR,
-				cfg.Controller.IP,
+				cfg.Network.ControllerIP,
 				cfg.OpenShift.BaseDomain,
-				cfg.Network.LoadBalancerIP)
+				cfg.Services.LoadBalancer.VIP)
 		} else {
-			data.ProxyURL = cfg.ExternalProxy.HTTPProxy
-			data.NoProxy = cfg.ExternalProxy.NoProxy
+			data.ProxyURL = cfg.Services.Proxy.ExternalHTTPProxy
+			data.NoProxy = cfg.Services.Proxy.NoProxy
 		}
 	}
 
@@ -330,6 +345,7 @@ func generateInstallConfigYAML(cfg *types.AgentConfig, workspaceDir string) (str
 	}
 	return buf.String(), nil
 }
+
 // generateAgentImage creates an Agent-based Installer image for both SNO and multi-node clusters
 func generateAgentISO(ctx context.Context, cfg *types.AgentConfig, exec *localexec.LocalClient, workspaceDir string) error {
 	targetDir := filepath.Join(workspaceDir, "install-dir")
@@ -362,15 +378,15 @@ func generateAgentISO(ctx context.Context, cfg *types.AgentConfig, exec *localex
 
 	// ========================================================================
 	// PRODUCTION DISCONNECTED INJECTION (The Secret Sauce)
-	// Copy the IDMS and Signature ConfigMaps generated by oc-mirror into 
+	// Copy the IDMS and Signature ConfigMaps generated by oc-mirror into
 	// the installer's manifest directory so they are baked into the ISO.
 	// ========================================================================
-	if cfg.DisconnectedConfig.Enabled && cfg.ManagedServices.Registry {
+	if cfg.Network.IsolationLevel == "fully-disconnected" && cfg.Services.Registry.Enabled {
 		manifestsDir := filepath.Join(targetDir, "openshift")
 		exec.Execute(ctx, fmt.Sprintf("mkdir -p %s", manifestsDir))
-		
+
 		ocMirrorResources := filepath.Join(workspaceDir, "oc-mirror-workspace", "working-dir", "cluster-resources")
-		
+
 		// Copy all YAML/JSON files (Signatures, IDMS, ITMS, CatalogSources) into the payload
 		copyManifestsCmd := fmt.Sprintf("cp %s/* %s/ 2>/dev/null || true", ocMirrorResources, manifestsDir)
 		exec.Execute(ctx, copyManifestsCmd)
@@ -391,22 +407,22 @@ func generateAgentISO(ctx context.Context, cfg *types.AgentConfig, exec *localex
 	// 3. Run openshift-install agent create image
 	toolsDir := filepath.Join(workspaceDir, "tools")
 	installerPath := filepath.Join(toolsDir, "openshift-install")
-	
+
 	cmdStr := fmt.Sprintf("cd %s && %s agent create image --dir=. --log-level=info", targetDir, installerPath)
-	
-	if cfg.ManagedServices.Proxy || cfg.ExternalProxy.HTTPProxy != "" {
+
+	if cfg.Services.Proxy.Enabled || cfg.Services.Proxy.ExternalHTTPProxy != "" {
 		var proxyURL, noProxy string
-		if cfg.ManagedServices.Proxy {
-			proxyURL = fmt.Sprintf("http://%s:3128", cfg.Controller.IP)
+		if cfg.Services.Proxy.Enabled {
+			proxyURL = fmt.Sprintf("http://%s:3128", cfg.Network.ControllerIP)
 			noProxy = fmt.Sprintf("localhost,127.0.0.1,%s,%s,.%s.%s",
-				cfg.Network.MachineCIDR, cfg.Controller.IP, cfg.OpenShift.ClusterName, cfg.OpenShift.BaseDomain)
+				cfg.Network.MachineCIDR, cfg.Network.ControllerIP, cfg.OpenShift.ClusterName, cfg.OpenShift.BaseDomain)
 		} else {
-			proxyURL = cfg.ExternalProxy.HTTPProxy
-			noProxy = cfg.ExternalProxy.NoProxy
+			proxyURL = cfg.Services.Proxy.ExternalHTTPProxy
+			noProxy = cfg.Services.Proxy.NoProxy
 		}
 		cmdStr = fmt.Sprintf("export HTTP_PROXY=%s HTTPS_PROXY=%s NO_PROXY='%s' && ", proxyURL, proxyURL, noProxy) + cmdStr
 	}
-	
+
 	cmd := fmt.Sprintf("export PATH=%s:$PATH && %s", toolsDir, cmdStr)
 
 	if _, err := exec.Execute(ctx, cmd); err != nil {
@@ -434,9 +450,9 @@ func generateAgentConfigYAML(cfg *types.AgentConfig) (string, error) {
 	// Get DNS server based on managed services configuration
 	// If DNS is managed by shiftlaunch, use controller IP as DNS resolver
 	// Otherwise, use the configured nameserver
-	dnsServer := cfg.Network.Nameserver
-	if cfg.ManagedServices.DNS {
-		dnsServer = cfg.Controller.IP
+	dnsServer := cfg.Services.DNS.ExternalNameserver
+	if cfg.Services.DNS.Enabled {
+		dnsServer = cfg.Network.ControllerIP
 	}
 
 	// Build host configurations for all nodes (SNO or multi-node)
@@ -456,7 +472,7 @@ func generateAgentConfigYAML(cfg *types.AgentConfig) (string, error) {
 		if node.Role == "worker" {
 			role = "worker"
 		}
-		
+
 		hosts = append(hosts, HostConfig{
 			Hostname:     node.Hostname,
 			Role:         role,

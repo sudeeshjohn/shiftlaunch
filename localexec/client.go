@@ -34,8 +34,8 @@ func NewLocalClientWithState(log *logger.Logger, sm *types.StateManager, state *
 // Update Execute to take a context
 func (l *LocalClient) Execute(ctx context.Context, command string) (string, error) {
 	if l.logger != nil {
-        l.logger.Debug("Executing local command", "command", command)
-    }
+		l.logger.Debug("Executing local command", "command", command)
+	}
 
 	// Use CommandContext instead of Command
 	cmd := exec.CommandContext(ctx, "bash", "-c", command)
@@ -56,7 +56,7 @@ func (l *LocalClient) Execute(ctx context.Context, command string) (string, erro
 }
 
 // WriteFile writes content directly to the local filesystem (with sudo if needed)
-func (l *LocalClient) WriteFile(ctx context.Context,path string, content []byte, perms os.FileMode) error {
+func (l *LocalClient) WriteFile(ctx context.Context, path string, content []byte, perms os.FileMode) error {
 	l.logger.Debug("Writing local file", "path", path)
 
 	// Create temp file
@@ -67,7 +67,7 @@ func (l *LocalClient) WriteFile(ctx context.Context,path string, content []byte,
 
 	// Move into place with sudo (required for /etc/ directories)
 	mvCmd := fmt.Sprintf("sudo mv %s %s && sudo chmod %04o %s && sudo restorecon %s 2>/dev/null || true", tmpPath, path, perms, path, path)
-	
+
 	// Shield the move-and-permission chain.
 	// If aborted mid-chain, the config file will have the wrong SELinux context, permanently breaking the service!
 	if _, err := l.Execute(context.WithoutCancel(ctx), mvCmd); err != nil {
@@ -103,7 +103,7 @@ func (l *LocalClient) ExecuteWithState(ctx context.Context, command string, even
 
 	// Execute the command
 	outStr, err := l.Execute(ctx, command)
-	
+
 	// Record success
 	if err == nil {
 		if recordErr := l.stateManager.RecordCompletedEvent(l.state, eventID); recordErr != nil {
@@ -112,7 +112,7 @@ func (l *LocalClient) ExecuteWithState(ctx context.Context, command string, even
 			l.logger.Debug("Recorded completed event", "eventID", eventID)
 		}
 	}
-	
+
 	return outStr, err
 }
 
@@ -131,7 +131,7 @@ func (l *LocalClient) WriteFileWithState(ctx context.Context, path string, conte
 
 	// Write the file
 	err := l.WriteFile(ctx, path, content, perms)
-	
+
 	// Record success
 	if err == nil {
 		if recordErr := l.stateManager.RecordCompletedEvent(l.state, eventID); recordErr != nil {
@@ -140,7 +140,7 @@ func (l *LocalClient) WriteFileWithState(ctx context.Context, path string, conte
 			l.logger.Debug("Recorded completed event", "eventID", eventID)
 		}
 	}
-	
+
 	return err
 }
 
@@ -156,13 +156,13 @@ func (l *LocalClient) SystemctlRestartWithState(ctx context.Context, service str
 	}
 
 	err := l.SystemctlRestart(ctx, service)
-	
+
 	if err == nil {
 		if recordErr := l.stateManager.RecordCompletedEvent(l.state, eventID); recordErr != nil {
 			l.logger.Warn("Failed to record completed event", "eventID", eventID, "error", recordErr)
 		}
 	}
-	
+
 	return err
 }
 
@@ -178,12 +178,12 @@ func (l *LocalClient) SystemctlEnableWithState(ctx context.Context, service stri
 	}
 
 	err := l.SystemctlEnable(ctx, service)
-	
+
 	if err == nil {
 		if recordErr := l.stateManager.RecordCompletedEvent(l.state, eventID); recordErr != nil {
 			l.logger.Warn("Failed to record completed event", "eventID", eventID, "error", recordErr)
 		}
 	}
-	
+
 	return err
 }

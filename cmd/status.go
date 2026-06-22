@@ -27,11 +27,13 @@ The info command shows:
 - Credentials and access information`,
 	RunE: runInfo,
 }
+
 // init function is for initializing the command
 func init() {
 	rootCmd.AddCommand(infoCmd)
 	infoCmd.Flags().BoolVar(&infoJSON, "json", false, "Output curated cluster info in JSON format")
 }
+
 // runInfo function is for running the info command
 func runInfo(cmd *cobra.Command, args []string) error {
 	// Grab daemonCfg so we can accurately resolve the workspace directory for the credentials
@@ -104,35 +106,34 @@ func runInfo(cmd *cobra.Command, args []string) error {
 
 		// Evaluate Proxy Configuration
 		proxyMode, proxyURL := "none", ""
-		if cfg.ManagedServices.Proxy {
+		if cfg.Services.Proxy.Enabled {
 			proxyMode = "managed"
-			proxyURL = fmt.Sprintf("http://%s:3128", cfg.Controller.IP)
-		} else if cfg.ExternalProxy.HTTPProxy != "" {
+			proxyURL = fmt.Sprintf("http://%s:3128", cfg.Network.ControllerIP)
+		} else if cfg.Services.Proxy.ExternalHTTPProxy != "" {
 			proxyMode = "external"
-			proxyURL = cfg.ExternalProxy.HTTPProxy
+			proxyURL = cfg.Services.Proxy.ExternalHTTPProxy
 		}
 
 		// Evaluate Registry Configuration
 		registryMode, registryURL := "official", ""
-		if cfg.ManagedServices.Registry {
+		if cfg.Services.Registry.Enabled {
 			registryMode = "managed"
-			registryURL = fmt.Sprintf("%s:5000", cfg.Controller.IP)
-		} else if cfg.DisconnectedConfig.Enabled {
+			registryURL = fmt.Sprintf("%s:5000", cfg.Network.ControllerIP)
+		} else if cfg.Network.IsolationLevel == "fully-disconnected" {
 			registryMode = "external"
-			registryURL = cfg.DisconnectedConfig.RegistryHostname
+			registryURL = cfg.Services.Registry.ExternalHostname
 		}
 
-		// Build the highly enriched core JSON response
 		output := map[string]interface{}{
-			"name":             state.ClusterName,
-			"status":           state.Status,
-			"phase":            state.CurrentPhase,
+			"name":   state.ClusterName,
+			"status": state.Status,
+			"phase":  state.CurrentPhase,
 			"services": map[string]interface{}{
-				"managed_dns":           cfg.ManagedServices.DNS,
-				"managed_dhcp":          cfg.ManagedServices.DHCP && cfg.Nodes.BootMethod != "agent",
-				"managed_pxe":           cfg.ManagedServices.PXE && cfg.Nodes.BootMethod != "agent",
-				"managed_load_balancer": cfg.ManagedServices.LoadBalancer,
-				"managed_nfs":           cfg.ManagedServices.NFS && cfg.Nodes.BootMethod == "agent",
+				"managed_dns":           cfg.Services.DNS.Enabled,
+				"managed_dhcp":          cfg.Services.DHCP.Enabled && cfg.Nodes.BootMethod != "agent",
+				"managed_pxe":           cfg.Services.PXE.Enabled && cfg.Nodes.BootMethod != "agent",
+				"managed_load_balancer": cfg.Services.LoadBalancer.Enabled,
+				"managed_nfs":           cfg.Services.NFS.Enabled && cfg.Nodes.BootMethod == "agent",
 				"proxy_mode":            proxyMode,
 				"proxy_url":             proxyURL,
 				"registry_mode":         registryMode,
@@ -152,11 +153,10 @@ func runInfo(cmd *cobra.Command, args []string) error {
 			"nodes":            nodes,
 		}
 
-		// If the cluster is completed, inject the endpoints and credentials!
 		if state.Status == "completed" {
 			baseDomain := cfg.OpenShift.BaseDomain
 			clusterDomain := fmt.Sprintf("%s.%s", state.ClusterName, baseDomain)
-			vip := cfg.Network.LoadBalancerIP
+			vip := cfg.Services.LoadBalancer.VIP
 
 			output["endpoints"] = map[string]string{
 				"api":        fmt.Sprintf("https://api.%s:6443", clusterDomain),

@@ -37,16 +37,16 @@ func runRemove(cmd *cobra.Command, args []string) error {
 	// Require explicit --cluster or --config flag for safety
 	configFlagSet := cmd.Flags().Changed("config")
 	clusterFlagSet := cmd.Flags().Changed("cluster")
-	
+
 	if !configFlagSet && !clusterFlagSet {
 		return fmt.Errorf("delete command requires explicit --cluster or --config flag\nUsage:\n  shiftlaunch delete --cluster <cluster-name>\n  shiftlaunch delete --config <config-file>")
 	}
-	
+
 	cfg, _, orch, err := loadConfig(true)
 	if err != nil {
 		return err
 	}
-	
+
 	// Ensure logger file descriptor is closed when command completes
 	defer orch.GetLogger().Close()
 
@@ -65,12 +65,12 @@ func runRemove(cmd *cobra.Command, args []string) error {
 			WithDefaultValue(false).
 			WithTextStyle(pterm.NewStyle(pterm.FgLightYellow, pterm.Bold)).
 			WithConfirmStyle(pterm.NewStyle(pterm.FgLightRed, pterm.Bold))
-		
+
 		result, err := prompt.Show(fmt.Sprintf("Are you sure you want to completely remove cluster '%s'?", cfg.OpenShift.ClusterName))
 		if err != nil {
 			return err
 		}
-		
+
 		// If user selects "No", exit cleanly immediately
 		if !result {
 			log.Info("Teardown aborted by user.")
