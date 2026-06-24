@@ -103,8 +103,8 @@ func (v *Validator) Validate(ctx context.Context) error {
 
 	// Check 4: External Services Validation
 	if v.exec != nil {
-		hasExternalServices := !v.cfg.Services.DNS.Enabled || !v.cfg.Services.DHCP.Enabled ||
-			!v.cfg.Services.PXE.Enabled || !v.cfg.Services.LoadBalancer.Enabled
+		hasExternalServices := !v.cfg.Services.DNS.IsManaged() || !v.cfg.Services.DHCP.IsManaged() ||
+			!v.cfg.Services.PXE.IsManaged() || !v.cfg.Services.LoadBalancer.IsManaged()
 
 		if hasExternalServices {
 			v.log.StartPhase("[Check 4/4] Validating external unmanaged services...")
@@ -146,10 +146,13 @@ func (v *Validator) validateController() {
 		v.errors = append(v.errors, "network.controller_interface is required")
 	}
 
+	// VIP validation is now handled by the auto-resolver in cmd/root.go
+	// The VIP will be automatically set to either:
+	// 1. The external_lb_ip if provided
+	// 2. The controller_ip if no VIP is specified (zero-config mode)
+	// 3. The explicitly provided vip value
 	vip := v.cfg.Services.LoadBalancer.VIP
-	if vip == "" {
-		v.errors = append(v.errors, "services.load_balancer.vip is missing")
-	} else if !v.isValidIP(vip) {
+	if vip != "" && !v.isValidIP(vip) {
 		v.errors = append(v.errors, fmt.Sprintf("services.load_balancer.vip '%s' is not a valid IP", vip))
 	}
 }
@@ -204,18 +207,18 @@ func (v *Validator) validateNetwork(ctx context.Context) {
 	}
 
 	// Enforce strict logic dependencies on DNS profiles
-	if v.cfg.Services.DNS.Enabled {
-		if len(v.cfg.Services.DNS.UpstreamNameservers) == 0 {
+	if v.cfg.Services.DNS.IsManaged() {
+		if len(v.cfg.Network.UpstreamNameservers) == 0 {
 			v.errors = append(v.errors, "services.dns.dns_forwarders requires at least one address when local DNS management is active")
 		}
 	} else {
-		if v.cfg.Services.DNS.ExternalNameserver == "" {
+		if v.cfg.Services.DNS.GetExternal() == "" {
 			v.errors = append(v.errors, "services.dns.external_nameserver parameter must be configured when local DNS is disabled")
 		}
 	}
 
-	if v.cfg.Services.LoadBalancer.Enabled && v.cfg.Services.LoadBalancer.VIP != "" {
-		v.validateVIPNotInUse(ctx, v.cfg.Services.LoadBalancer.VIP)
+	if v.cfg.Services.LoadBalancer.IsManaged() && v.cfg.Services.LoadBalancer.GetVIP() != "" {
+		v.validateVIPNotInUse(ctx, v.cfg.Services.LoadBalancer.GetVIP())
 	}
 }
 
@@ -223,7 +226,10 @@ func (v *Validator) validateNetwork(ctx context.Context) {
 // or being used by another managed cluster
 func (v *Validator) validateVIPNotInUse(ctx context.Context, vip string) {
 	iface := v.cfg.Network.ControllerInterface
-	if iface == "" {
+	ctrlIP := v.cfg.Network.ControllerIP
+
+	// ZERO-CONFIG CHECK: If it is the controller IP, it is allowed to be on the interface!
+	if iface == "" || vip == ctrlIP {
 		return
 	}
 
@@ -342,11 +348,12 @@ func (v *Validator) validateOpenShift() {
 		v.errors = append(v.errors, "openshift.rhcos_images.rootfs_url is required")
 	}
 
-	// Validate OCP client config
-	if v.cfg.Network.IsolationLevel != "fully-disconnected" {
-		if o.OCPClientConfig.Client == "" || o.OCPClientConfig.Installer == "" {
-			v.errors = append(v.errors, "Connected profiles require valid installation tool source URLs")
-		}
+	// Validate OCP client config for netboot (already validated above for agent boot)
+	if o.OCPClientConfig.Client == "" {
+		v.errors = append(v.errors, "openshift.ocp_client_config.ocp_client is required")
+	}
+	if o.OCPClientConfig.Installer == "" {
+		v.errors = append(v.errors, "openshift.ocp_client_config.ocp_installer is required")
 	}
 }
 
@@ -370,26 +377,26 @@ func (v *Validator) validateChecksum(checksum, fieldName string) {
 
 func (v *Validator) validateDisconnected() {
 	mode := v.cfg.Network.IsolationLevel
-	if mode != "connected" && mode != "soft-disconnected" && mode != "fully-disconnected" {
-		v.errors = append(v.errors, fmt.Sprintf("network.isolation_level must be 'connected', 'soft-disconnected', or 'fully-disconnected'. Got: '%s'", mode))
+	if mode != "connected" && mode != "restricted-network" && mode != "air-gapped" {
+		v.errors = append(v.errors, fmt.Sprintf("network.isolation_level must be 'connected', 'restricted-network', or 'air-gapped'. Got: '%s'", mode))
 		return
 	}
 
-	if mode == "fully-disconnected" {
+	if mode == "air-gapped" {
 		reg := v.cfg.Services.Registry
-		if !reg.Enabled && reg.ExternalHostname == "registry.example.com" {
-			v.errors = append(v.errors, "CRITICAL CONFIGURATION ERROR: network.isolation_level is locked to 'fully-disconnected', but services.registry.external_reqistry_server is still set to the default placeholder value ('registry.example.com'). Please update it to your actual enterprise registry or switch isolation modes.")
+		if !reg.IsManaged() && reg.GetExternal() == "registry.example.com" {
+			v.errors = append(v.errors, "CRITICAL CONFIGURATION ERROR: network.isolation_level is locked to 'air-gapped', but services.registry.external_reqistry_server is still set to the default placeholder value ('registry.example.com'). Please update it to your actual enterprise registry or switch isolation modes.")
 			return
 		}
-		if !reg.Enabled && reg.ExternalHostname == "" {
-			v.errors = append(v.errors, "Airgap configuration conflict: network.isolation_level is set to 'fully-disconnected' but local registry service is disabled and no remote enterprise external_reqistry_server target was supplied.")
-		}
+		// Note: The check for missing registry is no longer needed because cmd/root.go
+		// automatically injects an empty ServiceRegistry{} if air-gapped mode is detected
+		// without an explicit registry configuration (Registry Zero-Config Auto-Resolver)
 	}
 
-	if mode == "soft-disconnected" {
+	if mode == "restricted-network" {
 		proxy := v.cfg.Services.Proxy
-		if !proxy.Enabled && proxy.ExternalHTTPProxy == "" {
-			v.errors = append(v.errors, "Proxy configuration conflict: network.isolation_level is set to 'soft-disconnected' but local Squid management is disabled and no external_http_proxy path was supplied.")
+		if !proxy.IsManaged() && proxy.GetHTTP() == "" {
+			v.errors = append(v.errors, "Proxy configuration conflict: network.isolation_level is set to 'restricted-network' but local Squid management is disabled and no external_http_proxy path was supplied.")
 		}
 	}
 }
@@ -400,8 +407,15 @@ func (v *Validator) validateNodes() {
 		return
 	}
 
-	if v.cfg.Nodes.BootMethod == "agent" && !v.cfg.Services.NFS.Enabled {
+	if v.cfg.Nodes.BootMethod == "agent" && !v.cfg.Services.NFS.IsManaged() {
 		v.errors = append(v.errors, "Boot method 'agent' requires services.nfs.enabled to be set to true so ShiftLaunch can transfer assets to the storage subsystem")
+	}
+
+	// Validate external NFS configuration
+	if !v.cfg.Services.NFS.IsManaged() && v.cfg.Services.NFS.GetExternal() != "" {
+		if v.cfg.Services.NFS.GetExternalPath() == "" {
+			v.errors = append(v.errors, "services.nfs.external_nfs_path is required when using external NFS (services.nfs.external_server is set)")
+		}
 	}
 
 	// Track uniqueness to prevent copy-paste errors
@@ -590,21 +604,18 @@ func (v *Validator) validateLocalEnvironment(ctx context.Context) {
 	vip := v.cfg.Services.LoadBalancer.VIP
 	if vip != "" {
 		iface := v.cfg.Network.ControllerInterface
+		ctrlIP := v.cfg.Network.ControllerIP
 
-		// Guardrail: Prevent hijacking the controller's primary IP
-		ipCmd := fmt.Sprintf("ip -4 addr show dev %s | grep -oP '(?<=inet\\s)\\d+(\\.\\d+){3}' | head -1", iface)
-		if hostIP, err := v.exec.Execute(ctx, ipCmd); err == nil && strings.TrimSpace(hostIP) == vip {
-			v.errors = append(v.errors, fmt.Sprintf(
-				"VIP conflict: VIP '%s' cannot be the same as the controller's primary IP on %s.", vip, iface))
-		}
-
-		checkBoundCmd := fmt.Sprintf("ip addr show dev %s | grep -q '%s/'", iface, vip)
-		if _, err := v.exec.Execute(ctx, checkBoundCmd); err != nil {
-			// Not bound to us. Check if it's in use on the network.
-			if v.cfg.Services.LoadBalancer.Enabled {
-				pingCmd := fmt.Sprintf("ping -c 2 -W 2 %s", vip)
-				if _, pingErr := v.exec.Execute(ctx, pingCmd); pingErr == nil {
-					v.errors = append(v.errors, fmt.Sprintf("IP CONFLICT: The VIP %s is already actively responding on the network. Please choose an unused IP.", vip))
+		// ZERO-CONFIG CHECK: If the VIP is intentionally set to the Controller IP, it's perfectly fine!
+		if vip != ctrlIP {
+			checkBoundCmd := fmt.Sprintf("ip addr show dev %s | grep -q '%s/'", iface, vip)
+			if _, err := v.exec.Execute(ctx, checkBoundCmd); err != nil {
+				// Not bound to us. Check if it's in use on the network.
+				if v.cfg.Services.LoadBalancer.IsManaged() {
+					pingCmd := fmt.Sprintf("ping -c 2 -W 2 %s", vip)
+					if _, pingErr := v.exec.Execute(ctx, pingCmd); pingErr == nil {
+						v.errors = append(v.errors, fmt.Sprintf("IP CONFLICT: The VIP %s is already actively responding on the network. Please choose an unused IP.", vip))
+					}
 				}
 			}
 		}
@@ -612,6 +623,61 @@ func (v *Validator) validateLocalEnvironment(ctx context.Context) {
 
 	// 5. Check for Node IP Conflicts on the network
 	v.validateNodeIPsNotAlive(ctx)
+
+	// ========================================================================
+	// 6. Check for Local Port Collisions (IP-Aware)
+	// ========================================================================
+	if v.cfg.Services.LoadBalancer.IsManaged() {
+		v.log.Debug("Checking for local port collisions for managed HAProxy...")
+		
+		requiredPorts := []int{80, 443, 6443, 22623}
+		vip := v.cfg.Services.LoadBalancer.GetVIP()
+		
+		for _, port := range requiredPorts {
+			// Check if bound to 0.0.0.0, *, [::], or explicitly to our VIP
+			checkCmd := fmt.Sprintf("sudo ss -tlpn | grep -E '(0\\.0\\.0\\.0|\\*|\\[::\\]|%s):%d ' | grep -v -i 'haproxy'", vip, port)
+			if _, err := v.exec.Execute(ctx, checkCmd); err == nil {
+				v.errors = append(v.errors, fmt.Sprintf("PORT COLLISION: Local TCP port %d is already bound globally or specifically to %s by a non-HAProxy process. Please stop the conflicting service.", port, vip))
+			}
+		}
+	}
+	
+	if v.cfg.Services.DNS.IsManaged() {
+		ctrlIP := v.cfg.Network.ControllerIP
+		
+		if _, err := v.exec.Execute(ctx, fmt.Sprintf("sudo ss -ulpn | grep -E '(0\\.0\\.0\\.0|\\*|\\[::\\]|%s):53 ' | grep -v -i 'dnsmasq'", ctrlIP)); err == nil {
+			v.errors = append(v.errors, "PORT COLLISION: Local UDP port 53 is already bound globally or to the controller IP by a non-dnsmasq process. The managed DNS service will fail to start.")
+		}
+		if _, err := v.exec.Execute(ctx, fmt.Sprintf("sudo ss -tlpn | grep -E '(0\\.0\\.0\\.0|\\*|\\[::\\]|%s):53 ' | grep -v -i 'dnsmasq'", ctrlIP)); err == nil {
+			v.errors = append(v.errors, "PORT COLLISION: Local TCP port 53 is already bound globally or to the controller IP by a non-dnsmasq process. The managed DNS service will fail to start.")
+		}
+	}
+	
+	if v.cfg.Network.IsolationLevel == "air-gapped" && v.cfg.Services.Registry.IsManaged() {
+		ctrlIP := v.cfg.Network.ControllerIP
+		// 1. Check if port 5000 is bound to our IP or globally
+		if _, err := v.exec.Execute(ctx, fmt.Sprintf("sudo ss -tlpn | grep -E '(0\\.0\\.0\\.0|\\*|\\[::\\]|%s):5000 '", ctrlIP)); err == nil {
+			
+			// 2. Port is bound. Ask the port if it's our multi-tenant registry!
+			user := v.cfg.Services.Registry.GetUser()
+			pass := v.cfg.Services.Registry.GetPass()
+			verifyCmd := fmt.Sprintf("env HTTP_PROXY='' HTTPS_PROXY='' http_proxy='' https_proxy='' curl -s -o /dev/null -w '%%{http_code}' --connect-timeout 3 -u %s:%s -k https://%s:5000/v2/", user, pass, ctrlIP)
+			
+			httpCode, _ := v.exec.Execute(ctx, verifyCmd)
+			if strings.TrimSpace(httpCode) != "200" {
+				v.errors = append(v.errors, "PORT COLLISION: Local TCP port 5000 is already bound by an unknown process (or multi-tenant registry authentication failed). The managed container registry will fail to start.")
+			} else {
+				v.log.Debug("Active multi-tenant registry detected on port 5000. Validation passed.")
+			}
+		}
+	}
+
+	if v.cfg.Services.Proxy.IsManaged() {
+		ctrlIP := v.cfg.Network.ControllerIP
+		if _, err := v.exec.Execute(ctx, fmt.Sprintf("sudo ss -tlpn | grep -E '(0\\.0\\.0\\.0|\\*|\\[::\\]|%s):3128 ' | grep -v -i 'squid'", ctrlIP)); err == nil {
+			v.errors = append(v.errors, "PORT COLLISION: Local TCP port 3128 is already bound globally or to the controller IP by a non-squid process. The managed proxy gateway will fail to start.")
+		}
+	}
 }
 
 func (v *Validator) validateLocalDiskSpace(ctx context.Context) {
@@ -644,7 +710,7 @@ func (v *Validator) validateLocalDiskSpace(ctx context.Context) {
 	}
 
 	//  Validate registry capacity for Airgapped deployments
-	if v.cfg.Network.IsolationLevel == "fully-disconnected" && v.cfg.Services.Registry.Enabled {
+	if v.cfg.Network.IsolationLevel == "air-gapped" && v.cfg.Services.Registry.IsManaged() {
 		v.exec.Execute(ctx, "sudo mkdir -p /opt/registry/data")
 		regDfCmd := "df -BK --output=avail /opt/registry/data | tail -n 1 | tr -d 'K'"
 		regOutput, regErr := v.exec.Execute(ctx, regDfCmd)
@@ -752,17 +818,17 @@ func (v *Validator) validateBYOILPARs() {
 // ============================================================================
 
 func (v *Validator) validateExternalServices(ctx context.Context) {
-	if !v.cfg.Services.DNS.Enabled {
+	if !v.cfg.Services.DNS.IsManaged() {
 		v.validateExternalDNS(ctx)
 	}
-	if !v.cfg.Services.DHCP.Enabled {
+	if !v.cfg.Services.DHCP.IsManaged() {
 		v.validateExternalDHCP()
 	}
 	//  Only validate external PXE if we are actually using network boot!
-	if !v.cfg.Services.PXE.Enabled && v.cfg.Nodes.BootMethod != "agent" {
+	if !v.cfg.Services.PXE.IsManaged() && v.cfg.Nodes.BootMethod != "agent" {
 		v.validateExternalPXE()
 	}
-	if !v.cfg.Services.LoadBalancer.Enabled {
+	if !v.cfg.Services.LoadBalancer.IsManaged() {
 		v.validateExternalLoadBalancer(ctx)
 	}
 	// NFS validation removed - now enforced as hard error in validateNodes()
@@ -771,7 +837,7 @@ func (v *Validator) validateExternalServices(ctx context.Context) {
 func (v *Validator) validateExternalDNS(ctx context.Context) {
 	v.log.Info("Validating external DNS server...")
 
-	dnsServer := v.cfg.Services.DNS.ExternalNameserver
+	dnsServer := v.cfg.Services.DNS.GetExternal()
 	if dnsServer == "" {
 		v.warnings = append(v.warnings, "DNS is external, but network.nameserver is empty. External DNS validation skipped.")
 		return

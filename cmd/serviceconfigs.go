@@ -49,14 +49,14 @@ func dumpConfig(orch *orchestrator.Orchestrator, cfg *types.AgentConfig) error {
 
 	// Check if any external services are configured (Inverted logic for new Services block)
 	// Boot method aware: DHCP/PXE only matter for netboot, NFS only matters for Agent ISO
-	hasExternalServices := !cfg.Services.DNS.Enabled || !cfg.Services.LoadBalancer.Enabled
+	hasExternalServices := !cfg.Services.DNS.IsManaged() || !cfg.Services.LoadBalancer.IsManaged()
 
 	// Add boot-method-specific checks
 	if cfg.Nodes.BootMethod != "agent" {
-		hasExternalServices = hasExternalServices || !cfg.Services.DHCP.Enabled || !cfg.Services.PXE.Enabled
+		hasExternalServices = hasExternalServices || !cfg.Services.DHCP.IsManaged() || !cfg.Services.PXE.IsManaged()
 	}
 	if cfg.Nodes.BootMethod == "agent" {
-		hasExternalServices = hasExternalServices || !cfg.Services.NFS.Enabled
+		hasExternalServices = hasExternalServices || !cfg.Services.NFS.IsManaged()
 	}
 
 	if !hasExternalServices {
@@ -76,26 +76,26 @@ func dumpConfig(orch *orchestrator.Orchestrator, cfg *types.AgentConfig) error {
 	nodes := cfg.GetAllNodes()
 
 	// Dump DNS configuration
-	if !cfg.Services.DNS.Enabled {
+	if !cfg.Services.DNS.IsManaged() {
 		dumpDNSConfig(cfg)
 	}
 
 	// Dump DHCP configuration (only relevant for netboot)
-	if !cfg.Services.DHCP.Enabled && cfg.Nodes.BootMethod != "agent" {
+	if !cfg.Services.DHCP.IsManaged() && cfg.Nodes.BootMethod != "agent" {
 		if err := dumpDHCPConfig(cfg); err != nil {
 			return fmt.Errorf("failed to generate DHCP config: %w", err)
 		}
 	}
 
 	// Dump PXE configuration using template (only relevant for netboot)
-	if !cfg.Services.PXE.Enabled && cfg.Nodes.BootMethod != "agent" {
+	if !cfg.Services.PXE.IsManaged() && cfg.Nodes.BootMethod != "agent" {
 		if err := dumpPXEConfigFromTemplate(clusterName, cfg, nodes, cfg.Network.ControllerIP); err != nil {
 			return fmt.Errorf("failed to generate PXE config: %w", err)
 		}
 	}
 
 	// Dump NFS configuration (only relevant for Agent boot)
-	if !cfg.Services.NFS.Enabled && cfg.Nodes.BootMethod == "agent" {
+	if !cfg.Services.NFS.IsManaged() && cfg.Nodes.BootMethod == "agent" {
 		fmt.Println("--------------------------------------------------------------------------------")
 		fmt.Println("NFS Server Configuration (Required for Agent ISO)")
 		fmt.Println("--------------------------------------------------------------------------------")
@@ -105,7 +105,7 @@ func dumpConfig(orch *orchestrator.Orchestrator, cfg *types.AgentConfig) error {
 	}
 
 	// Dump Load Balancer configuration
-	if !cfg.Services.LoadBalancer.Enabled {
+	if !cfg.Services.LoadBalancer.IsManaged() {
 		dumpLoadBalancerConfig(clusterName, vip, cfg)
 	}
 

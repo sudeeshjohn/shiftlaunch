@@ -14,53 +14,180 @@ type AgentConfig struct {
 }
 
 // ServicesConfig maps the structural infrastructure configurations.
+// Services use pointer-based duck typing: if a service block is present in YAML,
+// it's considered "requested". If external_* fields are empty, it's locally managed.
 type ServicesConfig struct {
-	DNS          ServiceDNS          `yaml:"dns"`
-	DHCP         ServiceDHCP         `yaml:"dhcp"`
-	PXE          ServicePXE          `yaml:"pxe"`
-	LoadBalancer ServiceLoadBalancer `yaml:"load_balancer"`
-	NFS          ServiceNFS          `yaml:"nfs"`
-	Proxy        ServiceProxy        `yaml:"proxy"`
-	Registry     ServiceRegistry     `yaml:"registry"`
+	DNS          *ServiceDNS          `yaml:"dns,omitempty"`
+	DHCP         *ServiceDHCP         `yaml:"dhcp,omitempty"`
+	PXE          *ServicePXE          `yaml:"pxe,omitempty"`
+	LoadBalancer *ServiceLoadBalancer `yaml:"load_balancer,omitempty"`
+	NFS          *ServiceNFS          `yaml:"nfs,omitempty"`
+	Proxy        *ServiceProxy        `yaml:"proxy,omitempty"`
+	Registry     *ServiceRegistry     `yaml:"registry,omitempty"`
 }
 
+// ServiceDNS represents the DNS service configuration.
 type ServiceDNS struct {
-	Enabled             bool     `yaml:"enabled"`
-	ExternalNameserver  string   `yaml:"external_nameserver,omitempty"`
-	UpstreamNameservers []string `yaml:"dns_forwarders,omitempty"`
+	ExternalNameserver string `yaml:"external_nameserver,omitempty"`
+}
+
+// IsManaged returns true if DNS should be managed locally
+// If the block is commented out (nil) OR empty, it defaults to TRUE (managed locally)
+func (s *ServiceDNS) IsManaged() bool {
+	if s == nil {
+		return true // Default: Commented out means ShiftLaunch manages it locally!
+	}
+	return s.ExternalNameserver == ""
+}
+
+// GetExternal safely returns the external nameserver (empty if nil or not set)
+func (s *ServiceDNS) GetExternal() string {
+	if s == nil {
+		return ""
+	}
+	return s.ExternalNameserver
 }
 
 type ServiceDHCP struct {
-	Enabled      bool   `yaml:"enabled"`
-	DHCPServerIP string `yaml:"external_dhcp_server,omitempty"`
+	ExternalDHCPServer string `yaml:"external_dhcp_server,omitempty"`
+}
+
+// IsManaged returns true if DHCP should be managed locally
+// If the block is commented out (nil) OR empty, it defaults to TRUE (managed locally)
+func (s *ServiceDHCP) IsManaged() bool {
+	if s == nil {
+		return true // Default: Commented out means ShiftLaunch manages it locally!
+	}
+	return s.ExternalDHCPServer == ""
+}
+
+// GetExternal safely returns the external DHCP server
+func (s *ServiceDHCP) GetExternal() string {
+	if s == nil {
+		return ""
+	}
+	return s.ExternalDHCPServer
 }
 
 type ServicePXE struct {
-	Enabled     bool   `yaml:"enabled"`
-	PXEServerIP string `yaml:"external_pxe_server,omitempty"`
+	ExternalPXEServer string `yaml:"external_pxe_server,omitempty"`
+}
+
+// IsManaged returns true if PXE should be managed locally
+// If the block is commented out (nil) OR empty, it defaults to TRUE (managed locally)
+func (s *ServicePXE) IsManaged() bool {
+	if s == nil {
+		return true // Default: Commented out means ShiftLaunch manages it locally!
+	}
+	return s.ExternalPXEServer == ""
+}
+
+// GetExternal safely returns the external PXE server
+func (s *ServicePXE) GetExternal() string {
+	if s == nil {
+		return ""
+	}
+	return s.ExternalPXEServer
 }
 
 type ServiceLoadBalancer struct {
-	Enabled bool   `yaml:"enabled"`
-	VIP     string `yaml:"vip,omitempty"`
+	VIP                  string `yaml:"vip,omitempty"`
+	ExternalLoadBalancer string `yaml:"external_lb_ip,omitempty"`
+}
+
+// IsManaged returns true if LoadBalancer should be managed locally
+// If the block is commented out (nil) OR empty, it defaults to TRUE (managed locally)
+func (s *ServiceLoadBalancer) IsManaged() bool {
+	if s == nil {
+		return true // Default: Commented out means ShiftLaunch manages it locally!
+	}
+	return s.ExternalLoadBalancer == ""
+}
+
+// GetVIP safely returns the VIP address
+func (s *ServiceLoadBalancer) GetVIP() string {
+	if s == nil {
+		return ""
+	}
+	return s.VIP
+}
+
+// GetExternal safely returns the external load balancer IP
+func (s *ServiceLoadBalancer) GetExternal() string {
+	if s == nil {
+		return ""
+	}
+	return s.ExternalLoadBalancer
 }
 
 type ServiceNFS struct {
-	Enabled     bool   `yaml:"enabled"`
-	NFSServerIP string `yaml:"external_nfs_server,omitempty"`
+	ExternalNFSServer string `yaml:"external_nfs_server,omitempty"`
+	ExternalNFSPath   string `yaml:"external_nfs_path,omitempty"`
+}
+
+// IsManaged returns true if NFS should be managed locally
+// If the block is commented out (nil) OR empty, it defaults to TRUE (managed locally)
+func (s *ServiceNFS) IsManaged() bool {
+	if s == nil {
+		return true // Default: Commented out means ShiftLaunch manages it locally!
+	}
+	return s.ExternalNFSServer == ""
+}
+
+// GetExternal safely returns the external NFS server
+func (s *ServiceNFS) GetExternal() string {
+	if s == nil {
+		return ""
+	}
+	return s.ExternalNFSServer
+}
+
+// GetExternalPath safely returns the external NFS export path
+func (s *ServiceNFS) GetExternalPath() string {
+	if s == nil {
+		return ""
+	}
+	return s.ExternalNFSPath
 }
 
 type ServiceProxy struct {
-	Enabled            bool   `yaml:"enabled"`
 	ExternalHTTPProxy  string `yaml:"external_http_proxy,omitempty"`
 	ExternalHTTPSProxy string `yaml:"external_https_proxy,omitempty"`
 	NoProxy            string `yaml:"no_proxy,omitempty"`
 }
 
+// IsManaged returns true if Proxy should be managed locally
+func (s *ServiceProxy) IsManaged() bool {
+	return s != nil && s.ExternalHTTPProxy == ""
+}
+
+// GetHTTP safely returns the external HTTP proxy
+func (s *ServiceProxy) GetHTTP() string {
+	if s == nil {
+		return ""
+	}
+	return s.ExternalHTTPProxy
+}
+
+// GetHTTPS safely returns the external HTTPS proxy
+func (s *ServiceProxy) GetHTTPS() string {
+	if s == nil {
+		return ""
+	}
+	return s.ExternalHTTPSProxy
+}
+
+// GetNoProxy safely returns the no_proxy configuration
+func (s *ServiceProxy) GetNoProxy() string {
+	if s == nil {
+		return ""
+	}
+	return s.NoProxy
+}
+
 type ServiceRegistry struct {
-	Enabled          bool   `yaml:"enabled"`
 	AutoMirror       bool   `yaml:"-"` // Internal tracking field
-	ExternalHostname string `yaml:"external_reqistry_server,omitempty"`
+	ExternalHostname string `yaml:"external_registry_server,omitempty"`
 	Username         string `yaml:"username,omitempty"`
 	Password         string `yaml:"password,omitempty"`
 	CACertFile       string `yaml:"ca_cert_file,omitempty"`
@@ -69,13 +196,51 @@ type ServiceRegistry struct {
 	LocalRepo        string `yaml:"-"` // Managed runtime tracking
 }
 
+// IsManaged returns true if Registry should be managed locally
+func (s *ServiceRegistry) IsManaged() bool {
+	return s != nil && s.ExternalHostname == ""
+}
+
+// GetExternal safely returns the external registry hostname
+func (s *ServiceRegistry) GetExternal() string {
+	if s == nil {
+		return ""
+	}
+	return s.ExternalHostname
+}
+
+// GetUser safely returns the registry username
+func (s *ServiceRegistry) GetUser() string {
+	if s == nil {
+		return ""
+	}
+	return s.Username
+}
+
+// GetPass safely returns the registry password
+func (s *ServiceRegistry) GetPass() string {
+	if s == nil {
+		return ""
+	}
+	return s.Password
+}
+
+// GetCACert safely returns the CA certificate file path
+func (s *ServiceRegistry) GetCACert() string {
+	if s == nil {
+		return ""
+	}
+	return s.CACertFile
+}
+
 // NetworkConfig holds layout bounds and localization assignments.
 type NetworkConfig struct {
-	IsolationLevel      string `yaml:"isolation_level"` // "connected", "soft-disconnected", "fully-disconnected"
-	ControllerInterface string `yaml:"controller_interface"`
-	MachineCIDR         string `yaml:"machine_network_cidr"`
-	Gateway             string `yaml:"gateway"`
-	ControllerIP        string `yaml:"-"` // Auto-Discovered
+	IsolationLevel      string   `yaml:"isolation_level"` // "connected", "restricted-network", "air-gapped"
+	ControllerInterface string   `yaml:"controller_interface"`
+	MachineCIDR         string   `yaml:"machine_network_cidr"`
+	Gateway             string   `yaml:"gateway"`
+	UpstreamNameservers []string `yaml:"dns_forwarders,omitempty"` // Moved from ServiceDNS
+	ControllerIP        string   `yaml:"-"`                        // Auto-Discovered
 }
 
 type HMCConfig struct {

@@ -222,7 +222,7 @@ func (s *SquidManager) isProxyShared() bool {
 		// Parse the config to see if it relies on the managed proxy gateway
 		var tmpCfg types.AgentConfig
 		if err := yaml.Unmarshal(data, &tmpCfg); err == nil {
-			if tmpCfg.Services.Proxy.Enabled {
+			if tmpCfg.Services.Proxy.IsManaged() {
 				activeCount++
 			}
 		}

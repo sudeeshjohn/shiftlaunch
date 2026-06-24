@@ -51,8 +51,8 @@ The orchestrator tracks its progression in `state.json`:
 ShiftLaunch natively supports three enterprise network boundaries:
 
 * **Connected (`connected`):** Nodes have direct outbound internet access
-* **Soft Disconnected (`soft-disconnected`):** Nodes are isolated but reach the internet exclusively through a proxy. ShiftLaunch can build a local `squid` proxy or route through a corporate gateway
-* **Fully Disconnected (`fully-disconnected`):** Strict airgap. The controller strips all proxy shell variables. It dynamically generates a local `podman` container registry, provisions SSL certificates, and utilizes `oc-mirror` v2 to sync the OpenShift release payload
+* **Soft Disconnected (`restricted-network`):** Nodes are isolated but reach the internet exclusively through a proxy. ShiftLaunch can build a local `squid` proxy or route through a corporate gateway
+* **Fully Disconnected (`air-gapped`):** Strict airgap. The controller strips all proxy shell variables. It dynamically generates a local `podman` container registry, provisions SSL certificates, and utilizes `oc-mirror` v2 to sync the OpenShift release payload
 
 ### Isolation Level Enforcement
 
@@ -61,14 +61,14 @@ The system automatically enforces isolation boundaries based on service configur
 ```go
 // Implicit enforcement: If local registry management is active, lock down isolation state
 if cfg.Services.Registry.Enabled {
-    cfg.Network.IsolationLevel = "fully-disconnected"
+    cfg.Network.IsolationLevel = "air-gapped"
 }
 if cfg.Services.Proxy.Enabled {
-    cfg.Network.IsolationLevel = "soft-disconnected"
+    cfg.Network.IsolationLevel = "restricted-network"
 }
 
 switch cfg.Network.IsolationLevel {
-case "fully-disconnected":
+case "air-gapped":
     // Clear proxy variables completely to guarantee strict airgap enforcement
     proxyVars := []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", 
                           "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"}
@@ -173,8 +173,8 @@ flowchart TD
     P2_Net --> P3
 
     P3 --> P3_IsoCheck{"Isolation Level?"}
-    P3_IsoCheck -- "fully-disconnected" --> P3_Airgap["Build Local Podman Registry\nGenerate SSL Certs\nMirror Images via oc-mirror"]
-    P3_IsoCheck -- "soft-disconnected" --> P3_Proxy["Build Local Squid Proxy Gateway\nConfigure SELinux/Firewall"]
+    P3_IsoCheck -- "air-gapped" --> P3_Airgap["Build Local Podman Registry\nGenerate SSL Certs\nMirror Images via oc-mirror"]
+    P3_IsoCheck -- "restricted-network" --> P3_Proxy["Build Local Squid Proxy Gateway\nConfigure SELinux/Firewall"]
     P3_IsoCheck -- "connected" --> P3_Standard["Standard Connected Deploy"]
 
     P3_Airgap --> P3_BootCheck{"Boot Method?"}
@@ -317,7 +317,7 @@ The `generate-config` command uses Go's native `text/template` engine to dynamic
 
 - **Topology:** `sno` (Single Node OpenShift) or `multi` (Multi-Node)
 - **Boot Method:** `agent` (ISO-based) or `netboot` (PXE-based)
-- **Isolation Level:** `connected`, `soft-disconnected`, or `fully-disconnected`
+- **Isolation Level:** `connected`, `restricted-network`, or `air-gapped`
 
 The generator is "smart"—it automatically:
 

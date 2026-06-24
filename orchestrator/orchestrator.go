@@ -229,14 +229,17 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 		o.logger.StartPhase("[Phase 0/6] Pre-Deployment Validation")
 
 		// Validate VIP is not in use
-		if o.cfg.Services.LoadBalancer.Enabled && o.cfg.Services.LoadBalancer.VIP != "" {
-			o.logger.Info("Validating VIP availability...", "vip", o.cfg.Services.LoadBalancer.VIP)
+		if o.cfg.Services.LoadBalancer.IsManaged() && o.cfg.Services.LoadBalancer.GetVIP() != "" {
+			o.logger.Info("Validating VIP availability...", "vip", o.cfg.Services.LoadBalancer.GetVIP())
 
 			// Check if VIP is configured on interface
 			iface := o.cfg.Network.ControllerInterface
-			if iface != "" {
+			ctrlIP := o.cfg.Network.ControllerIP
+
+			// ZERO-CONFIG SHIELD: If VIP is the Controller IP, it belongs on the interface natively!
+			if iface != "" && o.cfg.Services.LoadBalancer.GetVIP() != ctrlIP {
 				output, err := o.executor.Execute(ctx, fmt.Sprintf("ip addr show %s", iface))
-				if err == nil && strings.Contains(output, o.cfg.Services.LoadBalancer.VIP+"/") {
+				if err == nil && strings.Contains(output, o.cfg.Services.LoadBalancer.GetVIP()+"/") {
 					// VIP is configured - check which cluster is using it
 					conflictingCluster := o.findClusterUsingVIP(o.cfg.Services.LoadBalancer.VIP)
 					if conflictingCluster != "" {
@@ -375,7 +378,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 			o.trackServiceEnd(fwSvc, nil, "Configured firewall rules")
 
 			// Track HAProxy configuration
-			if o.cfg.Services.LoadBalancer.Enabled {
+			if o.cfg.Services.LoadBalancer.IsManaged() {
 				haproxySvc := o.trackServiceStart("haproxy", "load-balancer", true)
 				haproxySvc.ServiceName = "haproxy"
 				haproxySvc.ConfigFile = "/etc/haproxy/haproxy.cfg"
@@ -393,11 +396,17 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 				vip := o.cfg.Services.LoadBalancer.VIP
 				iface := o.cfg.Network.ControllerInterface
 				cidr := o.cfg.Network.MachineCIDR
+				ctrlIP := o.cfg.Network.ControllerIP
 
-				if err := netMgr.AddVIPAlias(ctx, iface, vip, cidr); err != nil {
-					o.trackServiceEnd(haproxySvc, err, "")
-					phaseErr = fmt.Errorf("FATAL: Failed to configure VIP alias '%s' on interface '%s': %w", vip, iface, err)
-					return
+				// Only add a secondary network alias if they requested a dedicated floating VIP
+				if vip != ctrlIP {
+					if err := netMgr.AddVIPAlias(ctx, iface, vip, cidr); err != nil {
+						o.trackServiceEnd(haproxySvc, err, "")
+						phaseErr = fmt.Errorf("FATAL: Failed to configure VIP alias '%s' on interface '%s': %w", vip, iface, err)
+						return
+					}
+				} else {
+					o.logger.Debug("VIP matches Controller IP. Skipping secondary alias creation.")
 				}
 
 				if err := services.SetupHAProxy(ctx, o.cfg, o.executor); err != nil {
@@ -413,7 +422,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 			}
 
 			// Track Squid Proxy configuration
-			if o.cfg.Services.Proxy.Enabled {
+			if o.cfg.Services.Proxy.IsManaged() {
 				squidSvc := o.trackServiceStart("squid-proxy", "proxy", true)
 				squidSvc.ServiceName = "squid"
 				squidSvc.ConfigFile = "/etc/squid/squid.conf"
@@ -434,7 +443,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 			}
 
 			// Track Local Registry configuration for disconnected deployments
-			if o.cfg.Network.IsolationLevel == "fully-disconnected" && o.cfg.Services.Registry.Enabled {
+			if o.cfg.Network.IsolationLevel == "air-gapped" && o.cfg.Services.Registry.IsManaged() {
 				registrySvc := o.trackServiceStart("local-registry", "registry", true)
 				registrySvc.ServiceName = "local-registry"
 				registrySvc.ConfigFile = "/etc/systemd/system/local-registry.service"
@@ -452,7 +461,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 
 				registryURL := registryMgr.GetRegistryURL()
 				o.trackServiceEnd(registrySvc, nil, fmt.Sprintf("Local registry configured at https://%s", registryURL))
-			} else if o.cfg.Network.IsolationLevel == "fully-disconnected" {
+			} else if o.cfg.Network.IsolationLevel == "air-gapped" {
 				o.logger.Info("Skipping Local Registry (User Managed)")
 				skipSvc := o.trackServiceStart("local-registry", "registry", false)
 				o.trackServiceEnd(skipSvc, nil, "User managed")
@@ -460,7 +469,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 
 			dnsmasq := services.NewDNSmasqManager(o.cfg, o.daemonCfg, o.executor)
 
-			if o.cfg.Services.DNS.Enabled {
+			if o.cfg.Services.DNS.IsManaged() {
 				dnsSvc := o.trackServiceStart("dns", "dns", true)
 				dnsSvc.ServiceName = "dnsmasq"
 				dnsSvc.ConfigFile = "/etc/dnsmasq.d/dns.conf"
@@ -478,7 +487,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 				o.trackServiceEnd(skipSvc, nil, "User managed")
 			}
 
-			if o.cfg.Services.DHCP.Enabled && o.cfg.Nodes.BootMethod != "agent" {
+			if o.cfg.Services.DHCP.IsManaged() && o.cfg.Nodes.BootMethod != "agent" {
 				dhcpSvc := o.trackServiceStart("dhcp", "dhcp", true)
 				dhcpSvc.ServiceName = "dnsmasq"
 				dhcpSvc.ConfigFile = "/etc/dnsmasq.d/dhcp.conf"
@@ -494,13 +503,13 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 				o.logger.Info("Skipping DHCP (Not required for Agent ISO or User Managed)")
 				skipSvc := o.trackServiceStart("dhcp", "dhcp", false)
 				skipReason := "Not required for Agent ISO"
-				if !o.cfg.Services.DHCP.Enabled {
+				if !o.cfg.Services.DHCP.IsManaged() {
 					skipReason = "User managed"
 				}
 				o.trackServiceEnd(skipSvc, nil, skipReason)
 			}
 
-			if o.cfg.Services.PXE.Enabled && o.cfg.Nodes.BootMethod != "agent" {
+			if o.cfg.Services.PXE.IsManaged() && o.cfg.Nodes.BootMethod != "agent" {
 				pxeSvc := o.trackServiceStart("pxe", "pxe", true)
 				pxeSvc.ServiceName = "dnsmasq"
 				pxeSvc.ConfigFile = "/etc/dnsmasq.d/tftp.conf"
@@ -522,16 +531,16 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 				o.logger.Info("Skipping PXE (Not required for Agent ISO or User Managed)")
 				skipSvc := o.trackServiceStart("pxe", "pxe", false)
 				skipReason := "Not required for Agent ISO"
-				if !o.cfg.Services.PXE.Enabled {
+				if !o.cfg.Services.PXE.IsManaged() {
 					skipReason = "User managed"
 				}
 				o.trackServiceEnd(skipSvc, nil, skipReason)
 			}
 
-			needsDHCP := o.cfg.Services.DHCP.Enabled && o.cfg.Nodes.BootMethod != "agent"
-			needsPXE := o.cfg.Services.PXE.Enabled && o.cfg.Nodes.BootMethod != "agent"
+			needsDHCP := o.cfg.Services.DHCP.IsManaged() && o.cfg.Nodes.BootMethod != "agent"
+			needsPXE := o.cfg.Services.PXE.IsManaged() && o.cfg.Nodes.BootMethod != "agent"
 
-			if o.cfg.Services.DNS.Enabled || needsDHCP || needsPXE {
+			if o.cfg.Services.DNS.IsManaged() || needsDHCP || needsPXE {
 				restartSvc := o.trackServiceStart("dnsmasq-restart", "service-restart", true)
 				restartSvc.ServiceName = "dnsmasq"
 
@@ -560,7 +569,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 				o.trackServiceEnd(hostsSvc, nil, "Added cluster API to /etc/hosts for local resolution")
 
 				//  Force Squid to flush its cache and learn the new OpenShift API routes!
-				if o.cfg.Services.Proxy.Enabled {
+				if o.cfg.Services.Proxy.IsManaged() {
 					_ = o.executor.SystemctlRestart(ctx, "squid")
 					o.logger.Debug("Reloaded Squid proxy to register new API routing")
 				}
@@ -634,7 +643,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 				skipSvc := o.trackServiceStart("http-server", "http", false)
 				o.trackServiceEnd(skipSvc, nil, "Not required for Agent ISO")
 
-				if o.cfg.Services.NFS.Enabled {
+				if o.cfg.Services.NFS.IsManaged() {
 					nfsSvc := o.trackServiceStart("nfs-server", "nfs", true)
 					nfsSvc.ServiceName = "nfs-server"
 					nfsSvc.ConfigFile = "/etc/exports"
@@ -778,19 +787,19 @@ func (o *Orchestrator) GetClusterStatus(ctx context.Context) string {
 
 	// Format managed services list (Boot-Method Aware)
 	var activeServices []string
-	if o.cfg.Services.DNS.Enabled {
+	if o.cfg.Services.DNS.IsManaged() {
 		activeServices = append(activeServices, "DNS")
 	}
-	if o.cfg.Services.DHCP.Enabled && o.cfg.Nodes.BootMethod != "agent" {
+	if o.cfg.Services.DHCP.IsManaged() && o.cfg.Nodes.BootMethod != "agent" {
 		activeServices = append(activeServices, "DHCP")
 	}
-	if o.cfg.Services.PXE.Enabled && o.cfg.Nodes.BootMethod != "agent" {
+	if o.cfg.Services.PXE.IsManaged() && o.cfg.Nodes.BootMethod != "agent" {
 		activeServices = append(activeServices, "PXE")
 	}
-	if o.cfg.Services.LoadBalancer.Enabled {
+	if o.cfg.Services.LoadBalancer.IsManaged() {
 		activeServices = append(activeServices, "HAProxy")
 	}
-	if o.cfg.Services.NFS.Enabled && o.cfg.Nodes.BootMethod == "agent" {
+	if o.cfg.Services.NFS.IsManaged() && o.cfg.Nodes.BootMethod == "agent" {
 		activeServices = append(activeServices, "NFS")
 	}
 
@@ -801,18 +810,18 @@ func (o *Orchestrator) GetClusterStatus(ctx context.Context) string {
 
 	// Format Proxy
 	proxyStr := "None"
-	if o.cfg.Services.Proxy.Enabled {
+	if o.cfg.Services.Proxy.IsManaged() {
 		proxyStr = fmt.Sprintf("Managed Squid Proxy (http://%s:3128)", o.cfg.Network.ControllerIP)
-	} else if o.cfg.Services.Proxy.ExternalHTTPProxy != "" {
-		proxyStr = fmt.Sprintf("External (%s)", o.cfg.Services.Proxy.ExternalHTTPProxy)
+	} else if o.cfg.Services.Proxy.GetHTTP() != "" {
+		proxyStr = fmt.Sprintf("External (%s)", o.cfg.Services.Proxy.GetHTTP())
 	}
 
 	// Format Registry
 	registryStr := "Official Red Hat Upstream"
-	if o.cfg.Services.Registry.Enabled {
+	if o.cfg.Services.Registry.IsManaged() {
 		registryStr = fmt.Sprintf("Managed Local Registry (%s:5000)", o.cfg.Network.ControllerIP)
-	} else if o.cfg.Network.IsolationLevel == "fully-disconnected" {
-		registryStr = fmt.Sprintf("External Airgap Registry (%s)", o.cfg.Services.Registry.ExternalHostname)
+	} else if o.cfg.Network.IsolationLevel == "air-gapped" {
+		registryStr = fmt.Sprintf("External Airgap Registry (%s)", o.cfg.Services.Registry.GetExternal())
 	}
 
 	infraData := pterm.TableData{
@@ -886,21 +895,21 @@ func (o *Orchestrator) GetClusterStatus(ctx context.Context) string {
 func (o *Orchestrator) DumpConfigs(ctx context.Context) error {
 	o.logger.Info("Dumping configuration requirements for unmanaged services...")
 
-	if !o.cfg.Services.DNS.Enabled {
+	if !o.cfg.Services.DNS.IsManaged() {
 		fmt.Printf("\n--- REQUIRED DNS RECORDS ---\n")
 		fmt.Printf("%s\tapi.%s.%s\n", o.cfg.Services.LoadBalancer.VIP, o.cfg.OpenShift.ClusterName, o.cfg.OpenShift.BaseDomain)
 		fmt.Printf("%s\tapi-int.%s.%s\n", o.cfg.Services.LoadBalancer.VIP, o.cfg.OpenShift.ClusterName, o.cfg.OpenShift.BaseDomain)
 		fmt.Printf("%s\t*.apps.%s.%s\n", o.cfg.Services.LoadBalancer.VIP, o.cfg.OpenShift.ClusterName, o.cfg.OpenShift.BaseDomain)
 	}
 
-	if !o.cfg.Services.LoadBalancer.Enabled {
-		fmt.Printf("\n--- REQUIRED LOAD BALANCER POOLS (Target: %s) ---\n", o.cfg.Services.LoadBalancer.VIP)
+	if !o.cfg.Services.LoadBalancer.IsManaged() {
+		fmt.Printf("\n--- REQUIRED LOAD BALANCER POOLS (Target: %s) ---\n", o.cfg.Services.LoadBalancer.GetVIP())
 		fmt.Println("Port 6443 (API)   -> Masters & Bootstrap")
 		fmt.Println("Port 22623 (MCS)  -> Masters & Bootstrap")
 		fmt.Println("Port 80/443 (App) -> Workers (or Masters if SNO/Compact)")
 	}
 
-	if !o.cfg.Services.DHCP.Enabled {
+	if !o.cfg.Services.DHCP.IsManaged() {
 		fmt.Printf("\n--- REQUIRED DHCP OPTIONS ---\n")
 		fmt.Printf("Option 66 (Next-Server): %s\n", o.cfg.Network.ControllerIP)
 		fmt.Printf("Option 67 (Bootfile):    %s/core.elf\n", o.cfg.OpenShift.ClusterName)

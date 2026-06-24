@@ -756,10 +756,13 @@ func (h *HMCProvider) bootNodeWithISO(ctx context.Context, node *types.NodeConfi
 	nfsServer := h.cfg.Network.ControllerIP
 	exportPath := fmt.Sprintf("/opt/shiftlaunch/clusters/%s/install-dir", h.cfg.OpenShift.ClusterName)
 
-	if !h.cfg.Services.NFS.Enabled && h.cfg.Services.NFS.NFSServerIP != "" {
+	if !h.cfg.Services.NFS.IsManaged() && h.cfg.Services.NFS.GetExternal() != "" {
 		// External "Bring Your Own" NFS
-		nfsServer = h.cfg.Services.NFS.NFSServerIP
-		// Note: External NFS implies the user has exported the install-dir to match the cluster name
+		nfsServer = h.cfg.Services.NFS.GetExternal()
+		// If they provided a custom mount path, use it! Otherwise, fall back safely.
+		if h.cfg.Services.NFS.GetExternalPath() != "" {
+			exportPath = h.cfg.Services.NFS.GetExternalPath()
+		}
 	} else {
 		// Local Managed NFS: Dynamically discover the Management IP that can route to the VIOS
 		if conn, err := net.Dial("udp", h.cfg.HMC.IP+":443"); err == nil {
@@ -1244,10 +1247,13 @@ func (h *HMCProvider) bootNodesWithISOBulk(ctx context.Context) error {
 			nfsServer := h.cfg.Network.ControllerIP
 			exportPath := fmt.Sprintf("/opt/shiftlaunch/clusters/%s/install-dir", h.cfg.OpenShift.ClusterName)
 
-			if !h.cfg.Services.NFS.Enabled && h.cfg.Services.NFS.NFSServerIP != "" {
+			if !h.cfg.Services.NFS.IsManaged() && h.cfg.Services.NFS.GetExternal() != "" {
 				// External "Bring Your Own" NFS
-				nfsServer = h.cfg.Services.NFS.NFSServerIP
-				// Note: External NFS implies the user has exported the install-dir to match the cluster name
+				nfsServer = h.cfg.Services.NFS.GetExternal()
+				// Allow enterprise users to specify custom export path
+				if customPath := h.cfg.Services.NFS.GetExternalPath(); customPath != "" {
+					exportPath = customPath
+				}
 			} else {
 				// Local Managed NFS: Dynamically discover the Management IP that can route to the VIOS
 				if conn, err := net.Dial("udp", h.cfg.HMC.IP+":443"); err == nil {

@@ -38,12 +38,12 @@ func (c *ControllerSetup) getRequiredPackages() []string {
 	pkgs = append(pkgs, "firewalld", "policycoreutils-python-utils", "tar")
 
 	//  Inject registry dependencies for disconnected deployments!
-	if c.cfg.Network.IsolationLevel == "fully-disconnected" && c.cfg.Services.Registry.Enabled {
+	if c.cfg.Network.IsolationLevel == "air-gapped" && c.cfg.Services.Registry.IsManaged() {
 		pkgs = append(pkgs, "podman", "httpd-tools", "jq", "openssl")
 	}
 
 	// Centralize Squid installation here for consistency
-	if c.cfg.Services.Proxy.Enabled {
+	if c.cfg.Services.Proxy.IsManaged() {
 		pkgs = append(pkgs, "squid")
 	}
 
@@ -52,19 +52,19 @@ func (c *ControllerSetup) getRequiredPackages() []string {
 		pkgs = append(pkgs, "httpd")
 	}
 
-	needsDHCP := c.cfg.Services.DHCP.Enabled && c.cfg.Nodes.BootMethod != "agent"
-	needsPXE := c.cfg.Services.PXE.Enabled && c.cfg.Nodes.BootMethod != "agent"
+	needsDHCP := c.cfg.Services.DHCP.IsManaged() && c.cfg.Nodes.BootMethod != "agent"
+	needsPXE := c.cfg.Services.PXE.IsManaged() && c.cfg.Nodes.BootMethod != "agent"
 
-	if c.cfg.Services.DNS.Enabled || needsDHCP || needsPXE {
+	if c.cfg.Services.DNS.IsManaged() || needsDHCP || needsPXE {
 		pkgs = append(pkgs, "dnsmasq")
 	}
 	if needsPXE {
 		pkgs = append(pkgs, "tftp-server", "syslinux-tftpboot", "grub2-tools-extra")
 	}
-	if c.cfg.Services.LoadBalancer.Enabled {
+	if c.cfg.Services.LoadBalancer.IsManaged() {
 		pkgs = append(pkgs, "haproxy")
 	}
-	if c.cfg.Nodes.BootMethod == "agent" && c.cfg.Services.NFS.Enabled {
+	if c.cfg.Nodes.BootMethod == "agent" && c.cfg.Services.NFS.IsManaged() {
 		pkgs = append(pkgs, "nfs-utils")
 	}
 	// nmstate is required for Agent ISO with static networking validation
@@ -130,19 +130,19 @@ func (c *ControllerSetup) ConfigureFirewall(ctx context.Context) error {
 		ports = append(ports, fmt.Sprintf("%d/tcp", c.daemonCfg.Network.HTTPPort))
 	}
 
-	if c.cfg.Services.DNS.Enabled {
+	if c.cfg.Services.DNS.IsManaged() {
 		ports = append(ports, "53/tcp", "53/udp")
 	}
-	if c.cfg.Services.DHCP.Enabled && c.cfg.Nodes.BootMethod != "agent" {
+	if c.cfg.Services.DHCP.IsManaged() && c.cfg.Nodes.BootMethod != "agent" {
 		ports = append(ports, "67/udp")
 	}
-	if c.cfg.Services.PXE.Enabled && c.cfg.Nodes.BootMethod != "agent" {
+	if c.cfg.Services.PXE.IsManaged() && c.cfg.Nodes.BootMethod != "agent" {
 		ports = append(ports, "69/udp")
 	}
-	if c.cfg.Services.LoadBalancer.Enabled {
+	if c.cfg.Services.LoadBalancer.IsManaged() {
 		ports = append(ports, "6443/tcp", "22623/tcp", "80/tcp", "443/tcp")
 	}
-	if c.cfg.Nodes.BootMethod == "agent" && c.cfg.Services.NFS.Enabled {
+	if c.cfg.Nodes.BootMethod == "agent" && c.cfg.Services.NFS.IsManaged() {
 		services = append(services, "nfs", "rpc-bind", "mountd")
 	}
 

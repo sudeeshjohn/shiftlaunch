@@ -121,8 +121,8 @@ func (r *RegistryManager) Setup(ctx context.Context, workspaceDir string) error 
 
 	// 3. Create or update htpasswd authentication
 	r.logger.Debug("Configuring registry authentication...")
-	username := r.cfg.Services.Registry.Username
-	password := r.cfg.Services.Registry.Password
+	username := r.cfg.Services.Registry.GetUser()
+	password := r.cfg.Services.Registry.GetPass()
 
 	//  Use -c to create only if the file doesn't exist. Otherwise, just append/update!
 	authFlag := "-bBc"
@@ -154,14 +154,24 @@ func (r *RegistryManager) Setup(ctx context.Context, workspaceDir string) error 
 		return fmt.Errorf("failed to reload firewall: %w", err)
 	}
 
-	// 5 & 6. Start the registry only if it isn't already running
-	r.logger.Debug("Checking if registry is already running...")
-	if _, err := r.executor.Execute(shieldedCtx, "sudo systemctl is-active local-registry"); err == nil {
-		r.logger.Info("Local registry is already active. Reusing existing container.")
+	// 5 & 6. Smart Registry Detection & Reuse
+	r.logger.Debug("Checking if port 5000 is already hosting a valid registry...")
+	verifyCmd := fmt.Sprintf("env HTTP_PROXY='' HTTPS_PROXY='' http_proxy='' https_proxy='' curl -s -o /dev/null -w '%%{http_code}' --connect-timeout 3 -u %s:%s -k https://%s:5000/v2/", username, password, r.cfg.Network.ControllerIP)
+	
+	httpCode, _ := r.executor.Execute(shieldedCtx, verifyCmd)
+	httpCode = strings.TrimSpace(httpCode)
+
+	if httpCode == "200" {
+		r.logger.Info("Valid registry already running on port 5000. Reusing existing instance.")
 	} else {
+		// Ensure the port isn't hogged by something we can't authenticate to
+		portCheck, _ := r.executor.Execute(shieldedCtx, "ss -tlpn | grep ':5000 ' 2>/dev/null || true")
+		if strings.TrimSpace(portCheck) != "" {
+			return fmt.Errorf("Port 5000 is in use, but registry authentication failed (HTTP %s). Cannot proceed.", httpCode)
+		}
+
 		r.logger.Debug("Starting fresh local registry service...")
 
-		//  Only write the systemd file if we are actually creating the registry!
 		tmpl, err := template.New("registry-service").Parse(registryServiceTemplate)
 		if err == nil {
 			var buf bytes.Buffer
@@ -190,14 +200,15 @@ func (r *RegistryManager) Setup(ctx context.Context, workspaceDir string) error 
 	hostsEntry := fmt.Sprintf("%s %s %s", r.cfg.Network.ControllerIP, registryHost, marker)
 
 	// Clean up any stale entries first (using the precise marker), then append
-	r.executor.Execute(shieldedCtx, fmt.Sprintf("sudo sed -i '/%s/d' /etc/hosts", marker))
+	// STRICT MATCH FIX: Add the '$' anchor so 'my-cluster' doesn't delete 'my-cluster1'
+	r.executor.Execute(shieldedCtx, fmt.Sprintf("sudo sed -i '/%s$/d' /etc/hosts", marker))
 	r.executor.Execute(shieldedCtx, fmt.Sprintf("echo '%s' | sudo tee -a /etc/hosts > /dev/null", hostsEntry))
 
 	// 8. Wait for registry to be ready
 	r.logger.Debug("Waiting for registry to be ready...")
 
-	//  Explicitly target 127.0.0.1 (IPv4), strip all proxies, and add strict timeouts to prevent network namespace settling delays
-	checkCmd := fmt.Sprintf("env HTTP_PROXY='' HTTPS_PROXY='' http_proxy='' https_proxy='' curl --connect-timeout 5 --max-time 10 -u %s:%s -k https://127.0.0.1:5000/v2/_catalog", username, password)
+	// TARGET PHYSICAL IP FIX: Use ControllerIP instead of 127.0.0.1 so traffic hits Podman's NAT tables
+	checkCmd := fmt.Sprintf("env HTTP_PROXY='' HTTPS_PROXY='' http_proxy='' https_proxy='' curl --connect-timeout 5 --max-time 10 -u %s:%s -k https://%s:5000/v2/_catalog", username, password, r.cfg.Network.ControllerIP)
 
 	var lastErr error
 	for i := 0; i < 10; i++ {
@@ -338,23 +349,28 @@ mirror:
 
 	// --- THE MULTI-TENANT FIX ---
 
-	// 1. The Scalpel: Only kill zombie processes tied to THIS specific cluster's workspace
+	// 1. The Scalpel: Kill zombie processes tied to THIS specific cluster's workspace
 	r.logger.Debug("Sweeping for orphaned oc-mirror processes tied to this cluster...")
 	targetKillCmd := fmt.Sprintf("sudo pkill -9 -f 'oc-mirror.*%s' 2>/dev/null || true", r.cfg.OpenShift.ClusterName)
 	r.executor.Execute(ctx, targetKillCmd)
 
-	// 2. The Queue: oc-mirror v2 hardcodes port 55000. If it's in use by another cluster, we must wait.
-	for i := 0; i < 60; i++ { // Wait up to 30 minutes
-		out, _ := r.executor.Execute(ctx, "ss -tln | grep ':55000 ' 2>/dev/null || true")
+	// 2. The Queue: oc-mirror v2 hardcodes port 55000. Wait for it to clear across ALL TCP states (including TIME_WAIT).
+	for i := 0; i < 60; i++ { // Wait up to 10 minutes
+		out, _ := r.executor.Execute(ctx, "ss -tan | grep -E ':55000\\b' 2>/dev/null || true")
 		if strings.TrimSpace(out) == "" {
 			break // Port is free, we can proceed!
 		}
-		if i == 0 {
-			r.logger.Info("Another cluster is currently mirroring images (Port 55000 is locked). Waiting in queue...")
-		} else if i%10 == 0 {
-			r.logger.Info("Still waiting for port 55000 to become available...")
+		
+		// ZOMBIE CHECK: If we are stuck in the queue for 30 seconds, it might be an orphaned registry child process from a previous crash.
+		if i == 3 {
+			r.logger.Info("Port 55000 is stuck. Hunting for zombie ephemeral registries...")
+			r.executor.Execute(ctx, "sudo fuser -k -9 55000/tcp 2>/dev/null || true")
 		}
-		r.executor.Execute(ctx, "sleep 30")
+
+		if i == 0 || i%6 == 0 {
+			r.logger.Info("Waiting for ephemeral port 55000 to become available for mirroring...")
+		}
+		r.executor.Execute(ctx, "sleep 10")
 	}
 
 	// Execute v2 mirror logic
@@ -390,13 +406,13 @@ mirror:
 func (r *RegistryManager) getRegistryHost() string {
 	//  For locally managed shared registries, the IP is the safest multi-tenant
 	// identifier because it is permanently baked into the shared certificate's SAN!
-	if r.cfg.Services.Registry.Enabled {
+	if r.cfg.Services.Registry.IsManaged() {
 		return r.cfg.Network.ControllerIP
 	}
 
 	// Fallback for external user-managed registries
-	if r.cfg.Services.Registry.ExternalHostname != "" {
-		return r.cfg.Services.Registry.ExternalHostname
+	if r.cfg.Services.Registry.GetExternal() != "" {
+		return r.cfg.Services.Registry.GetExternal()
 	}
 	return fmt.Sprintf("registry.%s.%s", r.cfg.OpenShift.ClusterName, r.cfg.OpenShift.BaseDomain)
 }
@@ -406,7 +422,7 @@ func (r *RegistryManager) GetRegistryURL() string {
 	host := r.getRegistryHost()
 
 	// If we are managing it locally, we know it's locked to 5000
-	if r.cfg.Services.Registry.Enabled {
+	if r.cfg.Services.Registry.IsManaged() {
 		return fmt.Sprintf("%s:5000", host)
 	}
 
@@ -485,7 +501,7 @@ func (r *RegistryManager) isRegistryShared() bool {
 		if err := yaml.Unmarshal(data, &tmpCfg); err == nil {
 			//  Look exclusively at the Registry service toggle to prevent
 			// unoptimized config files from being skipped!
-			if tmpCfg.Services.Registry.Enabled {
+			if tmpCfg.Services.Registry.IsManaged() {
 				activeCount++
 			}
 		}

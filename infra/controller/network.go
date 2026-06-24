@@ -244,7 +244,8 @@ func (nm *NetworkManager) RemoveHostsEntry(ctx context.Context, clusterName stri
 	shieldedCtx := context.WithoutCancel(ctx)
 
 	marker := fmt.Sprintf("# ShiftLaunch-Cluster-API: %s", clusterName)
-	delCmd := fmt.Sprintf("sudo sed -i '/%s/d' /etc/hosts", marker)
+	// STRICT MATCH FIX: Add the '$' anchor so 'my-cluster' doesn't delete 'my-cluster1'
+	delCmd := fmt.Sprintf("sudo sed -i '/%s$/d' /etc/hosts", marker)
 	_, err := nm.executor.Execute(shieldedCtx, delCmd)
 	return err
 }

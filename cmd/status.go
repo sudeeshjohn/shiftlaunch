@@ -106,22 +106,22 @@ func runInfo(cmd *cobra.Command, args []string) error {
 
 		// Evaluate Proxy Configuration
 		proxyMode, proxyURL := "none", ""
-		if cfg.Services.Proxy.Enabled {
+		if cfg.Services.Proxy.IsManaged() {
 			proxyMode = "managed"
 			proxyURL = fmt.Sprintf("http://%s:3128", cfg.Network.ControllerIP)
-		} else if cfg.Services.Proxy.ExternalHTTPProxy != "" {
+		} else if cfg.Services.Proxy.GetHTTP() != "" {
 			proxyMode = "external"
-			proxyURL = cfg.Services.Proxy.ExternalHTTPProxy
+			proxyURL = cfg.Services.Proxy.GetHTTP()
 		}
 
 		// Evaluate Registry Configuration
 		registryMode, registryURL := "official", ""
-		if cfg.Services.Registry.Enabled {
+		if cfg.Services.Registry.IsManaged() {
 			registryMode = "managed"
 			registryURL = fmt.Sprintf("%s:5000", cfg.Network.ControllerIP)
-		} else if cfg.Network.IsolationLevel == "fully-disconnected" {
+		} else if cfg.Network.IsolationLevel == "air-gapped" {
 			registryMode = "external"
-			registryURL = cfg.Services.Registry.ExternalHostname
+			registryURL = cfg.Services.Registry.GetExternal()
 		}
 
 		output := map[string]interface{}{
@@ -129,11 +129,11 @@ func runInfo(cmd *cobra.Command, args []string) error {
 			"status": state.Status,
 			"phase":  state.CurrentPhase,
 			"services": map[string]interface{}{
-				"managed_dns":           cfg.Services.DNS.Enabled,
-				"managed_dhcp":          cfg.Services.DHCP.Enabled && cfg.Nodes.BootMethod != "agent",
-				"managed_pxe":           cfg.Services.PXE.Enabled && cfg.Nodes.BootMethod != "agent",
-				"managed_load_balancer": cfg.Services.LoadBalancer.Enabled,
-				"managed_nfs":           cfg.Services.NFS.Enabled && cfg.Nodes.BootMethod == "agent",
+				"managed_dns":           cfg.Services.DNS.IsManaged(),
+				"managed_dhcp":          cfg.Services.DHCP.IsManaged() && cfg.Nodes.BootMethod != "agent",
+				"managed_pxe":           cfg.Services.PXE.IsManaged() && cfg.Nodes.BootMethod != "agent",
+				"managed_load_balancer": cfg.Services.LoadBalancer.IsManaged(),
+				"managed_nfs":           cfg.Services.NFS.IsManaged() && cfg.Nodes.BootMethod == "agent",
 				"proxy_mode":            proxyMode,
 				"proxy_url":             proxyURL,
 				"registry_mode":         registryMode,

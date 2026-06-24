@@ -153,6 +153,19 @@ func runScale(cmd *cobra.Command, args []string) error {
 
 	updatedCfg.Network.ControllerIP = cfg.Network.ControllerIP
 
+	// ========================================================================
+	// LOAD BALANCER ZERO-CONFIG AUTO-RESOLVER (For Day-2 Updated Config)
+	// ========================================================================
+	if updatedCfg.Services.LoadBalancer == nil {
+		updatedCfg.Services.LoadBalancer = &types.ServiceLoadBalancer{}
+	}
+	if updatedCfg.Services.LoadBalancer.ExternalLoadBalancer != "" {
+		updatedCfg.Services.LoadBalancer.VIP = updatedCfg.Services.LoadBalancer.ExternalLoadBalancer
+	}
+	if updatedCfg.Services.LoadBalancer.VIP == "" {
+		updatedCfg.Services.LoadBalancer.VIP = updatedCfg.Network.ControllerIP
+	}
+
 	// --- SMART BACKUP ENGINE ---
 	workspaceConfigPath := filepath.Join(workspaceDir, "config.yaml")
 	if existingConfigData, readErr := os.ReadFile(workspaceConfigPath); readErr == nil {
@@ -249,7 +262,7 @@ func runScale(cmd *cobra.Command, args []string) error {
 		// 5. Dynamic Networking & Load Balancer configuration scaling
 		log.StartPhase("Reconciling infrastructure services for additional node paths...")
 
-		if cfg.Services.DNS.Enabled {
+		if cfg.Services.DNS.IsManaged() {
 			log.Info("Regenerating DNS routing rules locally...")
 			dnsmasq := services.NewDNSmasqManager(cfg, daemonCfg, localExec)
 			if err := dnsmasq.SetupDNS(ctx); err != nil {
@@ -261,7 +274,7 @@ func runScale(cmd *cobra.Command, args []string) error {
 			log.Debug("Skipping DNS regeneration (User Managed)")
 		}
 
-		if cfg.Services.LoadBalancer.Enabled {
+		if cfg.Services.LoadBalancer.IsManaged() {
 			log.Info("Regenerating HAProxy backend pools locally...")
 			if err := services.SetupHAProxy(ctx, cfg, localExec); err != nil {
 				log.EndPhase(false, "Failed to regenerate HAProxy")
@@ -276,7 +289,7 @@ func runScale(cmd *cobra.Command, args []string) error {
 		// 6. Guarantee Local API Resolution
 		log.Debug("Ensuring OpenShift API is reachable from controller...")
 		netMgr := controller.NewNetworkManager(localExec, debug, log)
-		_ = netMgr.AddHostsEntry(ctx, cfg.OpenShift.ClusterName, cfg.OpenShift.BaseDomain, cfg.Services.LoadBalancer.VIP)
+		_ = netMgr.AddHostsEntry(ctx, cfg.OpenShift.ClusterName, cfg.OpenShift.BaseDomain, cfg.Services.LoadBalancer.GetVIP())
 
 		// 7. Build the temporary Red Hat spec nodes-config.yaml file programmatically
 		log.StartPhase("Compiling transient nodes-config.yaml manifest matching native Red Hat spec...")
@@ -286,8 +299,8 @@ func runScale(cmd *cobra.Command, args []string) error {
 			prefixLen, _ = ipNet.Mask.Size()
 		}
 
-		dnsServer := cfg.Services.DNS.ExternalNameserver
-		if cfg.Services.DNS.Enabled {
+		dnsServer := cfg.Services.DNS.GetExternal()
+		if cfg.Services.DNS.IsManaged() {
 			dnsServer = cfg.Network.ControllerIP
 		}
 
@@ -386,8 +399,9 @@ func runScale(cmd *cobra.Command, args []string) error {
 		log.StartPhase("Invoking native OpenShift CLI to compile specialized node installer ISO...")
 
 		//  Use the updated pull secret for Day-2 ISO compilation so it can authenticate to the local registry!
+		// Fix: Use the original deployment 'cfg' to guarantee we catch the registry state
 		pullSecretPath := cfg.OpenShift.PullSecretFile
-		if updatedCfg.Network.IsolationLevel == "fully-disconnected" && updatedCfg.Services.Registry.Enabled {
+		if cfg.Network.IsolationLevel == "air-gapped" && cfg.Services.Registry.IsManaged() {
 			updatedSecretPath := filepath.Join(workspaceDir, "pull-secret-updated.json")
 			if _, err := os.Stat(updatedSecretPath); err == nil {
 				pullSecretPath = updatedSecretPath

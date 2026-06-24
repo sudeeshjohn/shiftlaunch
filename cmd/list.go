@@ -143,15 +143,15 @@ func printClusterList(workspaceBase string) error {
 
 				// --- Evaluate Network Boundary Profile ---
 				networkProfile = "Connected"
-				if cfg.Network.IsolationLevel == "fully-disconnected" {
-					networkProfile = "Fully Disconnected"
-				} else if cfg.Network.IsolationLevel == "soft-disconnected" {
-					networkProfile = "Soft Disconnected"
+				if cfg.Network.IsolationLevel == "air-gapped" {
+					networkProfile = "Air-Gapped"
+				} else if cfg.Network.IsolationLevel == "restricted-network" {
+					networkProfile = "Restricted Network"
 				}
 
 				// --- Extract the LoadBalancer VIP ---
-				if cfg.Services.LoadBalancer.VIP != "" {
-					clusterIP = cfg.Services.LoadBalancer.VIP
+				if cfg.Services.LoadBalancer.GetVIP() != "" {
+					clusterIP = cfg.Services.LoadBalancer.GetVIP()
 				}
 
 				// Determine deployment type (SNO vs Multi-node)

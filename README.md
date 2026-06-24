@@ -110,8 +110,8 @@ ShiftLaunch supports two distinct boot mechanisms:
 ShiftLaunch natively supports three enterprise network boundaries:
 
 * **Connected (`connected`):** Nodes have direct outbound internet access
-* **Soft Disconnected (`soft-disconnected`):** Nodes are isolated but reach the internet exclusively through a proxy. ShiftLaunch can build a local `squid` proxy or route through a corporate gateway
-* **Fully Disconnected (`fully-disconnected`):** Strict airgap. The controller strips all proxy shell variables. It dynamically generates a local `podman` container registry, provisions SSL certificates, and utilizes `oc-mirror` v2 to sync the OpenShift release payload
+* **Soft Disconnected (`restricted-network`):** Nodes are isolated but reach the internet exclusively through a proxy. ShiftLaunch can build a local `squid` proxy or route through a corporate gateway
+* **Fully Disconnected (`air-gapped`):** Strict airgap. The controller strips all proxy shell variables. It dynamically generates a local `podman` container registry, provisions SSL certificates, and utilizes `oc-mirror` v2 to sync the OpenShift release payload
 
 ### Single VIP Architecture
 

@@ -109,7 +109,7 @@ func (o *Orchestrator) Teardown(ctx context.Context) error {
 
 		// 2. HAProxy & VIP Cleanup
 		// We must check if the LB was previously managed during this deployment
-		wasLBManaged := o.cfg.Services.LoadBalancer.Enabled
+		wasLBManaged := o.cfg.Services.LoadBalancer.IsManaged()
 		if !wasLBManaged && o.state != nil {
 			for _, svc := range o.state.ConfiguredServices {
 				if svc.Name == "haproxy" && svc.Managed {
@@ -123,23 +123,29 @@ func (o *Orchestrator) Teardown(ctx context.Context) error {
 		o.executor.Execute(shieldedCtx, fmt.Sprintf("sudo rm -f /etc/haproxy/conf.d/10-%s.cfg", o.cfg.OpenShift.ClusterName))
 		o.executor.SystemctlRestart(shieldedCtx, "haproxy")
 
-		if wasLBManaged && o.cfg.Services.LoadBalancer.VIP != "" {
+		if wasLBManaged && o.cfg.Services.LoadBalancer.GetVIP() != "" {
 			netMgr := controller.NewNetworkManager(o.executor, o.debug, o.logger)
-			vip := o.cfg.Services.LoadBalancer.VIP
+			vip := o.cfg.Services.LoadBalancer.GetVIP()
 			iface := o.cfg.Network.ControllerInterface
 			cidr := o.cfg.Network.MachineCIDR
 			ctrlIP := o.cfg.Network.ControllerIP
 
-			if err := netMgr.RemoveVIPAlias(shieldedCtx, iface, vip, cidr, ctrlIP); err != nil {
-				o.logger.Warn("Failed to cleanly remove VIP alias via nmcli", "error", err)
-				prefix := controller.ExtractCIDRPrefix(cidr)
-				o.executor.Execute(shieldedCtx, fmt.Sprintf("sudo ip addr del %s/%s dev %s", vip, prefix, iface))
+			// SAFETY CHECK: ONLY attempt to remove the VIP alias if it's a dedicated floating IP!
+			// If it matches the Controller IP, do NOT delete it, or we knock the host offline!
+			if vip != ctrlIP {
+				if err := netMgr.RemoveVIPAlias(shieldedCtx, iface, vip, cidr, ctrlIP); err != nil {
+					o.logger.Warn("Failed to cleanly remove VIP alias via nmcli", "error", err)
+					prefix := controller.ExtractCIDRPrefix(cidr)
+					o.executor.Execute(shieldedCtx, fmt.Sprintf("sudo ip addr del %s/%s dev %s", vip, prefix, iface))
+				}
+			} else {
+				o.logger.Debug("VIP matches Controller IP. Bypassing network alias teardown.")
 			}
 		}
 
 		// 3. Proxy and Registry (State-aware execution)
-		wasProxyManaged := o.cfg.Services.Proxy.Enabled
-		wasRegistryManaged := (o.cfg.Network.IsolationLevel == "fully-disconnected" && o.cfg.Services.Registry.Enabled)
+		wasProxyManaged := o.cfg.Services.Proxy.IsManaged()
+		wasRegistryManaged := (o.cfg.Network.IsolationLevel == "air-gapped" && o.cfg.Services.Registry.IsManaged())
 
 		if o.state != nil {
 			for _, svc := range o.state.ConfiguredServices {

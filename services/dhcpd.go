@@ -97,9 +97,7 @@ func PrepareISCDHCPData(cfg *types.AgentConfig) DHCPConfigData {
 	nodeData := make([]NodeData, 0, len(allNodes))
 	for _, node := range allNodes {
 		mac := strings.ToLower(node.MACAddress)
-		if mac == "" {
-			mac = "<mac-address-pending>" // Consistent with BYOI runtime discovery [cite: 851]
-		}
+		// Let empty MAC pass through to template for proper conditional rendering
 
 		nodeData = append(nodeData, NodeData{
 			Hostname:   node.Hostname,
@@ -114,10 +112,10 @@ func PrepareISCDHCPData(cfg *types.AgentConfig) DHCPConfigData {
 		NetworkAddr: networkAddr,               // [cite: 117]
 		Netmask:     netmask,                   // Calculated from CIDR
 		Gateway:     network.Gateway,           // [cite: 117]
-		Nameserver:  cfg.Services.DNS.ExternalNameserver,
-		Domain:      cfg.OpenShift.BaseDomain, // [cite: 109]
-		HelperIP:    cfg.Network.ControllerIP, // Controller IP replaces Helper
-		ManagePXE:   cfg.Services.PXE.Enabled, // Toggle based on Services
+		Nameserver:  cfg.Services.DNS.GetExternal(),
+		Domain:      cfg.OpenShift.BaseDomain,     // [cite: 109]
+		HelperIP:    cfg.Network.ControllerIP,     // Controller IP replaces Helper
+		ManagePXE:   cfg.Services.PXE.IsManaged(), // Toggle based on Services
 		Nodes:       nodeData,
 	}
 }

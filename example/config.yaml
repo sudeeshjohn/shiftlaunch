@@ -1,59 +1,71 @@
 # =============================================================================
-# ShiftLaunch Configuration Reference
+# ShiftLaunch Master Configuration Reference
+# Topology: Multi-Node Cluster
+# Boot Method: Agent Installer (Recommended)
 # =============================================================================
 
 # -----------------------------------------------------------------------------
 # 1. INFRASTRUCTURE SERVICES
-# Define who manages each network service locally on the controller node.
+# CONVENTION OVER CONFIGURATION:
+# Core infrastructure services (DNS, Load Balancer, NFS) are automatically 
+# managed locally on the controller node if left commented out. 
+# To Bring Your Own Infrastructure (BYOI), simply uncomment the block 
+# and fill in your network target.
 # -----------------------------------------------------------------------------
 services:
-  dns:
-    enabled: false
-    external_nameserver: "192.168.100.5" # Used if enabled: false
-    dns_forwarders:                # Used if enabled: true
-      - "8.8.8.8"
-      - "1.1.1.1"
+  # --- CORE INFRASTRUCTURE (Managed locally by default if commented out) ---
+  
+  # dns:
+    # external_nameserver: "192.168.100.5"  # Uncomment to bypass local dnsmasq and point to enterprise DNS
 
-  dhcp:
-    enabled: false                       # Required for netboot. Ignored for agent boot.
-    external_dhcp_server: "192.168.100.1"      
-  pxe:
-    enabled: false                       # Required for netboot. Ignored for agent boot.
-    external_pxe_server: "192.168.100.1"       
-  load_balancer:
-    enabled: false                       
-    vip: "192.168.100.50"                # Required entry-point IP for the cluster API / Ingress.
-  nfs:
-    enabled: false                       # Required for agent boot to transfer the ISO to the VIOS.
-    external_nfs_server: "192.168.100.1"       
+  # load_balancer:
+    # vip: "192.168.100.50"                 # Uncomment to use a dedicated floating IP for the cluster 
+                                            # # or if you are planning to use this controller for managing multiple clusters
+    # external_lb_ip: "192.168.100.2"       # Uncomment to bypass local HAProxy and route to an external F5/Big-IP
 
-  # --- BOUNDARY SERVICES ---
-  proxy:
-    enabled: false                       # true = ShiftLaunch builds a local Squid proxy.
-    external_http_proxy: "http://corp-proxy.example.com:8080"
-    external_https_proxy: "http://corp-proxy.example.com:8080"
-    no_proxy: "127.0.0.1,localhost,.example.local,192.168.100.0/24"
+  # nfs:
+    # external_nfs_server: "192.168.100.3"  # Uncomment to use an external enterprise NFS appliance for Agent ISOs
+    # external_nfs_path: "/vol/shiftlaunch" # Required if external_nfs_server is used
 
-  registry:
-    enabled: false                       # true = ShiftLaunch builds a local Podman registry.
-    external_reqistry_server: "registry.example.com" 
-    username: "admin"                    
-    password: "admin"                    
-    ca_cert_file: "/path/ca.crt"         
+  # --- BOOT METHOD SPECIFIC SERVICES ---
+  # dhcp:
+    #external_dhcp_server: "192.168.100.1"   # DHCP is inherently external for Agent ISO (uses NMState)
+      
+  # pxe:
+    # external_pxe_server: "192.168.100.1"    # PXE is bypassed/not used for Agent ISO mode
+
+  # --- BOUNDARY SERVICES (Strictly Opt-In; Stay completely off if commented out) ---
+  
+  # proxy:
+    # external_http_proxy: "http://proxy.mycompany.com:8080"
+    # external_https_proxy: "http://proxy.mycompany.com:8080"
+    # no_proxy: "127.0.0.1,localhost,.example.local,192.168.100.0/24"
+    # Note: To build a locally managed Squid proxy, simply use `proxy: {}`
+
+  # registry:
+    # external_registry_server: "registry.mycompany.com" 
+    # username: "admin"                    
+    # password: "admin"                    
+    # ca_cert_file: "/path/ca.crt"         
+    # Note: To build a locally managed Podman registry, simply use `registry: {}` (Requires air-gapped mode)
 
 # -----------------------------------------------------------------------------
 # 2. CORE NETWORK & ARCHITECTURE MODE
 # -----------------------------------------------------------------------------
 network:
   # ARCHITECTURE TARGETS:
-  #   "connected"         -> Nodes have direct outbound internet access. (Ignores proxy & registry fields)
-  #   "soft-disconnected" -> Nodes are isolated but can access the internet EXCLUSIVELY via a Proxy gateway.
-  #   "fully-disconnected"-> Nodes are strictly airgapped with ZERO internet path. Enforces local/external Registry data.
+  #   "connected"         -> Connected Installation (or Standard Connected Deployment). Nodes have direct outbound internet access.
+  #   "restricted-network" -> Proxy-Connected or Restricted Network deployment. Nodes are isolated but access internet via Proxy gateway.
+  #   "air-gapped"-> True Disconnected or Air-Gapped. Nodes are strictly airgapped. Enforces local Registry data.
   isolation_level: "connected"
   
-  controller_interface: "eth0"           # Physical interface to bind the VIP and local services to.
-  machine_network_cidr: "192.168.100.0/24" # The primary subnet the OpenShift nodes reside on.
-  gateway: "192.168.100.1"               # The default gateway for the cluster nodes.
+  controller_interface: "eth0"             # Physical interface on the controller to bind the VIP and services to
+  machine_network_cidr: "192.168.100.0/24" # The primary subnet the OpenShift nodes reside on
+  gateway: "192.168.100.1"                 # The default gateway for the cluster nodes
+  
+  dns_forwarders:                          # Network DNS servers used by the local dnsmasq service
+    - "8.8.8.8"
+    - "1.1.1.1"
 
 # -----------------------------------------------------------------------------
 # 3. OPENSHIFT CLUSTER SETTINGS
@@ -61,43 +73,11 @@ network:
 openshift:
   cluster_name: "my-cluster"
   version: "4.21.18"
-  release_type: "official"               
+  release_type: "official"                 # "official" for stable releases, "ci" for raw nightly builds             
   base_domain: "example.local"
-  pull_secret_file: "./pull-secret.json"
+  pull_secret_file: "~/pull-secret.json"
   ssh_public_key_file: "~/.ssh/id_rsa.pub"
-  force_ocp_download: false              # Set true to bypass checksums and force re-download of installation artifacts.
-
-  # -------------------------------------------------------------------------
-  # INTERNAL NETWORK ROUTING
-  # NOTE: ShiftLaunch automatically uses standard OpenShift internal defaults.
-  # Only uncomment and modify these if they conflict with your corporate network!
-  # -------------------------------------------------------------------------
-  # cluster_network_cidr: "10.128.0.0/14"
-  # cluster_network_host_prefix: 23
-  # service_network: "172.30.0.0/16"
-
-  # -------------------------------------------------------------------------
-  # OPENSHIFT ARTIFACTS (Auto-Discovered)
-  # ShiftLaunch will auto-generate these URLs based on the 'version' field!
-  # You only need to define these if you want to override the download paths.
-  # -------------------------------------------------------------------------
-  # ocp_client_config:
-  #  ocp_client: ""                     # URL to openshift-client-linux.tar.gz
-  #  client_csum: ""                    # (Optional) Explicit SHA256 hash
-  #  ocp_installer: ""                  # URL to openshift-install-linux.tar.gz
-  #  installer_csum: ""                 # (Optional) Explicit SHA256 hash
-  #  ocp_mirror_client: ""              # URL to oc-mirror.tar.gz
-  #  mirror_client_csum: ""             # (Optional) Explicit SHA256 hash
-  #  checksum_url: ""                   # URL to sha256sum.txt manifest
-
-  #rhcos_images:
-  #  kernel_url: ""                     # URL to rhcos-live-kernel.ppc64le
-  #  kernel_csum: ""                    # (Optional) Explicit SHA256 hash
-  #  initramfs_url: ""                  # URL to rhcos-live-initramfs.ppc64le.img
-  #  initramfs_csum: ""                 # (Optional) Explicit SHA256 hash
-  #  rootfs_url: ""                     # URL to rhcos-live-rootfs.ppc64le.img
-  #  rootfs_csum: ""                    # (Optional) Explicit SHA256 hash
-  #  checksum_url: ""                   # URL to sha256sum.txt manifest
+  force_ocp_download: false                # Set to true to force re-download of existing OpenShift artifacts
 
 # -----------------------------------------------------------------------------
 # 4. HMC CREDENTIALS
@@ -111,33 +91,22 @@ hmc:
 # 5. NODE TOPOLOGY (HMC Target LPARs)
 # -----------------------------------------------------------------------------
 nodes:
-  boot_method: "agent"                   # Options: "agent" or "netboot"
+  boot_method: "agent"                     # "agent" (ISO) or "netboot" (PXE)
   
-  # NOTE: To deploy SNO (Single Node OpenShift), define exactly 1 master node below
-  # and leave the bootstrap and workers arrays completely empty.
-  
-  # bootstrap:
-  #   - name: "bootstrap"
-  #     ip: "192.168.100.11"
-  #     existing_lpar_name: "my-bootstrap-lpar"
-  #     system_name: "Power-System-9080-HEX"
-
   masters:
     - name: "master-0"
       ip: "192.168.100.12"
       existing_lpar_name: "my-master-0"
       system_name: "Power-System-1080-HEX"
-    # Add master-1 and master-2 here if executing a highly available multi-node deployment
-    #- name: "master-1"
-    #  ip: "192.168.100.13"
-    #  existing_lpar_name: "my-master-1"
-    #  system_name: "Power-System-9080-HEX"
-    #- name: "master-2"
-    #  ip: "192.168.100.14"
-    #  existing_lpar_name: "my-master-2"
-    #  system_name: "Power-System-1180-HEX"
+    - name: "master-1"
+      ip: "192.168.100.13"
+      existing_lpar_name: "my-master-1"
+      system_name: "Power-System-1080-HEX"
+    - name: "master-2"
+      ip: "192.168.100.14"
+      existing_lpar_name: "my-master-2"
+      system_name: "Power-System-1080-HEX"
 
-  # Workers are considered only If you are deploying a highly available multi-node
   workers:
     - name: "worker-0"
       ip: "192.168.100.15"
@@ -146,4 +115,4 @@ nodes:
     - name: "worker-1"
       ip: "192.168.100.16"
       existing_lpar_name: "my-worker-1"
-      system_name: "Power-System-1122-HEX"
+      system_name: "Power-System-1022-HEX"

@@ -260,19 +260,19 @@ func (m *DNSmasqManager) prepareTemplateData(ctx context.Context) map[string]int
 
 	// Logic for DNSServer: If unmanaged, use customer's nameserver. Else, use local controller.
 	dnsServer := m.cfg.Network.ControllerIP
-	if !m.cfg.Services.DNS.Enabled && m.cfg.Services.DNS.ExternalNameserver != "" {
-		dnsServer = m.cfg.Services.DNS.ExternalNameserver
+	if !m.cfg.Services.DNS.IsManaged() && m.cfg.Services.DNS.GetExternal() != "" {
+		dnsServer = m.cfg.Services.DNS.GetExternal()
 	}
 
 	// Logic for PXEServer: Default to controller IP.
 	// If PXE is unmanaged but DHCP is managed, this MUST point to the external PXE server.
 	pxeServer := m.cfg.Network.ControllerIP
-	if !m.cfg.Services.PXE.Enabled && m.cfg.Services.PXE.PXEServerIP != "" {
-		pxeServer = m.cfg.Services.PXE.PXEServerIP
+	if !m.cfg.Services.PXE.IsManaged() && m.cfg.Services.PXE.GetExternal() != "" {
+		pxeServer = m.cfg.Services.PXE.GetExternal()
 	}
 
 	// Figure out the registry hostname (custom or auto-generated)
-	registryHost := m.cfg.Services.Registry.ExternalHostname
+	registryHost := m.cfg.Services.Registry.GetExternal()
 	if registryHost == "" {
 		registryHost = fmt.Sprintf("registry.%s.%s", m.cfg.OpenShift.ClusterName, m.cfg.OpenShift.BaseDomain)
 	}
@@ -291,11 +291,11 @@ func (m *DNSmasqManager) prepareTemplateData(ctx context.Context) map[string]int
 		"DNSServer":        dnsServer, // <--- New Variable
 		"PXEServer":        pxeServer, // <--- New Variable
 		"BaseDomain":       m.cfg.OpenShift.BaseDomain,
-		"VIP":              m.cfg.Services.LoadBalancer.VIP,
+		"VIP":              m.cfg.Services.LoadBalancer.GetVIP(),
 		"IsSNO":            isSno,
 		"Nodes":            m.cfg.GetAllNodes(),
-		"DNSForwarders":    m.cfg.Services.DNS.UpstreamNameservers,
-		"HasRegistry":      m.cfg.Network.IsolationLevel == "fully-disconnected" && m.cfg.Services.Registry.Enabled,
+		"DNSForwarders":    m.cfg.Network.UpstreamNameservers,
+		"HasRegistry":      m.cfg.Network.IsolationLevel == "air-gapped" && m.cfg.Services.Registry.IsManaged(),
 		"RegistryHostname": registryHost,
 	}
 

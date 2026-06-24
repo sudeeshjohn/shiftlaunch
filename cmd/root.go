@@ -171,23 +171,33 @@ func loadConfig(requireConfig bool) (*types.AgentConfig, *config.AgentDaemonConf
 		cfg.OpenShift.ReleaseType = "official"
 	}
 
-	// Implicit enforcement: If local registry management is active, lock down isolation state
-	if cfg.Services.Registry.Enabled {
-		cfg.Network.IsolationLevel = "fully-disconnected"
+	// ========================================================================
+	// REGISTRY ZERO-CONFIG AUTO-RESOLVER
+	// ========================================================================
+	// If the user requests an airgap but omits the registry block, auto-build it!
+	if cfg.Network.IsolationLevel == "air-gapped" {
+		if cfg.Services.Registry == nil {
+			cfg.Services.Registry = &types.ServiceRegistry{}
+		}
 	}
-	if cfg.Services.Proxy.Enabled {
-		cfg.Network.IsolationLevel = "soft-disconnected"
+
+	// Implicit enforcement: If local registry management is active, lock down isolation state
+	if cfg.Services.Registry.IsManaged() {
+		cfg.Network.IsolationLevel = "air-gapped"
+	}
+	if cfg.Services.Proxy.IsManaged() {
+		cfg.Network.IsolationLevel = "restricted-network"
 	}
 
 	switch cfg.Network.IsolationLevel {
-	case "fully-disconnected":
+	case "air-gapped":
 		// Clear proxy variables completely to guarantee strict airgap enforcement
 		proxyVars := []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"}
 		for _, v := range proxyVars {
 			os.Unsetenv(v)
 		}
 
-		if cfg.Services.Registry.Enabled {
+		if cfg.Services.Registry.IsManaged() {
 			cfg.Services.Registry.AutoMirror = true
 			if cfg.Services.Registry.RegistryImage == "" {
 				cfg.Services.Registry.RegistryImage = "docker.io/library/registry:3.1.1"
@@ -211,23 +221,23 @@ func loadConfig(requireConfig bool) (*types.AgentConfig, *config.AgentDaemonConf
 			cfg.Services.Registry.ReleaseImage = fmt.Sprintf("quay.io/openshift-release-dev/ocp-release:%s-ppc64le", versionTag)
 		}
 
-	case "soft-disconnected":
-		if cfg.Services.Proxy.ExternalHTTPProxy != "" {
-			os.Setenv("HTTP_PROXY", cfg.Services.Proxy.ExternalHTTPProxy)
-			os.Setenv("HTTPS_PROXY", cfg.Services.Proxy.ExternalHTTPSProxy)
-			os.Setenv("http_proxy", cfg.Services.Proxy.ExternalHTTPProxy)
-			os.Setenv("https_proxy", cfg.Services.Proxy.ExternalHTTPSProxy)
-			if cfg.Services.Proxy.NoProxy != "" {
-				os.Setenv("NO_PROXY", cfg.Services.Proxy.NoProxy)
-				os.Setenv("no_proxy", cfg.Services.Proxy.NoProxy)
+	case "restricted-network":
+		if cfg.Services.Proxy.GetHTTP() != "" {
+			os.Setenv("HTTP_PROXY", cfg.Services.Proxy.GetHTTP())
+			os.Setenv("HTTPS_PROXY", cfg.Services.Proxy.GetHTTPS())
+			os.Setenv("http_proxy", cfg.Services.Proxy.GetHTTP())
+			os.Setenv("https_proxy", cfg.Services.Proxy.GetHTTPS())
+			if cfg.Services.Proxy.GetNoProxy() != "" {
+				os.Setenv("NO_PROXY", cfg.Services.Proxy.GetNoProxy())
+				os.Setenv("no_proxy", cfg.Services.Proxy.GetNoProxy())
 			}
 		}
 	default:
 		cfg.Network.IsolationLevel = "connected"
 	}
 
-	// Auto-fill OpenShift mirror URLs if missing in connected or soft-disconnected systems
-	if cfg.Network.IsolationLevel != "fully-disconnected" && cfg.OpenShift.Version != "" {
+	// Auto-fill OpenShift mirror URLs if missing (Controller downloads these regardless of cluster isolation)
+	if cfg.OpenShift.Version != "" {
 		majorMinor := cfg.OpenShift.Version
 		if parts := strings.Split(cfg.OpenShift.Version, "."); len(parts) >= 2 {
 			majorMinor = parts[0] + "." + parts[1]
@@ -237,6 +247,10 @@ func loadConfig(requireConfig bool) (*types.AgentConfig, *config.AgentDaemonConf
 		}
 		if cfg.OpenShift.OCPClientConfig.Installer == "" {
 			cfg.OpenShift.OCPClientConfig.Installer = fmt.Sprintf("https://mirror.openshift.com/pub/openshift-v4/ppc64le/clients/ocp/%s/openshift-install-linux.tar.gz", cfg.OpenShift.Version)
+		}
+		// Auto-resolver for the oc-mirror plugin (required for air-gapped deployments)
+		if cfg.OpenShift.OCPClientConfig.MirrorClient == "" {
+			cfg.OpenShift.OCPClientConfig.MirrorClient = fmt.Sprintf("https://mirror.openshift.com/pub/openshift-v4/ppc64le/clients/ocp/%s/oc-mirror.tar.gz", cfg.OpenShift.Version)
 		}
 		if cfg.Nodes.BootMethod != "agent" {
 			if cfg.OpenShift.RHCOSImages.KernelURL == "" {
@@ -271,6 +285,23 @@ func loadConfig(requireConfig bool) (*types.AgentConfig, *config.AgentDaemonConf
 		} else {
 			return nil, nil, nil, fmt.Errorf("network.controller_interface must be specified in the configuration file")
 		}
+	}
+
+	// ========================================================================
+	// LOAD BALANCER ZERO-CONFIG AUTO-RESOLVER
+	// ========================================================================
+	if cfg.Services.LoadBalancer == nil {
+		cfg.Services.LoadBalancer = &types.ServiceLoadBalancer{}
+	}
+
+	// 1. If an external enterprise LB is provided, that IP becomes the OpenShift VIP
+	if cfg.Services.LoadBalancer.ExternalLoadBalancer != "" {
+		cfg.Services.LoadBalancer.VIP = cfg.Services.LoadBalancer.ExternalLoadBalancer
+	}
+
+	// 2. If NO VIP is specified at all, default to using the Controller's primary IP!
+	if cfg.Services.LoadBalancer.VIP == "" {
+		cfg.Services.LoadBalancer.VIP = cfg.Network.ControllerIP
 	}
 
 	// Override cluster name if provided via flag
