@@ -32,7 +32,7 @@ jobs:
       # 1. Filesystem scan — source code, dependencies, misconfigurations
       # -------------------------------------------------------------------------
       - name: Trivy filesystem scan (table output)
-        uses: aquasecurity/trivy-action@0.31.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -46,7 +46,7 @@ jobs:
       # -------------------------------------------------------------------------
       - name: Trivy filesystem scan (SARIF upload)
         if: always()   # upload even when the table scan step fails
-        uses: aquasecurity/trivy-action@0.31.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -67,7 +67,7 @@ jobs:
       # -------------------------------------------------------------------------
       - name: Trivy binary scan
         if: always()   # run even if Step 1 fails
-        uses: aquasecurity/trivy-action@0.31.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: rootfs  # preferred mode for compiled binaries
           scan-ref: bin/shiftlaunch
