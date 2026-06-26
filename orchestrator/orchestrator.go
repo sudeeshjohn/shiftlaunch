@@ -9,13 +9,13 @@ import (
 	"time"
 
 	"github.com/pterm/pterm"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/config"
-	compute "github.ibm.com/sudeeshjohn/shiftlaunch/infra/compute"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/infra/controller"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/localexec"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/logger"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/services"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/types"
+	"github.com/IBM/shiftlaunch/config"
+	compute "github.com/IBM/shiftlaunch/infra/compute"
+	"github.com/IBM/shiftlaunch/infra/controller"
+	"github.com/IBM/shiftlaunch/localexec"
+	"github.com/IBM/shiftlaunch/logger"
+	"github.com/IBM/shiftlaunch/services"
+	"github.com/IBM/shiftlaunch/types"
 	"go.yaml.in/yaml/v3"
 )
 

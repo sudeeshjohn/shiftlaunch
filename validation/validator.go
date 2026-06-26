@@ -11,10 +11,10 @@ import (
 	"strings"
 	"sync"
 
-	hmc "github.ibm.com/sudeeshjohn/infra-go-sdk/phmc"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/localexec"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/logger"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/types"
+	hmc "github.com/IBM/infra-go-sdk/phmc"
+	"github.com/IBM/shiftlaunch/localexec"
+	"github.com/IBM/shiftlaunch/logger"
+	"github.com/IBM/shiftlaunch/types"
 	"go.yaml.in/yaml/v3"
 )
 

@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"time"
 
-	compute "github.ibm.com/sudeeshjohn/shiftlaunch/infra/compute"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/infra/controller"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/services"
+	compute "github.com/IBM/shiftlaunch/infra/compute"
+	"github.com/IBM/shiftlaunch/infra/controller"
+	"github.com/IBM/shiftlaunch/services"
 )
 
 // Teardown safely powers off LPARs, removes local services, and marks workspace as deleted

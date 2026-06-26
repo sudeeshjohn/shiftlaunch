@@ -8,7 +8,7 @@ import (
 	"text/template"
 
 	"github.com/spf13/cobra"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/logger"
+	"github.com/IBM/shiftlaunch/logger"
 )
 
 var (

@@ -10,9 +10,9 @@ import (
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 
-	"github.ibm.com/sudeeshjohn/shiftlaunch/config"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/logger"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/types"
+	"github.com/IBM/shiftlaunch/config"
+	"github.com/IBM/shiftlaunch/logger"
+	"github.com/IBM/shiftlaunch/types"
 	"gopkg.in/yaml.v3"
 )
 

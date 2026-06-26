@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.ibm.com/sudeeshjohn/shiftlaunch/logger"
+	"github.com/IBM/shiftlaunch/logger"
 )
 
 // CommandExecution tracks details of each command run

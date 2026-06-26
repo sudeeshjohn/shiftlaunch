@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	hmc "github.ibm.com/sudeeshjohn/infra-go-sdk/phmc"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/infra"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/logger"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/types"
+	hmc "github.com/IBM/infra-go-sdk/phmc"
+	"github.com/IBM/shiftlaunch/infra"
+	"github.com/IBM/shiftlaunch/logger"
+	"github.com/IBM/shiftlaunch/types"
 )
 
 // Provider defines operations for pre-provisioned infrastructure [cite: 39]

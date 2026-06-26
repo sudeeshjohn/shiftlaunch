@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.ibm.com/sudeeshjohn/shiftlaunch/types"
+	"github.com/IBM/shiftlaunch/types"
 )
 
 const (

@@ -10,8 +10,8 @@ import (
 	"syscall"
 
 	"github.com/spf13/cobra"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/config"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/types"
+	"github.com/IBM/shiftlaunch/config"
+	"github.com/IBM/shiftlaunch/types"
 )
 
 var ocCmd = &cobra.Command{

@@ -5,9 +5,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.ibm.com/sudeeshjohn/shiftlaunch/infra/compute"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/localexec"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/validation"
+	"github.com/IBM/shiftlaunch/infra/compute"
+	"github.com/IBM/shiftlaunch/localexec"
+	"github.com/IBM/shiftlaunch/validation"
 )
 
 var validateCmd = &cobra.Command{

@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.ibm.com/sudeeshjohn/shiftlaunch/config"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/localexec"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/logger"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/types"
+	"github.com/IBM/shiftlaunch/config"
+	"github.com/IBM/shiftlaunch/localexec"
+	"github.com/IBM/shiftlaunch/logger"
+	"github.com/IBM/shiftlaunch/types"
 )
 
 // HTTPServerManager manages HTTP server directory structure for OpenShift installation

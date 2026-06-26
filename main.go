@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.ibm.com/sudeeshjohn/shiftlaunch/cmd"
+	"github.com/IBM/shiftlaunch/cmd"
 )
 
 func main() {

@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.ibm.com/sudeeshjohn/shiftlaunch/localexec"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/logger"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/types"
+	"github.com/IBM/shiftlaunch/localexec"
+	"github.com/IBM/shiftlaunch/logger"
+	"github.com/IBM/shiftlaunch/types"
 )
 
 // NFSManager handles the local NFS server configuration for ISO boot mode

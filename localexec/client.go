@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.ibm.com/sudeeshjohn/shiftlaunch/logger"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/types"
+	"github.com/IBM/shiftlaunch/logger"
+	"github.com/IBM/shiftlaunch/types"
 )
 
 type LocalClient struct {

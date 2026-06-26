@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/config"
+	"github.com/IBM/shiftlaunch/config"
 )
 
 var followLogs bool

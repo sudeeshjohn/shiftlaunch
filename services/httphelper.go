@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"text/template"
 
-	"github.ibm.com/sudeeshjohn/shiftlaunch/localexec"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/types"
+	"github.com/IBM/shiftlaunch/localexec"
+	"github.com/IBM/shiftlaunch/types"
 )
 
 const helperScriptTemplate = `#!/bin/bash

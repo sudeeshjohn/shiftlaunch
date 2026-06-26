@@ -9,12 +9,12 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
-	"github.ibm.com/sudeeshjohn/shiftlaunch/infra/compute"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/localexec"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/logger"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/orchestrator"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/types"
-	"github.ibm.com/sudeeshjohn/shiftlaunch/validation"
+	"github.com/IBM/shiftlaunch/infra/compute"
+	"github.com/IBM/shiftlaunch/localexec"
+	"github.com/IBM/shiftlaunch/logger"
+	"github.com/IBM/shiftlaunch/orchestrator"
+	"github.com/IBM/shiftlaunch/types"
+	"github.com/IBM/shiftlaunch/validation"
 )
 
 var (
