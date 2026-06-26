@@ -1,20 +1,23 @@
-name: Upload Release Asset
+name: Cut Release
 
 on:
-  release:
-    types: [published] # Triggers when you click "Publish release" in the GitHub UI
+  push:
+    tags:
+      - 'v*' # Triggers strictly when you push a tag like v0.3.0 or v0.3.0-rc1
 
 permissions:
-  contents: write
+  contents: write # Required to create the release and upload assets
 
 jobs:
-  build-and-upload:
-    name: Build and Attach Binaries
+  build-and-release:
+    name: Build and Release
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Required to accurately auto-generate the changelog
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -26,7 +29,6 @@ jobs:
         run: |
           echo "==> Building native (amd64) binary via Makefile..."
           make build
-          # Rename the output so it's clearly marked as amd64
           mv bin/shiftlaunch bin/shiftlaunch-linux-amd64
           echo "==> Compressing amd64 artifact..."
           tar -czvf shiftlaunch-linux-amd64.tar.gz -C bin shiftlaunch-linux-amd64
@@ -38,10 +40,23 @@ jobs:
           echo "==> Compressing ppc64le artifact..."
           tar -czvf shiftlaunch-linux-ppc64le.tar.gz -C bin shiftlaunch-linux-ppc64le
 
-      - name: Upload Artifacts to Release
+      - name: Determine if Pre-release
+        id: check-prerelease
+        run: |
+          # If the tag contains a hyphen (e.g., v0.3.0-rc1), mark as pre-release
+          if [[ "${{ github.ref_name }}" == *-* ]]; then
+            echo "Detected pre-release tag format."
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+          else
+            echo "Detected stable release tag format."
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create GitHub Release & Upload Artifacts
         uses: softprops/action-gh-release@v2
         with:
-          # Pipe symbol (|) allows us to list multiple files to upload
+          generate_release_notes: true # GitHub will write the changelog for you!
+          prerelease: ${{ steps.check-prerelease.outputs.is_prerelease == 'true' }}
           files: |
             shiftlaunch-linux-amd64.tar.gz
             shiftlaunch-linux-ppc64le.tar.gz
