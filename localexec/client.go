@@ -78,7 +78,7 @@ func (l *LocalClient) WriteFile(ctx context.Context, path string, content []byte
 }
 
 func (l *LocalClient) SystemctlRestart(ctx context.Context, service string) error {
-	l.logger.Info("Restarting local service", "service", service)
+	l.logger.Debug("Restarting local service", "service", service)
 	_, err := l.Execute(ctx, fmt.Sprintf("sudo systemctl restart %s", service))
 	return err
 }

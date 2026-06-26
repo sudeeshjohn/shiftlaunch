@@ -385,7 +385,7 @@ func (sm *StateManager) SaveState(state *DeploymentState) error {
 		existingData, err := os.ReadFile(path)
 		if err == nil {
 			// Write backup
-			if err := os.WriteFile(backupPath, existingData, 0644); err != nil {
+			if err := os.WriteFile(backupPath, existingData, 0600); err != nil {
 				// Log warning but don't fail
 				sm.logger.Warn("Failed to create state backup", "error", err)
 			}
@@ -400,7 +400,7 @@ func (sm *StateManager) SaveState(state *DeploymentState) error {
 
 	// Write to temporary file first (atomic write)
 	tempPath := path + ".tmp"
-	if err := os.WriteFile(tempPath, data, 0644); err != nil {
+	if err := os.WriteFile(tempPath, data, 0600); err != nil {
 		return err
 	}
 
@@ -906,7 +906,7 @@ func (sm *StateManager) CreateStateBackup() error {
 	timestamp := time.Now().Format("20060102-150405")
 	backupPath := fmt.Sprintf("%s.backup-%s", statePath, timestamp)
 
-	if err := os.WriteFile(backupPath, data, 0644); err != nil {
+	if err := os.WriteFile(backupPath, data, 0600); err != nil {
 		return fmt.Errorf("failed to write backup file: %w", err)
 	}
 
@@ -947,7 +947,7 @@ func (sm *StateManager) RestoreStateFromBackup() error {
 
 	// Write to state file
 	statePath := sm.GetStatePath()
-	if err := os.WriteFile(statePath, data, 0644); err != nil {
+	if err := os.WriteFile(statePath, data, 0600); err != nil {
 		return fmt.Errorf("failed to restore state file: %w", err)
 	}
 
