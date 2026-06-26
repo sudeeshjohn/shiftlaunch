@@ -1,0 +1,47 @@
+name: Upload Release Asset
+
+on:
+  release:
+    types: [published] # Triggers when you click "Publish release" in the GitHub UI
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-upload:
+    name: Build and Attach Binaries
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Compile AMD64 (x86_64) Binary
+        run: |
+          echo "==> Building native (amd64) binary via Makefile..."
+          make build
+          # Rename the output so it's clearly marked as amd64
+          mv bin/shiftlaunch bin/shiftlaunch-linux-amd64
+          echo "==> Compressing amd64 artifact..."
+          tar -czvf shiftlaunch-linux-amd64.tar.gz -C bin shiftlaunch-linux-amd64
+
+      - name: Compile PPC64LE Binary
+        run: |
+          echo "==> Cross-compiling ppc64le binary via Makefile..."
+          make build-ppc64le
+          echo "==> Compressing ppc64le artifact..."
+          tar -czvf shiftlaunch-linux-ppc64le.tar.gz -C bin shiftlaunch-linux-ppc64le
+
+      - name: Upload Artifacts to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # Pipe symbol (|) allows us to list multiple files to upload
+          files: |
+            shiftlaunch-linux-amd64.tar.gz
+            shiftlaunch-linux-ppc64le.tar.gz
