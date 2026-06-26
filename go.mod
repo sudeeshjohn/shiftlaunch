@@ -1,4 +1,4 @@
-module github.ibm.com/sudeeshjohn/shiftlaunch
+module github.com/IBM/shiftlaunch
 
 go 1.26.2
 
@@ -8,9 +8,9 @@ require (
 )
 
 require (
+	github.com/IBM/infra-go-sdk v0.0.0-20260626121933-c8707cdac649
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
-	github.ibm.com/sudeeshjohn/infra-go-sdk v0.0.0-20260603084000-d86292f0260f
 	go.yaml.in/yaml/v3 v3.0.4
 )
 
