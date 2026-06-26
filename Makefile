@@ -6,10 +6,15 @@ APP_NAME := shiftlaunch
 MAIN_FILE := main.go
 BUILD_DIR := bin
 
+# Automatically determine the version based on the latest Git tag
+# If not in a git repo or no tags exist, fallback to "dev"
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+
 # Go build flags
 # -s: Disable symbol table
 # -w: Disable DWARF generation (reduces binary size)
-LDFLAGS := -s -w
+# -X: Injects the dynamically discovered Git tag into the cmd.version variable
+LDFLAGS := -s -w -X github.com/IBM/shiftlaunch/cmd.version=$(VERSION)
 
 .PHONY: all build build-linux-ppc64le clean install test vet fmt help
 

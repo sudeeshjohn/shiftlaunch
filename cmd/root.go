@@ -20,7 +20,9 @@ import (
 	"github.com/IBM/shiftlaunch/types"
 )
 
-const version = "0.3.0-byoi-agent"
+// version is dynamically injected via ldflags at compile time.
+// "dev-build" is the fallback if someone builds it without the Makefile.
+var version = "dev-build"
 
 var (
 	// Global flags
