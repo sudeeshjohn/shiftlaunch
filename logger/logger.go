@@ -32,14 +32,11 @@ func New(debug bool, logPath string) (*Logger, error) {
 		if err == nil && file != nil {
 			// Create file logger (colors will be auto-disabled for file)
 			fileOpts := log.Options{
-				ReportTimestamp: true,
-				Prefix:          "ShiftLaunch",
-			}
-			if debug {
-				fileOpts.Level = log.DebugLevel
-			} else {
-				fileOpts.Level = log.InfoLevel
-			}
+					ReportTimestamp: true,
+					Prefix:          "ShiftLaunch",
+					// File always captures full debug — the debug flag only gates the terminal.
+					Level: log.DebugLevel,
+				}
 			fileLogger = log.NewWithOptions(file, fileOpts)
 		}
 	}

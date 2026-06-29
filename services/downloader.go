@@ -60,8 +60,8 @@ func (d *Downloader) DownloadRHCOSImages(ctx context.Context, workspaceDir strin
 	urls := d.cfg.OpenShift.RHCOSImages
 	timeout := d.daemonCfg.Timeouts.DownloadTimeoutSec // Get timeout from config
 
-	// Note: Checksum validation is optional and not configured in the new config structure
-	// Files will be downloaded without integrity verification unless checksums are added to config
+	// Manifest path for checksum verification (populated when ChecksumURL is configured)
+	manifestPath := filepath.Join(workspaceDir, "rhcos", "sha256sum.txt")
 
 	images := []struct {
 		url      string
@@ -78,7 +78,9 @@ func (d *Downloader) DownloadRHCOSImages(ctx context.Context, workspaceDir strin
 			return fmt.Errorf("%s URL not provided in configuration", img.desc)
 		}
 		destPath := filepath.Join(rhcosDir, img.filename)
-		expectedHash := "" // Checksum validation disabled in new config structure
+
+		// Attempt to resolve the expected hash from the manifest; fall back gracefully.
+		expectedHash, _ := d.extractHashFromManifest(ctx, img.url, manifestPath)
 
 		// 3. Conditional Flow based on checksum availability and force_ocp_download flag
 		forceDownload := d.cfg.OpenShift.ForceOCPDownload
@@ -97,13 +99,11 @@ func (d *Downloader) DownloadRHCOSImages(ctx context.Context, workspaceDir strin
 					d.logger.Warn("Checksum mismatch. Wiping corrupted file and re-downloading...", "image", img.desc)
 					d.exec.Execute(ctx, fmt.Sprintf("rm -f %s", destPath))
 				}
-			} else {
-				checkCmd := fmt.Sprintf("test -s %s", destPath)
-				if _, err := d.exec.Execute(ctx, checkCmd); err == nil {
-					d.logger.Info("File already exists, skipping download (no checksum validation)", "image", img.desc)
-					continue
-				}
 			}
+			// No checksum available: always run curl. curl -C - (resume) will issue a
+			// range request and exit 0 immediately if the file is already complete,
+			// but will resume and finish a truncated partial download rather than
+			// silently accepting a corrupted file left behind by a previous Ctrl+C.
 		}
 
 		// 4. Download the file
@@ -181,8 +181,8 @@ func (d *Downloader) DownloadOpenShiftTools(ctx context.Context, workspaceDir st
 			continue
 		}
 		destPath := filepath.Join(toolsDir, tool.filename)
-		// Checksum validation disabled in new config structure
-		expectedHash := ""
+		// Attempt to resolve the expected hash from the manifest downloaded above.
+		expectedHash, _ := d.extractHashFromManifest(ctx, tool.url, manifestPath)
 
 		forceDownload := d.cfg.OpenShift.ForceOCPDownload
 
@@ -200,13 +200,10 @@ func (d *Downloader) DownloadOpenShiftTools(ctx context.Context, workspaceDir st
 					d.logger.Warn("Checksum mismatch. Wiping corrupted file and re-downloading...", "tool", tool.desc)
 					d.exec.Execute(ctx, fmt.Sprintf("rm -f %s", destPath))
 				}
-			} else {
-				checkCmd := fmt.Sprintf("test -s %s", destPath)
-				if _, err := d.exec.Execute(ctx, checkCmd); err == nil {
-					d.logger.Info("File already exists, skipping download (no checksum validation)", "tool", tool.desc)
-					continue
-				}
 			}
+			// No checksum available: always run curl. curl -C - (resume) will exit 0
+			// immediately if the file is already complete, and will resume a partial
+			// download rather than accepting a truncated file from a prior Ctrl+C.
 		}
 
 		// 4. Download
