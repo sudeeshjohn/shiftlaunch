@@ -5,9 +5,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/spf13/cobra"
 	"github.com/IBM/shiftlaunch/config"
 	"github.com/IBM/shiftlaunch/logger"
+	"github.com/spf13/cobra"
 )
 
 var pruneCmd = &cobra.Command{

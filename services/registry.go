@@ -157,7 +157,7 @@ func (r *RegistryManager) Setup(ctx context.Context, workspaceDir string) error 
 	// 5 & 6. Smart Registry Detection & Reuse
 	r.logger.Debug("Checking if port 5000 is already hosting a valid registry...")
 	verifyCmd := fmt.Sprintf("env HTTP_PROXY='' HTTPS_PROXY='' http_proxy='' https_proxy='' curl -s -o /dev/null -w '%%{http_code}' --connect-timeout 3 -u %s:%s -k https://%s:5000/v2/", username, password, r.cfg.Network.ControllerIP)
-	
+
 	httpCode, _ := r.executor.Execute(shieldedCtx, verifyCmd)
 	httpCode = strings.TrimSpace(httpCode)
 
@@ -364,7 +364,7 @@ mirror:
 		if strings.TrimSpace(out) == "" {
 			break // Port is free, we can proceed!
 		}
-		
+
 		// ZOMBIE CHECK: If we are stuck in the queue for 30 seconds, it might be an orphaned registry child process from a previous crash.
 		if i == 3 {
 			r.logger.Info("Port 55000 is stuck. Hunting for zombie ephemeral registries...")
