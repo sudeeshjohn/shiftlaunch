@@ -510,136 +510,136 @@ func runScale(cmd *cobra.Command, args []string) error {
 		if cfg.Nodes.BootMethod == "agent" {
 			log.StartPhase("Compiling transient nodes-config.yaml manifest matching native Red Hat spec...")
 			_, ipNet, err := net.ParseCIDR(cfg.Network.MachineCIDR)
-		prefixLen := 24
-		if err == nil {
-			prefixLen, _ = ipNet.Mask.Size()
-		}
+			prefixLen := 24
+			if err == nil {
+				prefixLen, _ = ipNet.Mask.Size()
+			}
 
-		dnsServer := cfg.Services.DNS.GetExternal()
-		if cfg.Services.DNS.IsManaged() {
-			dnsServer = cfg.Network.ControllerIP
-		}
+			dnsServer := cfg.Services.DNS.GetExternal()
+			if cfg.Services.DNS.IsManaged() {
+				dnsServer = cfg.Network.ControllerIP
+			}
 
-		var day2Config Day2NodesConfig
-		for _, worker := range pendingBoot {
-			nodeMac := ""
-			for _, discovered := range state.DiscoveredNodes {
-				if discovered.Hostname == worker.Hostname {
-					nodeMac = discovered.MACAddress
-					break
+			var day2Config Day2NodesConfig
+			for _, worker := range pendingBoot {
+				nodeMac := ""
+				for _, discovered := range state.DiscoveredNodes {
+					if discovered.Hostname == worker.Hostname {
+						nodeMac = discovered.MACAddress
+						break
+					}
 				}
-			}
 
-			hostEntry := Day2Host{
-				Hostname: worker.Hostname,
-				RootDeviceHints: Day2DeviceHints{
-					DeviceName: daemonCfg.Paths.InstallDevice,
-				},
-			}
-
-			netInterface := Day2NetInterface{
-				Name:       "env2",
-				Type:       "ethernet",
-				State:      "up",
-				MacAddress: nodeMac,
-			}
-			netInterface.Ipv4 = Day2Ipv4{
-				Enabled: true,
-				Dhcp:    false,
-				Address: []Day2Addr{
-					{IP: worker.IP, PrefixLength: prefixLen},
-				},
-			}
-			netInterface.Ipv6 = Day2Ipv6{
-				Enabled: false,
-			}
-
-			hostEntry.Interfaces = []Day2Interface{
-				{MacAddress: nodeMac, Name: "env2"},
-			}
-			hostEntry.NetworkConfig.Interfaces = []Day2NetInterface{netInterface}
-
-			if dnsServer != "" {
-				hostEntry.NetworkConfig.DNSResolver = &Day2DNSResolver{
-					Config: Day2DNSConfig{
-						Server: []string{dnsServer},
+				hostEntry := Day2Host{
+					Hostname: worker.Hostname,
+					RootDeviceHints: Day2DeviceHints{
+						DeviceName: daemonCfg.Paths.InstallDevice,
 					},
 				}
-			}
 
-			if cfg.Network.Gateway != "" {
-				hostEntry.NetworkConfig.Routes = &Day2Routes{
-					Config: []Day2RouteConfig{
-						{
-							Destination:      "0.0.0.0/0",
-							NextHopAddress:   cfg.Network.Gateway,
-							NextHopInterface: "env2",
+				netInterface := Day2NetInterface{
+					Name:       "env2",
+					Type:       "ethernet",
+					State:      "up",
+					MacAddress: nodeMac,
+				}
+				netInterface.Ipv4 = Day2Ipv4{
+					Enabled: true,
+					Dhcp:    false,
+					Address: []Day2Addr{
+						{IP: worker.IP, PrefixLength: prefixLen},
+					},
+				}
+				netInterface.Ipv6 = Day2Ipv6{
+					Enabled: false,
+				}
+
+				hostEntry.Interfaces = []Day2Interface{
+					{MacAddress: nodeMac, Name: "env2"},
+				}
+				hostEntry.NetworkConfig.Interfaces = []Day2NetInterface{netInterface}
+
+				if dnsServer != "" {
+					hostEntry.NetworkConfig.DNSResolver = &Day2DNSResolver{
+						Config: Day2DNSConfig{
+							Server: []string{dnsServer},
 						},
-					},
+					}
+				}
+
+				if cfg.Network.Gateway != "" {
+					hostEntry.NetworkConfig.Routes = &Day2Routes{
+						Config: []Day2RouteConfig{
+							{
+								Destination:      "0.0.0.0/0",
+								NextHopAddress:   cfg.Network.Gateway,
+								NextHopInterface: "env2",
+							},
+						},
+					}
+				}
+
+				day2Config.Hosts = append(day2Config.Hosts, hostEntry)
+			}
+
+			tempYAMLPath := filepath.Join(installDir, "nodes-config.yaml")
+			yamlBytes, err := yaml.Marshal(day2Config)
+			if err != nil {
+				log.EndPhase(false, "YAML serialization failed")
+				return fmt.Errorf("failed to compile transient nodes-config manifest: %w", err)
+			}
+			if err := os.WriteFile(tempYAMLPath, yamlBytes, 0644); err != nil {
+				log.EndPhase(false, "File system write operation failed")
+				return fmt.Errorf("failed to save transient nodes-config manifest to disk: %w", err)
+			}
+
+			timestamp := time.Now().Format("20060102-150405")
+			yamlBackupPath := filepath.Join(installDir, fmt.Sprintf("nodes-config.yaml.backup.%s", timestamp))
+			if writeErr := os.WriteFile(yamlBackupPath, yamlBytes, 0644); writeErr != nil {
+				log.Warn("Failed to create a historical backup of nodes-config.yaml", "error", writeErr)
+			} else {
+				log.Info("Successfully archived nodes-config manifest backup", "path", yamlBackupPath)
+			}
+			log.EndPhase(true, "Transient scaling manifest generated and archived successfully")
+
+			// 8. Invoke native OpenShift CLI tool to generate the custom Day-2 ISO payload
+			existingIsoPath := filepath.Join(installDir, "agent.ppc64le.iso")
+			if _, err := os.Stat(existingIsoPath); err == nil {
+				isoBackupPath := filepath.Join(installDir, fmt.Sprintf("agent.ppc64le.iso.backup.%s", timestamp))
+				log.Debug("Backing up previous deployment/scale ISO asset...", "path", isoBackupPath)
+				if renameErr := os.Rename(existingIsoPath, isoBackupPath); renameErr != nil {
+					log.Warn("Failed to safely backup existing ISO. Proceeding will overwrite it.", "error", renameErr)
 				}
 			}
 
-			day2Config.Hosts = append(day2Config.Hosts, hostEntry)
-		}
+			log.StartPhase("Invoking native OpenShift CLI to compile specialized node installer ISO...")
 
-		tempYAMLPath := filepath.Join(installDir, "nodes-config.yaml")
-		yamlBytes, err := yaml.Marshal(day2Config)
-		if err != nil {
-			log.EndPhase(false, "YAML serialization failed")
-			return fmt.Errorf("failed to compile transient nodes-config manifest: %w", err)
-		}
-		if err := os.WriteFile(tempYAMLPath, yamlBytes, 0644); err != nil {
-			log.EndPhase(false, "File system write operation failed")
-			return fmt.Errorf("failed to save transient nodes-config manifest to disk: %w", err)
-		}
-
-		timestamp := time.Now().Format("20060102-150405")
-		yamlBackupPath := filepath.Join(installDir, fmt.Sprintf("nodes-config.yaml.backup.%s", timestamp))
-		if writeErr := os.WriteFile(yamlBackupPath, yamlBytes, 0644); writeErr != nil {
-			log.Warn("Failed to create a historical backup of nodes-config.yaml", "error", writeErr)
-		} else {
-			log.Info("Successfully archived nodes-config manifest backup", "path", yamlBackupPath)
-		}
-		log.EndPhase(true, "Transient scaling manifest generated and archived successfully")
-
-		// 8. Invoke native OpenShift CLI tool to generate the custom Day-2 ISO payload
-		existingIsoPath := filepath.Join(installDir, "agent.ppc64le.iso")
-		if _, err := os.Stat(existingIsoPath); err == nil {
-			isoBackupPath := filepath.Join(installDir, fmt.Sprintf("agent.ppc64le.iso.backup.%s", timestamp))
-			log.Debug("Backing up previous deployment/scale ISO asset...", "path", isoBackupPath)
-			if renameErr := os.Rename(existingIsoPath, isoBackupPath); renameErr != nil {
-				log.Warn("Failed to safely backup existing ISO. Proceeding will overwrite it.", "error", renameErr)
+			//  Use the updated pull secret for Day-2 ISO compilation so it can authenticate to the local registry!
+			// Fix: Use the original deployment 'cfg' to guarantee we catch the registry state
+			pullSecretPath := cfg.OpenShift.PullSecretFile
+			if cfg.Network.IsolationLevel == "air-gapped" && cfg.Services.Registry.IsManaged() {
+				updatedSecretPath := filepath.Join(workspaceDir, "pull-secret-updated.json")
+				if _, err := os.Stat(updatedSecretPath); err == nil {
+					pullSecretPath = updatedSecretPath
+					log.Debug("Airgap mode detected: Using updated pull secret for local registry authentication")
+				}
 			}
-		}
 
-		log.StartPhase("Invoking native OpenShift CLI to compile specialized node installer ISO...")
+			isoCmd := exec.CommandContext(ctx, ocPath, "adm", "node-image", "create", "--dir", installDir, "--registry-config", pullSecretPath)
+			isoCmd.Env = append(os.Environ(), "KUBECONFIG="+kubeconfigPath)
 
-		//  Use the updated pull secret for Day-2 ISO compilation so it can authenticate to the local registry!
-		// Fix: Use the original deployment 'cfg' to guarantee we catch the registry state
-		pullSecretPath := cfg.OpenShift.PullSecretFile
-		if cfg.Network.IsolationLevel == "air-gapped" && cfg.Services.Registry.IsManaged() {
-			updatedSecretPath := filepath.Join(workspaceDir, "pull-secret-updated.json")
-			if _, err := os.Stat(updatedSecretPath); err == nil {
-				pullSecretPath = updatedSecretPath
-				log.Debug("Airgap mode detected: Using updated pull secret for local registry authentication")
+			if out, err := isoCmd.CombinedOutput(); err != nil {
+				log.EndPhase(false, "OpenShift node image compilation threw an unexpected exception")
+				return fmt.Errorf("node image compilation failed: %w\noutput: %s\n\ncritical hint: the initial KUBECONFIG created during deployment expires after 24 hours; if your cluster is older than a day, you must replace '%s' with a fresh cluster-admin kubeconfig to scale", err, string(out), kubeconfigPath)
 			}
-		}
 
-		isoCmd := exec.CommandContext(ctx, ocPath, "adm", "node-image", "create", "--dir", installDir, "--registry-config", pullSecretPath)
-		isoCmd.Env = append(os.Environ(), "KUBECONFIG="+kubeconfigPath)
-
-		if out, err := isoCmd.CombinedOutput(); err != nil {
-			log.EndPhase(false, "OpenShift node image compilation threw an unexpected exception")
-			return fmt.Errorf("node image compilation failed: %w\noutput: %s\n\ncritical hint: the initial KUBECONFIG created during deployment expires after 24 hours; if your cluster is older than a day, you must replace '%s' with a fresh cluster-admin kubeconfig to scale", err, string(out), kubeconfigPath)
-		}
-
-		generatedIso := filepath.Join(installDir, "node.ppc64le.iso")
-		runtimeIso := filepath.Join(installDir, "agent.ppc64le.iso")
-		if _, err := os.Stat(generatedIso); err == nil {
-			if _, cpErr := localExec.Execute(ctx, fmt.Sprintf("sudo mv %s %s", generatedIso, runtimeIso)); cpErr != nil {
-				log.Warn("Failed to rename node ISO to agent ISO", "error", cpErr)
+			generatedIso := filepath.Join(installDir, "node.ppc64le.iso")
+			runtimeIso := filepath.Join(installDir, "agent.ppc64le.iso")
+			if _, err := os.Stat(generatedIso); err == nil {
+				if _, cpErr := localExec.Execute(ctx, fmt.Sprintf("sudo mv %s %s", generatedIso, runtimeIso)); cpErr != nil {
+					log.Warn("Failed to rename node ISO to agent ISO", "error", cpErr)
+				}
 			}
-		}
 
 			_ = os.Remove(tempYAMLPath)
 			log.EndPhase(true, "Target configuration nodes injected directly into custom asset ISO payload")
@@ -783,3 +783,4 @@ func contains(slice []string, item string) bool {
 	}
 	return false
 }
+

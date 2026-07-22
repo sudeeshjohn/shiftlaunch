@@ -641,10 +641,10 @@ func (v *Validator) validateLocalEnvironment(ctx context.Context) {
 			}
 		}
 	}
-	
+
 	if v.cfg.Services.DNS.IsManaged() {
 		ctrlIP := v.cfg.Network.ControllerIP
-		
+
 		if _, err := v.exec.Execute(ctx, fmt.Sprintf("sudo ss -ulpn | grep -E '(0\\.0\\.0\\.0|\\*|\\[::\\]|%s):53 ' | grep -v -i 'dnsmasq'", ctrlIP)); err == nil {
 			v.errors = append(v.errors, "PORT COLLISION: Local UDP port 53 is already bound globally or to the controller IP by a non-dnsmasq process. The managed DNS service will fail to start.")
 		}
@@ -652,17 +652,17 @@ func (v *Validator) validateLocalEnvironment(ctx context.Context) {
 			v.errors = append(v.errors, "PORT COLLISION: Local TCP port 53 is already bound globally or to the controller IP by a non-dnsmasq process. The managed DNS service will fail to start.")
 		}
 	}
-	
+
 	if v.cfg.Network.IsolationLevel == "air-gapped" && v.cfg.Services.Registry.IsManaged() {
 		ctrlIP := v.cfg.Network.ControllerIP
 		// 1. Check if port 5000 is bound to our IP or globally
 		if _, err := v.exec.Execute(ctx, fmt.Sprintf("sudo ss -tlpn | grep -E '(0\\.0\\.0\\.0|\\*|\\[::\\]|%s):5000 '", ctrlIP)); err == nil {
-			
+
 			// 2. Port is bound. Ask the port if it's our multi-tenant registry!
 			user := v.cfg.Services.Registry.GetUser()
 			pass := v.cfg.Services.Registry.GetPass()
 			verifyCmd := fmt.Sprintf("env HTTP_PROXY='' HTTPS_PROXY='' http_proxy='' https_proxy='' curl -s -o /dev/null -w '%%{http_code}' --connect-timeout 3 -u %s:%s -k https://%s:5000/v2/", user, pass, ctrlIP)
-			
+
 			httpCode, _ := v.exec.Execute(ctx, verifyCmd)
 			if strings.TrimSpace(httpCode) != "200" {
 				v.errors = append(v.errors, "PORT COLLISION: Local TCP port 5000 is already bound by an unknown process (or multi-tenant registry authentication failed). The managed container registry will fail to start.")
@@ -1114,3 +1114,4 @@ func (v *Validator) validateNodeIPsNotAlive(ctx context.Context) {
 	// Add all collected errors to validator errors
 	v.errors = append(v.errors, conflictErrors...)
 }
+

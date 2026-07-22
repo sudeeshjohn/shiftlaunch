@@ -1,49 +1,90 @@
-# ShiftLaunch 🚀
+# ShiftLaunch
 
-ShiftLaunch is a turnkey, zero-to-cluster local orchestration agent designed to automate the deployment of Red Hat OpenShift clusters on IBM Power Systems (`ppc64le`). By bridging the gap between local infrastructure services (DNS, DHCP, HAProxy) and IBM's Hardware Management Console (HMC), ShiftLaunch provides a seamless, Docker-like CLI experience for deploying, scaling, and managing OpenShift clusters on Power hardware.
+ShiftLaunch is a turnkey orchestration agent for deploying Red Hat OpenShift clusters on IBM Power Systems (`ppc64le`). It bridges local infrastructure services (DNS, DHCP, HAProxy) with IBM's Hardware Management Console (HMC) REST API, providing a Docker-like CLI experience for the full cluster lifecycle: deploy, scale, and teardown.
 
-## ✨ Key Features
+## Table of Contents
 
-* **Infrastructure as Code:** Automatically configures local `dnsmasq`, `haproxy`, `squid`, and `podman` registries based on a single `config.yaml`
-* **Intelligent HMC Orchestration:** Interacts directly with the IBM HMC REST API to discover LPARs, mount Virtual Optical Media (ISO) via NFS to the VIOS, and automate boot sequences
-* **Airgap & Disconnected Support:** Built-in `oc-mirror` v2 integration to automatically stand up local container registries and mirror OpenShift payloads for fully disconnected deployments
-* **Idempotent Auto-Resume:** Tracks deployment phases in a local `state.json`. If a network drop or crash occurs, ShiftLaunch resumes exactly where it left off without duplicating work
-* **Day-2 Scaling:** Seamlessly scale clusters by appending worker nodes to your config and running `shiftlaunch scale`
-* **BYOI (Bring Your Own Infrastructure):** Use your existing enterprise Load Balancers, DNS, DHCP, or let ShiftLaunch manage them locally
+- [Key Features](#key-features)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Command Reference](#command-reference)
+- [Architecture Overview](#architecture-overview)
+- [Prerequisites](#prerequisites)
+- [Bring Your Own Infrastructure (BYOI)](#bring-your-own-infrastructure-byoi)
+- [Disconnected and Airgapped Deployments](#disconnected-and-airgapped-deployments)
+- [State Management and Idempotency](#state-management-and-idempotency)
+- [Safe Teardown Lifecycle](#safe-teardown-lifecycle)
+- [Example Configurations](#example-configurations)
+- [Troubleshooting](#troubleshooting)
+- [Authors](#authors)
+- [License](#license)
 
-## 📦 Installation
+---
 
-ShiftLaunch is written in Go and cross-compiles easily.
+## Key Features
+
+- **Infrastructure as Code** — Automatically configures local `dnsmasq`, `haproxy`, `squid`, and `podman` registries from a single `config.yaml`.
+- **Intelligent HMC Orchestration** — Interacts with the IBM HMC REST API to discover LPARs, mount Virtual Optical Media (ISO) via NFS to the VIOS, and automate boot sequences.
+- **Airgap and Disconnected Support** — Built-in `oc-mirror` v2 integration to stand up local container registries and mirror OpenShift payloads for fully disconnected deployments.
+- **Idempotent Auto-Resume** — Tracks deployment phases in `state.json`. If a crash or network drop occurs, ShiftLaunch resumes at the failed phase without repeating completed work.
+- **Day-2 Scaling** — Append worker nodes to your config and run `shiftlaunch scale` to grow an existing cluster.
+- **BYOI (Bring Your Own Infrastructure)** — Use existing enterprise load balancers, DNS, and DHCP, or let ShiftLaunch manage them locally.
+
+---
+
+## Installation
+
+### Download a Pre-Built Binary
+
+1. Go to the [releases page](https://github.ibm.com/sudeeshjohn/shiftlaunch/releases).
+2. Download the binary for your platform under the **Assets** section.
+3. Install it:
 
 ```bash
-# Clone the repository
+# Make executable (Linux/macOS)
+chmod +x shiftlaunch
+
+# Move to PATH
+sudo mv shiftlaunch /usr/local/bin/
+
+# Verify
+shiftlaunch --help
+```
+
+### Build from Source
+
+Requires **Go 1.22+**. ShiftLaunch cross-compiles without CGO.
+
+```bash
 git clone https://github.ibm.com/sudeeshjohn/shiftlaunch.git
 cd shiftlaunch
 
-# Build and install (requires Go 1.26+)
 make build
 make install
 ```
 
-**Note:** To cross-compile for an IBM Power System from a Mac/Windows machine, run `make build-ppc64le`.
+> **Cross-compiling for IBM Power from macOS or Windows:**
+> ```bash
+> make build-ppc64le
+> ```
 
-## 🚀 Quick Start
+---
 
-### 1. Generate a Configuration Template
+## Quick Start
 
-Create a starter YAML file tailored to your environment.
+### 1. Generate a Configuration File
 
 ```bash
-# For a standard connected, Agent-boot cluster:
+# Standard connected cluster using the Agent-based installer
 shiftlaunch generate-config -t multi -b agent -o my-cluster.yaml
 
-# For a fully airgapped, netboot cluster:
+# Fully airgapped cluster using network boot
 shiftlaunch generate-config -t multi -b netboot --disconnected -o my-cluster.yaml
 ```
 
 ### 2. Validate Your Infrastructure
 
-Run pre-flight checks against your network, disk space, and HMC to ensure readiness.
+Run pre-flight checks against your network, disk space, and HMC before deploying.
 
 ```bash
 shiftlaunch validate --config my-cluster.yaml
@@ -51,206 +92,251 @@ shiftlaunch validate --config my-cluster.yaml
 
 ### 3. Deploy the Cluster
 
-Execute the orchestration pipeline.
-
 ```bash
 shiftlaunch create --config my-cluster.yaml
 ```
 
-### 4. Monitor Status
+If the deployment is interrupted, re-running this command resumes from the last failed phase.
 
-Watch the deployment status and retrieve your cluster credentials.
+### 4. Monitor Progress
 
 ```bash
+# Stream live deployment logs
+shiftlaunch logs -f --cluster my-cluster
+
+# Check status and retrieve credentials
 shiftlaunch status --cluster my-cluster
 ```
 
-## 🛠️ Command Reference
+---
+
+## Command Reference
+
+### Core Commands
 
 | Command | Description |
 |---------|-------------|
-| **Core Commands:** | |
-| `create` | Execute the cluster deployment pipeline (auto-resumes if failed) |
-| `scale` | Scale an existing cluster by adding new worker nodes |
-| `remove` / `delete` | Power off LPARs and cleanly remove local services and configurations |
-| `list` | List all active managed clusters in the workspace |
-| `status` / `info` | Show cluster endpoints, credentials, and deployment phase |
-| `logs` | Fetch or stream (`-f`) the deployment logs |
-| `prune` | Permanently reclaim disk space from deleted cluster workspaces |
-| **Utility Commands:** | |
-| `validate` | Run pre-flight validation against YAML and HMC infrastructure |
-| `generate-config` | Create a starter config.yaml based on target topology |
-| `service-configs` | Dump external unmanaged service configurations for network admins |
-| `export kubeconfig` | Export cluster kubeconfig to your local environment |
-| `oc` | Wrapper to execute oc commands safely against a specific managed cluster |
+| `create` | Run the cluster deployment pipeline; auto-resumes from the last failed phase |
+| `scale` | Add new worker nodes to an existing cluster |
+| `remove` / `delete` | Power off LPARs and remove all local service configurations |
+| `list` | List all managed clusters in the workspace |
+| `status` / `info` | Show cluster endpoints, credentials, and current deployment phase |
+| `logs` | Fetch or stream (`-f`) deployment logs |
+| `prune` | Reclaim disk space from clusters marked as deleted |
 
-## 🏗️ Architecture Overview
+### Utility Commands
+
+| Command | Description |
+|---------|-------------|
+| `validate` | Run pre-flight checks against `config.yaml` and HMC infrastructure |
+| `generate-config` | Generate a starter `config.yaml` for a given topology |
+| `service-configs` | Print external service configurations for network admins |
+| `export kubeconfig` | Write the cluster `kubeconfig` to your local environment |
+| `oc` | Run `oc` commands scoped to a specific managed cluster |
+
+---
+
+## Architecture Overview
 
 ### Boot Methods
 
-ShiftLaunch supports two distinct boot mechanisms:
+ShiftLaunch supports two boot mechanisms. Agent-based is recommended for most deployments.
 
-#### 1. Agent-based Installer (Recommended for Production)
+#### Agent-Based Installer (Recommended)
 
-- ✅ **Simplified Deployment**: Single ISO contains all installation artifacts
-- ✅ **No DHCP/PXE Required**: Eliminates network boot complexity (uses static IPs via NMState)
-- ✅ **NFS-Based**: ISO served via NFS from the controller directly to the VIOS
-- ✅ **Better for Disconnected**: All artifacts can be embedded in the ISO
-- ✅ **Automatic Cleanup**: ISO mappings and NFS exports are removed after installation
+- Single ISO contains all installation artifacts — no separate PXE or DHCP server required.
+- Static IPs are applied via NMState, removing dependency on network-side DHCP.
+- ISO is served over NFS from the controller directly to the VIOS.
+- All artifacts can be embedded in the ISO for fully disconnected deployments.
+- ISO mappings and NFS exports are removed automatically after installation completes.
 
-#### 2. User Provisioned Infrastructure (UPI / PXE Boot)
+#### User Provisioned Infrastructure (UPI / Network Boot)
 
-- ✅ **Standard PXE Workflow**: Traditional UPI boot method
-- ✅ **HMC REST API**: Automated netboot using IBM's Hardware Management Console
-- ✅ **DHCP/TFTP/HTTP**: Full network boot stack managed locally
-- ✅ **MAC-Based Config**: Automated, per-node GRUB configurations
+- Traditional PXE-based UPI workflow.
+- Automated netboot triggered via the HMC REST API.
+- Full network boot stack (DHCP, TFTP, HTTP) managed locally by ShiftLaunch.
+- Per-node GRUB configurations generated automatically from MAC addresses.
+- Requires one extra bootstrap LPAR that ShiftLaunch removes after the control plane is healthy.
 
 ### Network Isolation Topologies
 
-ShiftLaunch natively supports three enterprise network boundaries:
-
-* **Connected (`connected`):** Nodes have direct outbound internet access
-* **Soft Disconnected (`restricted-network`):** Nodes are isolated but reach the internet exclusively through a proxy. ShiftLaunch can build a local `squid` proxy or route through a corporate gateway
-* **Fully Disconnected (`air-gapped`):** Strict airgap. The controller strips all proxy shell variables. It dynamically generates a local `podman` container registry, provisions SSL certificates, and utilizes `oc-mirror` v2 to sync the OpenShift release payload
+| Mode | Key ID | Behavior |
+|------|--------|----------|
+| Connected | `connected` | Nodes pull directly from `quay.io` |
+| Restricted Network | `restricted-network` | Nodes are isolated; traffic exits through a local Squid proxy or corporate gateway |
+| Air-Gapped | `air-gapped` | Strict isolation. All proxy variables are scrubbed. A local Podman registry is created and seeded via `oc-mirror` v2 |
 
 ### Single VIP Architecture
 
-- **One IP per Cluster**: Replaces the traditional dual VIP (API + Ingress) approach
-- **Port-Based Routing**: HAProxy routes traffic via Layer 4 TCP based strictly on ports (6443 for API, 22623 for Machine Config, 80/443 for Ingress)
-- **Simplified DNS**: All DNS records (api, api-int, *.apps) point to a single VIP
+ShiftLaunch uses one IP address per cluster instead of the traditional split API + Ingress VIP pair.
 
-## 📋 Prerequisites
+- HAProxy routes Layer 4 TCP traffic by port: `6443` (API), `22623` (Machine Config), `80`/`443` (Ingress).
+- All DNS records (`api`, `api-int`, `*.apps`) resolve to the single VIP.
+- The VIP is aliased to the controller's network interface and unbound cleanly on `delete`.
 
-### Infrastructure Requirements
+---
 
-1. **Additional IP Address (VIP)**
-   - One dedicated IP address per cluster for the Load Balancer VIP
-   - This IP will be aliased to the controller's network interface
-   - Must be in the same subnet as your cluster nodes
+## Prerequisites
 
-2. **IBM Power LPARs**
+### Infrastructure
 
-   The number of LPARs required depends on your deployment type:
+**1. Load Balancer VIP**
 
-   | Deployment Type | Boot Method | Minimum LPARs Required | Configuration |
-   |-----------------|-------------|------------------------|---------------|
-   | **Single Node OpenShift (SNO)** | ISO or Netboot | **1** | 1 Master (combined control plane + worker) |
-   | **Multi-Node (Agent ISO)** | ISO | **5** | 3 Masters + 2 Workers |
-   | **Multi-Node (Network Boot)** | Netboot | **6** | 1 Bootstrap + 3 Masters + 2 Workers |
+One dedicated IP address per cluster, in the same subnet as the cluster nodes. ShiftLaunch aliases this IP to the controller interface at deploy time.
 
-   > **Note:** Network Boot requires an additional bootstrap node that is automatically removed after the cluster installation completes.
+**2. IBM Power LPARs**
 
-3. **Controller Node**
-   - RHEL 9/10 or CentOS 9/10
-   - Network connectivity to HMC and cluster nodes
-   - Sufficient disk space for OpenShift artifacts (~10GB per cluster)
+| Deployment Type | Boot Method | Min LPARs | Node Layout |
+|-----------------|-------------|-----------|-------------|
+| Single Node OpenShift (SNO) | ISO or Netboot | 1 | 1 combined control-plane + worker |
+| Multi-Node | Agent ISO | 5 | 3 masters + 2 workers |
+| Multi-Node | Network Boot | 6 | 1 bootstrap + 3 masters + 2 workers |
+
+> The bootstrap node used in Network Boot deployments is removed automatically once the control plane reaches a healthy state.
+
+**3. Controller Node**
+
+- OS: RHEL 9/10 or CentOS Stream 9/10
+- Network access to HMC and all cluster nodes
+- Disk: ~10 GB for connected deployments; ~60 GB or more for airgapped deployments (RHCOS images + agent ISO + oc-mirror output)
 
 ### Supported Component Versions
 
-| Component | Supported Versions / Firmware |
-|-----------|-------------------------------|
-| **Controller Node (OS)** | RHEL 9/10, CentOS 9/10 |
-| **Hardware Management Console (HMC)** | V11R2 (Build Level: 2604091530, Service Pack: 1120)<br>V11R1 (Build Level: 2502191030, Service Pack: 1110)<br>V10R3 M1063 |
-| **IBM Power Systems (PowerFW)** | RB1120_fw1120.00<br>ML1060_fw1060.51 (148) |
-| **Virtual I/O Server (VIOS)** | 4.1.2.0<br>4.1.1.10 |
+| Component | Supported Versions |
+|-----------|--------------------|
+| Controller OS | RHEL 9/10, CentOS Stream 9/10 |
+| HMC | V11R2 (SP 1120, build 2604091530)<br>V11R1 (SP 1110, build 2502191030)<br>V10R3 M1063 |
+| IBM Power Firmware | RB1120_fw1120.00<br>ML1060_fw1060.51 (148) |
+| VIOS | 4.1.2.0, 4.1.1.10 |
 
-## 🔌 Bring Your Own Infrastructure (BYOI)
+---
 
-ShiftLaunch supports flexible infrastructure management through the `services` configuration block. You can choose to:
+## Bring Your Own Infrastructure (BYOI)
 
-1. **Fully Managed** - ShiftLaunch installs and manages all services locally on the controller (DNS, DHCP, PXE, HAProxy, NFS)
-2. **Partially Managed** - Mix and match locally managed services with your external enterprise services
-3. **BYOI Mode** - Disable all local services. Use your external F5 Load Balancers, InfoBlox DNS, and enterprise DHCP. ShiftLaunch will act purely as an orchestrator for HMC LPAR provisioning, Ignition generation, and installation monitoring
+The `services` block in `config.yaml` controls which services ShiftLaunch manages locally. Three operational models are supported:
 
-### Example: Fully Managed (ISO Boot)
+| Model | Description |
+|-------|-------------|
+| **Fully Managed** | ShiftLaunch installs and owns DNS, DHCP, PXE, HAProxy, and NFS on the controller |
+| **Partially Managed** | Mix local and external services as needed |
+| **BYOI** | All local services disabled; ShiftLaunch acts as a pure HMC orchestrator and installation monitor |
+
+### Example: Fully Managed (Agent ISO Boot)
 
 ```yaml
 services:
   dns:
     enabled: true
   dhcp:
-    enabled: false          # Not required for NMState-driven ISO boot
+    enabled: false        # Not needed for NMState-driven ISO boot
   pxe:
-    enabled: false          # Not required for ISO boot
+    enabled: false        # Not needed for ISO boot
   load_balancer:
     enabled: true
   nfs:
-    enabled: true           # Required to host Agent ISOs to the VIOS
+    enabled: true         # Required to host Agent ISOs on the VIOS
 ```
 
-### Example: BYOI Mode (Netboot)
+### Example: BYOI (Network Boot with Enterprise Services)
 
 ```yaml
 services:
   dns:
-    enabled: false          # Using enterprise InfoBlox
+    enabled: false        # Using enterprise InfoBlox
   dhcp:
-    enabled: false          # Using enterprise DHCP
+    enabled: false        # Using enterprise DHCP
   pxe:
-    enabled: false          # Using enterprise PXE server
+    enabled: false        # Using enterprise PXE server
   load_balancer:
-    enabled: false          # Using enterprise F5 Big-IP
+    enabled: false        # Using enterprise F5 BIG-IP
   nfs:
     enabled: false
 ```
 
-## 🌐 Disconnected & Airgapped Deployments
+---
 
-ShiftLaunch natively supports disconnected OpenShift deployments by spinning up a local Podman container registry and a Squid proxy gateway directly on the controller node.
+## Disconnected and Airgapped Deployments
 
-| Architecture | Behavior | Best For |
-|--------------|----------|----------|
-| **Standard** | Directly pulls from `quay.io`. No local registry or proxy. | Datacenters with open internet access |
-| **Corp Proxy** | Routes `quay.io` pulls through a local Squid proxy | Environments requiring strict egress filtering |
-| **Strict Airgap** | Creates local registry. Scrubs all host proxy variables. Nodes have **zero** outbound routing | Dark sites, defense, or highly secure financial environments |
-| **Soft Airgap** | Creates local registry **and** local proxy | Environments that use local payloads but still need to reach external NTP, LDAP, or third-party operators |
+ShiftLaunch can spin up a local Podman container registry and a Squid proxy on the controller to support environments with no or restricted outbound internet access.
 
-> **Note on CI Builds:** If you set `release_type: "ci"` in your configuration, ShiftLaunch will automatically inject a custom `MachineConfig` to bypass cryptographic signature validation, allowing you to boot raw nightly payloads.
+| Architecture | Behavior | Typical Use Case |
+|--------------|----------|-----------------|
+| Standard | Pulls directly from `quay.io` | Datacenters with open internet access |
+| Corp Proxy | Routes `quay.io` traffic through a local Squid proxy | Environments with enforced egress filtering |
+| Strict Airgap | Local registry only; all proxy variables are scrubbed from nodes | Dark sites, classified environments |
+| Soft Airgap | Local registry + local proxy | Sites that need local payloads but still reach external NTP, LDAP, or third-party operators |
 
-## 🔧 State Management and Idempotency
+> **CI / Nightly Builds:** Setting `release_type: "ci"` in your config causes ShiftLaunch to inject a `MachineConfig` that bypasses cryptographic signature validation. Use this only with trusted nightly payloads.
 
-Every deployment is tracked via `/opt/shiftlaunch/clusters/<name>/state.json`.
+---
 
-* **Locking:** Executions are protected by a PID-aware file lock (`.lock`) that verifies process health via `syscall.Signal(0)` to prevent zombie lockouts
-* **Resume Logic:** If a phase (e.g., `downloads` or `services`) succeeds, it is marked complete in the JSON state. A subsequent `shiftlaunch create` command will instantly skip to the failed phase
-* **Self-Healing:** The state manager validates the JSON schema upon load and executes a `RecoverState` routine to scrub duplicate events and fix corrupted histories
+## State Management and Idempotency
 
-## 🗑️ Safe Teardown Lifecycle
+All deployment state is persisted at `/opt/shiftlaunch/clusters/<name>/state.json`.
 
-The `remove` / `delete` command ensures no ghost infrastructure is left behind:
+- **Locking** — A PID-aware file lock (`.lock`) uses `syscall.Signal(0)` to detect stale locks from crashed processes, preventing zombie lockouts.
+- **Resume Logic** — Each phase (`downloads`, `services`, etc.) is marked complete in the state file when it succeeds. Re-running `shiftlaunch create` skips all completed phases and begins execution at the first incomplete or failed phase.
+- **Self-Healing** — On load, the state manager validates the JSON schema and runs a `RecoverState` routine to remove duplicate events and repair corrupted phase histories.
 
-1. **LPAR Power Off:** Transitions LPARs to a safe state before touching storage
-2. **VIOS Cleanup:** Unmaps virtual optical media, deletes the ISO from the Media Repository, and unmounts the NFS link
-3. **Service Reversion:** Dynamically parses `ip` and `nmcli` to unbind the cluster's VIP without disrupting the controller's primary IP connection
-4. **Archival:** Workspaces are marked `.deleted` instead of physically destroyed immediately, allowing admins to inspect logs before running `shiftlaunch prune`
+---
 
-ShiftLaunch uses **Intelligent Partial Failure Handling**. It tracks exactly which resources (LPARs, Virtual Disks, Optical Media) fail to delete. If a deletion fails (e.g., a disk is locked), it preserves the failure in the state file. Re-running the delete command will safely retry *only* the failed resources, ensuring zero orphaned infrastructure.
+## Safe Teardown Lifecycle
 
-## 📚 Example Configurations
+`shiftlaunch remove` (alias: `delete`) follows a strict ordered sequence to leave no orphaned infrastructure:
 
-ShiftLaunch provides pre-configured example YAML files in the `example/` directory:
+1. **LPAR Power Off** — Transitions all LPARs to a safe powered-off state before modifying storage.
+2. **VIOS Cleanup** — Unmaps virtual optical media, deletes the ISO from the Media Repository, and removes the NFS mount.
+3. **VIP Release** — Parses `ip` and `nmcli` output to cleanly unbind the cluster VIP from the controller interface without affecting other network configuration.
+4. **Archival** — The cluster workspace is renamed to `.deleted` rather than immediately removed, preserving logs for post-mortem review. Run `shiftlaunch prune` when you are ready to reclaim disk space.
 
-- `config.yaml`: Basic multi-node configuration template
-- `config-sno.yaml`: Single-Node OpenShift (SNO) example
-- `config-disc-agent.yaml`: Disconnected deployment with Agent-based installer
-- `config-multi-netboot.yaml`: Multi-node cluster with traditional network boot
+**Partial Failure Handling** — If a specific resource (LPAR, virtual disk, optical media) fails to delete, the failure is recorded in the state file. Re-running `delete` retries only the failed resources.
 
-## 🐛 Troubleshooting
+---
 
-### Common Issues
+## Example Configurations
 
-1. **"File 'config.yaml' already exists. Refusing to overwrite"**
-   - **Cause**: You are running `generate-config` but the target file already exists
-   - **Solution**: Delete the existing file or specify a different output path using `-config new-name.yaml`
+Pre-built examples are available in the [`example/`](./example/) directory:
 
-2. **"Cluster is already managed and fully deployed"**
-   - **Cause**: You attempted to run `create` on a cluster directory that contains a `.managed` marker (indicating a healthy, finished cluster)
-   - **Solution**: To redeploy, you must explicitly `delete` the cluster first to prevent accidental data loss
+| File | Description |
+|------|-------------|
+| [`config.yaml`](./example/config.yaml) | Basic multi-node cluster template |
+| [`config-sno.yaml`](./example/config-sno.yaml) | Single-Node OpenShift (SNO) |
+| [`config-disc-agent.yaml`](./example/config-disc-agent.yaml) | Disconnected deployment with Agent-based installer |
+| [`config-multi-netboot.yaml`](./example/config-multi-netboot.yaml) | Multi-node cluster with traditional network boot |
 
-## 👥 Authors
+---
 
-- **Sudeesh John** (@sudeeshjohn)
+## Troubleshooting
 
-## 📄 License
+### "File 'config.yaml' already exists. Refusing to overwrite."
 
-This project is maintained under the `shiftlaunch` repository. See the LICENSE file for details.
+**Cause:** `generate-config` will not silently overwrite an existing file.
+
+**Fix:** Specify a different output path or remove the existing file first.
+
+```bash
+shiftlaunch generate-config -t multi -b agent --config new-name.yaml
+```
+
+### "Cluster is already managed and fully deployed."
+
+**Cause:** A `.managed` marker exists in the cluster workspace, indicating a healthy finished cluster. Running `create` on an already-managed cluster is blocked to prevent accidental data loss.
+
+**Fix:** Explicitly delete the cluster first, then redeploy.
+
+```bash
+shiftlaunch delete --cluster my-cluster
+shiftlaunch create --config my-cluster.yaml
+```
+
+---
+
+## Authors
+
+- **Sudeesh John** ([@sudeeshjohn](https://github.ibm.com/sudeeshjohn))
+
+---
+
+## License
+
+This project is maintained under the `shiftlaunch` repository. See the [LICENSE](./LICENSE) file for details.

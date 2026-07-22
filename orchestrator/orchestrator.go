@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pterm/pterm"
 	"github.com/IBM/shiftlaunch/config"
 	compute "github.com/IBM/shiftlaunch/infra/compute"
 	"github.com/IBM/shiftlaunch/infra/controller"
@@ -16,6 +15,7 @@ import (
 	"github.com/IBM/shiftlaunch/logger"
 	"github.com/IBM/shiftlaunch/services"
 	"github.com/IBM/shiftlaunch/types"
+	"github.com/pterm/pterm"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -266,7 +266,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, resume bool) (err error) {
 				return fmt.Errorf("VIP %s is already configured for cluster '%s'. Please choose a different VIP",
 					o.cfg.Services.LoadBalancer.GetVIP(), conflictingCluster)
 			}
-	
+
 			o.logger.Info("VIP is available", "vip", o.cfg.Services.LoadBalancer.GetVIP())
 		}
 

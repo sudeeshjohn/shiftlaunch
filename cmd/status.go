@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/spf13/cobra"
 	"github.com/IBM/shiftlaunch/types"
+	"github.com/spf13/cobra"
 )
 
 var infoJSON bool
@@ -197,3 +197,4 @@ func runInfo(cmd *cobra.Command, args []string) error {
 
 	return nil
 }
+

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/spf13/cobra"
 	"github.com/IBM/shiftlaunch/config"
 	"github.com/IBM/shiftlaunch/types"
+	"github.com/spf13/cobra"
 )
 
 var ocCmd = &cobra.Command{
@@ -101,3 +101,4 @@ func runOcWrapper(cmd *cobra.Command, args []string) error {
 
 	return nil
 }
+
